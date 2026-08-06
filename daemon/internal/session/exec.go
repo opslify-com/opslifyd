@@ -101,16 +101,31 @@ func streamExec(ctx context.Context, sink ExecSink, es runtime.ExecStream, chunk
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
-	var truncated bool
+	// earlyStop KILLS the process the INSTANT either pump early-stops (cap hit or
+	// read error), from inside that pump's own goroutine — NOT after wg.Wait().
+	// This is essential: if stdout truncates while the process floods it, the
+	// process blocks in write() and never exits, so it never closes stderr; the
+	// stderr pump would then Read-block forever and wg.Wait() would hang before any
+	// post-join cancel could run. Killing immediately closes ALL the process's
+	// pipes, unblocking the sibling pump so wg.Wait() completes. Idempotent, so
+	// both pumps racing to call it is fine; the clean under-cap path never calls it,
+	// preserving the real exit code.
+	earlyStop := func() {
+		if es.Cancel != nil {
+			es.Cancel()
+		}
+	}
 	setResult := func(tr bool, e error) {
-		mu.Lock()
 		if tr {
-			truncated = true
+			earlyStop()
 		}
-		if e != nil && firstErr == nil {
-			firstErr = e
+		if e != nil {
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = e
+			}
+			mu.Unlock()
 		}
-		mu.Unlock()
 	}
 
 	wg.Add(2)
@@ -118,18 +133,11 @@ func streamExec(ctx context.Context, sink ExecSink, es runtime.ExecStream, chunk
 	go func() { defer wg.Done(); setResult(pump(ctx, sink, StreamStderr, es.Stderr, chunk, cap)) }()
 	wg.Wait()
 
-	// Enforcing the cap means one pump can stop reading while the process is still
-	// writing — the other pipe (and the stopped one) would then fill and block the
-	// process in write(), wedging Wait forever. So on ANY early stop (truncation or
-	// error) KILL the process first, THEN drain both pipes to EOF so Wait can reap
-	// promptly. No kill on the clean path, preserving the real exit code.
-	early := truncated || firstErr != nil
-	if early && es.Cancel != nil {
-		es.Cancel()
-	}
-	// Drain any unread bytes so cmd.Wait() sees both pipes at EOF (os/exec pipe
-	// contract) and returns without leaking the process/goroutine/fds. On the clean
-	// path both readers are already at EOF, so this is a no-op.
+	// Both pumps have returned (any early-stop already killed the process above, so
+	// no pump could be blocked). Drain any unread bytes so cmd.Wait() sees both
+	// pipes at EOF (os/exec pipe contract) and returns without leaking the
+	// process/goroutine/fds. On the clean path both readers are already at EOF, so
+	// this is a no-op.
 	drain(es.Stdout)
 	drain(es.Stderr)
 

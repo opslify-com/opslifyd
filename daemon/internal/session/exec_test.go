@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,4 +151,98 @@ func TestStreamExec_TruncationKillsAndReapsNoDeadlock(t *testing.T) {
 	if sink.exit == nil || *sink.exit != -1 {
 		t.Errorf("exit = %v, want -1 (killed by truncation, not a misleading 0)", sink.exit)
 	}
+}
+
+// BLOCKING-D2 regression: the kill must fire the INSTANT EITHER stream early-
+// stops — not after both pumps finish. Models TWO concurrently-live streams:
+// stdout floods PAST the cap (synchronous io.Pipe), while stderr stays OPEN and
+// SILENT (no bytes, no EOF) until the process is "killed". A child process holds
+// its stderr fd open until it exits, so the stderr pump Read-blocks; if the kill
+// waited on wg.Wait() it would never come (the stdout flooder never exits, so the
+// process never closes stderr). The fix cancels from inside the stdout pump the
+// moment it truncates, which "kills" the process and EOFs stderr.
+//
+// Against code that cancels only AFTER wg.Wait() this HANGS (the stderr pump
+// blocks forever); the fixed version returns promptly.
+func TestStreamExec_CrossStreamNoDeadlock(t *testing.T) {
+	// stdout: synchronous flooder past the cap.
+	outR, outW := io.Pipe()
+	// stderr: open + silent; only EOFs when the process is "killed" (Cancel).
+	errR, errW := io.Pipe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	killed := make(chan struct{})
+	var killOnce int32
+	kill := func() {
+		if atomic.CompareAndSwapInt32(&killOnce, 0, 1) {
+			cancel()
+			// Killing the process closes ALL its pipes: stdout flooder unblocks and
+			// stderr reaches EOF.
+			_ = outW.Close()
+			_ = errW.Close()
+			close(killed)
+		}
+	}
+
+	stdoutDone := make(chan struct{})
+	go func() { // stdout flooder
+		defer close(stdoutDone)
+		buf := bytes.Repeat([]byte("A"), 1024)
+		for {
+			if _, err := outW.Write(buf); err != nil {
+				return // pipe closed (killed)
+			}
+		}
+	}()
+
+	waitCalled := make(chan struct{})
+	es := runtime.ExecStream{
+		Stdout: outR,
+		Stderr: errR, // stays blocked in Read until kill closes errW
+		// The Cancel the consumer holds triggers the process kill (mirrors
+		// CommandContext SIGKILL closing every pipe).
+		Cancel: kill,
+		Wait: func() (int, error) {
+			close(waitCalled)
+			<-killed // cmd.Wait() only returns once the process has stopped
+			return -1, nil
+		},
+	}
+
+	sink := newCaptureSink()
+	done := make(chan error, 1)
+	go func() { done <- streamExec(context.Background(), sink, es, 1024, 4*1024) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("streamExec returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CROSS-STREAM DEADLOCK: kill did not fire until both pumps finished; the silent-stderr pump blocked forever")
+	}
+
+	if !sink.truncated[StreamStdout] {
+		t.Error("expected a truncation marker on stdout")
+	}
+	select {
+	case <-waitCalled:
+	default:
+		t.Error("process was never reaped (Wait not called)")
+	}
+	// Both output goroutines must have unwound (no leak).
+	select {
+	case <-stdoutDone:
+	case <-time.After(time.Second):
+		t.Error("stdout flooder goroutine leaked")
+	}
+	select {
+	case <-killed:
+	default:
+		t.Error("process kill (Cancel) never fired")
+	}
+	if sink.exit == nil || *sink.exit != -1 {
+		t.Errorf("exit = %v, want -1 (killed by truncation)", sink.exit)
+	}
+	_ = ctx
 }
