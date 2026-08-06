@@ -55,7 +55,7 @@ The two big moves: **audit (P3) and policy/approval (P4) come before the credent
 **Objective:** `opslify init` produces a signed, per-project toolchain the sandbox will mount read-only.
 
 **In scope**
-- Monorepo scaffold: `cmd/opslifyd`, `cmd/opslify`, `internal/{session,trace,policy,broker,mcp,env}`, `images/`, `nix/`.
+- Monorepo scaffold: **all Go under `daemon/`** (`daemon/go.mod`, `daemon/cmd/opslifyd`, `daemon/cmd/opslify`, `daemon/internal/{session,trace,policy,broker,mcp,env}`), plus `images/`, `nix/`. Repo root holds only `spec/`, `daemon/`, `.github/`. Module path stays `github.com/opslify-com/opslifyd`.
 - Interfaces defined up front (even with single impls): `Runtime`, `SecretBackend`, `TraceSink`, `EnvBuilder`.
 - Nix/devbox **env composer** (`internal/env`).
 

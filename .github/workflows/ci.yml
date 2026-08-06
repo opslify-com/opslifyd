@@ -20,19 +20,24 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: daemon/go.sum
 
       - name: Format check
+        working-directory: daemon
         run: test -z "$(gofmt -l internal/ cmd/ 2>/dev/null)"
 
       - name: Vet
+        working-directory: daemon
         run: go vet ./...
 
       - name: Build
+        working-directory: daemon
         run: go build ./...
 
       - name: Unit tests (race)
+        working-directory: daemon
         run: go test -race ./...
 
   # Heavy gate: exercises the tool-dependent acceptance criteria (AC1/AC2/AC4/AC5)
@@ -45,8 +50,9 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: daemon/go.mod
           cache: true
+          cache-dependency-path: daemon/go.sum
 
       - name: Install Nix
         uses: cachix/install-nix-action@v27
@@ -64,6 +70,7 @@ jobs:
         run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: Generate ephemeral cosign keypair
+        working-directory: daemon
         env:
           COSIGN_PASSWORD: ""
         run: |
@@ -72,6 +79,7 @@ jobs:
           echo "OPSLIFY_COSIGN_PUBKEY=$PWD/cosign.pub" >> "$GITHUB_ENV"
 
       - name: Integration tests (real nix/devbox/cosign/syft)
+        working-directory: daemon
         env:
           OPSLIFY_INTEGRATION: "1"
           COSIGN_PASSWORD: ""
