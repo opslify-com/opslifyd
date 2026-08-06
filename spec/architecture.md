@@ -176,6 +176,7 @@ type Runtime interface {
     Exec(ctx, ContainerHandle, ExecRequest) (ExecStream, error)
     Destroy(ctx, ContainerHandle) error
     Snapshot(ctx, ContainerHandle, name string) (ImageRef, error) // workspace mode
+    Available() error // F0.3: capability probe (engine + OCI runtime present) so callers fall back down the ladder legibly
 }
 
 // EnvBuilder — Nix/devbox build-time composer (D1). Produces signed read-only toolchain.
