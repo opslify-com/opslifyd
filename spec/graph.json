@@ -172,7 +172,7 @@
       "id": "F1.3",
       "phase": "P1",
       "title": "Warm pool",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"

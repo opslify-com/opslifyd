@@ -83,6 +83,9 @@ func run() error {
 		return err
 	}
 	mgr.StartReaper(30 * time.Second)
+	// Pre-warm the pool AFTER reconcile (so a restart's orphans are reaped first)
+	// and before serving, so the first claim hits a warm container.
+	mgr.StartWarmPool()
 	defer mgr.Shutdown(context.Background())
 
 	return d.Run(ctx)
@@ -100,13 +103,15 @@ func buildSessionManager(cfg install.Config, log *slog.Logger) (*session.Manager
 	stateDir := filepath.Join(filepath.Dir(cfg.WorkspaceDir), "sessions")
 	return session.NewManager(session.Options{
 		Config: session.ManagerConfig{
-			Image:           cfg.Image,
-			ToolchainDigest: cfg.ToolchainDigest,
-			WorkspaceRoot:   cfg.WorkspaceDir,
-			StateDir:        stateDir,
-			DefaultTier:     runtime.Tier(cfg.Tier),
-			DefaultTTL:      ttl,
-			Limits:          runtime.ResourceLimits{MemoryBytes: 2 << 30, CPUs: 2, PidsLimit: 256},
+			Image:               cfg.Image,
+			ToolchainDigest:     cfg.ToolchainDigest,
+			WorkspaceRoot:       cfg.WorkspaceDir,
+			StateDir:            stateDir,
+			DefaultTier:         runtime.Tier(cfg.Tier),
+			DefaultTTL:          ttl,
+			Limits:              runtime.ResourceLimits{MemoryBytes: 2 << 30, CPUs: 2, PidsLimit: 256},
+			WarmPoolSize:        cfg.WarmPoolSize,
+			WarmPoolConcurrency: cfg.WarmPoolConcurrency,
 		},
 		Logger: log,
 	})

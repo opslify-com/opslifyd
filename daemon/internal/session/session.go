@@ -15,6 +15,11 @@ const (
 	StateCreating State = "creating"
 	// StateReady means the sandbox exists and can accept mediated execs.
 	StateReady State = "ready"
+	// StateWarm is a pre-created, paused sandbox held in the warm pool (F1.3),
+	// not yet claimed by any caller. It is identical in hardening + toolchain
+	// digest to a ready session; a claim thaws it and transitions it to ready.
+	// Warm sessions are never in the Manager's live map and never appear in List.
+	StateWarm State = "warm"
 	// StateExecing means a mediated exec is in flight. It is a sub-state of
 	// ready: the session returns to ready when the exec completes.
 	StateExecing State = "execing"
