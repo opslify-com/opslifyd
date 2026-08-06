@@ -173,6 +173,7 @@ func TestExecInputValidation(t *testing.T) {
 		{Argv: nil},
 		{Argv: []string{"ls"}, Env: []string{"NOEQ"}},
 		{Argv: []string{"ls"}, Cwd: "relative"},
+		{Argv: []string{"ls"}, Cwd: "/work\x00space"},
 		{Argv: []string{"ls\x00"}},
 		{Argv: []string{"ls"}, Writable: []string{"/etc/passwd"}},
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/session"
@@ -140,7 +141,13 @@ func (d *Daemon) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 // httpSink adapts session.ExecSink to a flushing chunked HTTP response. Each
 // frame is one JSON object on its own line; it flushes after every frame so the
 // caller sees output as it is produced (streamed, not buffered).
+//
+// streamExec drives stdout and stderr through two concurrent goroutines (per the
+// ExecSink contract), so every emit — the encode, the flush, and the `wrote`
+// mutation — is serialized under mu. This both prevents a data race on the
+// shared encoder/ResponseWriter and guarantees frames never interleave mid-write.
 type httpSink struct {
+	mu    sync.Mutex
 	w     http.ResponseWriter
 	enc   *json.Encoder
 	flush func()
@@ -166,6 +173,8 @@ type frame struct {
 }
 
 func (s *httpSink) emit(f frame) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.wrote = true
 	if err := s.enc.Encode(f); err != nil {
 		return err

@@ -532,8 +532,13 @@ func (o ExecOptions) validate() error {
 			return fmt.Errorf("%w: env entry must be KEY=VALUE without NUL: %q", ErrInvalidInput, e)
 		}
 	}
-	if o.Cwd != "" && !strings.HasPrefix(o.Cwd, "/") {
-		return fmt.Errorf("%w: cwd must be absolute: %q", ErrInvalidInput, o.Cwd)
+	if o.Cwd != "" {
+		if strings.ContainsRune(o.Cwd, '\x00') {
+			return fmt.Errorf("%w: NUL byte in cwd", ErrInvalidInput)
+		}
+		if !strings.HasPrefix(o.Cwd, "/") {
+			return fmt.Errorf("%w: cwd must be absolute: %q", ErrInvalidInput, o.Cwd)
+		}
 	}
 	for _, p := range o.Writable {
 		clean := filepath.Clean(p)

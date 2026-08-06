@@ -10,7 +10,30 @@ import (
 	"testing"
 
 	"github.com/opslify-com/opslifyd/internal/session"
+	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
+
+// twoStreamRuntime is a minimal real runtime.Runtime whose Exec returns an
+// ExecStream with BOTH a non-empty stdout and a non-empty stderr reader, so
+// driving it through session.Manager.Exec exercises streamExec's two concurrent
+// pumps against a real sink. Used to reproduce the httpSink data race.
+type twoStreamRuntime struct{ payload string }
+
+func (r twoStreamRuntime) Create(context.Context, runtime.SessionSpec) (runtime.ContainerHandle, error) {
+	return runtime.ContainerHandle{ID: "ctr-1", Tier: runtime.TierLocalHardened}, nil
+}
+func (r twoStreamRuntime) Exec(context.Context, runtime.ContainerHandle, runtime.ExecRequest) (runtime.ExecStream, error) {
+	return runtime.ExecStream{
+		Stdout:   strings.NewReader(r.payload),
+		Stderr:   strings.NewReader(r.payload),
+		ExitCode: 0,
+	}, nil
+}
+func (r twoStreamRuntime) Destroy(context.Context, runtime.ContainerHandle) error { return nil }
+func (r twoStreamRuntime) Snapshot(context.Context, runtime.ContainerHandle, string) (runtime.ImageRef, error) {
+	return runtime.ImageRef{}, nil
+}
+func (r twoStreamRuntime) Available() error { return nil }
 
 // fakeManager is a SessionService double so the REST layer is tested without a
 // real Manager, runtime, or podman.
@@ -270,6 +293,69 @@ func TestSessionRoutesAbsentWithoutManager(t *testing.T) {
 	defer h.Body.Close()
 	if h.StatusCode != http.StatusOK {
 		t.Fatalf("health status = %d", h.StatusCode)
+	}
+}
+
+// TestHTTPExecSinkConcurrentStreams drives the REAL streamExec (via
+// session.Manager.Exec) through the REAL httpSink with a non-empty stdout AND a
+// non-empty stderr reader — the two concurrent pumps that the fakeManager-based
+// tests bypass. Small chunk size forces many interleaved emits. Under -race this
+// FAILS against an unsynchronized httpSink and PASSES with the mutex fix. It also
+// asserts frames stay well-formed (every line is a valid, non-interleaved JSON
+// frame) and the exit frame arrives.
+func TestHTTPExecSinkConcurrentStreams(t *testing.T) {
+	payload := strings.Repeat("x", 4096)
+	mgr, err := session.NewManager(session.Options{
+		Config: session.ManagerConfig{
+			WorkspaceRoot: t.TempDir(),
+			StateDir:      t.TempDir(),
+			DefaultTier:   runtime.TierLocalHardened,
+			ChunkSize:     16, // force hundreds of concurrent emits per stream
+		},
+		Resolve: func(runtime.Tier, runtime.Location) (runtime.Runtime, error) {
+			return twoStreamRuntime{payload: payload}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	s, err := mgr.Create(context.Background(), session.CreateRequest{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	sink := newHTTPSink(rec)
+	if err := mgr.Exec(context.Background(), s.ID, session.ExecOptions{Argv: []string{"echo"}}, sink); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	var stdout, stderr int
+	sawExit := false
+	sc := bufio.NewScanner(strings.NewReader(rec.Body.String()))
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	for sc.Scan() {
+		var fr frame
+		if err := json.Unmarshal(sc.Bytes(), &fr); err != nil {
+			t.Fatalf("interleaved/malformed frame %q: %v", sc.Text(), err)
+		}
+		switch {
+		case fr.Exit != nil:
+			sawExit = true
+		case fr.Stream == "stdout":
+			stdout += len(fr.Data)
+		case fr.Stream == "stderr":
+			stderr += len(fr.Data)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if stdout != len(payload) || stderr != len(payload) {
+		t.Fatalf("stream bytes: stdout=%d stderr=%d, want %d each", stdout, stderr, len(payload))
+	}
+	if !sawExit {
+		t.Fatal("missing exit frame")
 	}
 }
 
