@@ -30,9 +30,7 @@ sed -i -E "s/(\*\*Status:\*\* )[A-Za-z-]+/\1approved/" "$file"
 python3 spec/tools/specgraph.py
 
 git add "$file" spec/graph.json spec/graph.mmd
-git commit -m "${fid}: approved (QA pass + manual sign-off)
-
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+git commit -m "${fid}: approved (QA pass + manual sign-off)"
 git push origin "$branch" 2>/dev/null || echo "(remote push skipped; run 'git push origin ${branch}' when authenticated)"
 
 echo
