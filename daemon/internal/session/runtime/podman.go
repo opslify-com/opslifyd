@@ -3,7 +3,9 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -30,8 +32,25 @@ type commandRunner interface {
 	// error (never a log sink) so failures name the failing binary without
 	// leaking output. No secrets are ever passed as args by this package.
 	run(ctx context.Context, name string, args ...string) ([]byte, error)
+	// stream starts name with args and returns its stdout and stderr as LIVE,
+	// separate readers plus a wait closure that reaps the process and yields its
+	// real exit code. It is the streaming counterpart to run: it never buffers the
+	// full output, so a hostile command cannot OOM the daemon (the consumer bounds
+	// each reader). The caller MUST drain both readers to EOF before calling wait
+	// (os/exec pipe contract). No secrets are ever passed as args by this package.
+	stream(ctx context.Context, name string, args ...string) (streamResult, error)
 	// lookup reports whether a binary is available, with a legible error if not.
 	lookup(name string) error
+}
+
+// streamResult is a started command's two live output readers plus a wait
+// closure. wait reaps the process (after both readers hit EOF) and returns the
+// real exit code — a non-zero exit is (code, nil); only a failure to reap the
+// process is a non-nil error.
+type streamResult struct {
+	stdout io.Reader
+	stderr io.Reader
+	wait   func() (int, error)
 }
 
 // execRunner is the production commandRunner: it shells out to the real binary.
@@ -46,6 +65,42 @@ func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte,
 		return nil, fmt.Errorf("runtime: %s failed: %w: %s", name, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// stream starts the command with piped stdout/stderr and returns the live
+// readers plus a wait closure. exec.CommandContext kills the process if ctx is
+// cancelled, which EOFs the pipes so the consumer's pumps unwind; cmd.Wait then
+// reaps it. Wait also closes both pipes, so there is no fd/goroutine leak
+// provided the caller honors the contract (drain both readers, then wait) —
+// which the F1.2 consumer does.
+func (execRunner) stream(ctx context.Context, name string, args ...string) (streamResult, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return streamResult{}, fmt.Errorf("runtime: %s stdout pipe: %w", name, err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return streamResult{}, fmt.Errorf("runtime: %s stderr pipe: %w", name, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return streamResult{}, fmt.Errorf("runtime: %s start: %w", name, err)
+	}
+	wait := func() (int, error) {
+		err := cmd.Wait()
+		if err == nil {
+			return 0, nil
+		}
+		// A non-zero process exit is NOT a runner failure: surface the real code
+		// so the daemon reports the command's true success/failure.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), nil
+		}
+		// A genuine failure to run/reap the process (ExitCode() is -1 here).
+		return -1, fmt.Errorf("runtime: %s wait: %w", name, err)
+	}
+	return streamResult{stdout: stdout, stderr: stderr, wait: wait}, nil
 }
 
 func (execRunner) lookup(name string) error {
@@ -169,8 +224,14 @@ func (r *podmanRuntime) execArgs(h ContainerHandle, req ExecRequest) []string {
 	return args
 }
 
-// Exec runs a command inside a created container. F0.3 returns a thin buffered
-// result; true streaming and a faithful exit code come in F1.2.
+// Exec runs a command inside a created container and STREAMS its output. It
+// wires the podman-exec process's stdout and stderr as two separate live
+// readers into the returned ExecStream (so F1.2's concurrent pumps stream
+// incrementally — the runtime never buffers full output, closing the OOM risk)
+// and delivers the process's REAL exit code via ExecStream.Wait, called by the
+// consumer after both streams are drained (non-zero on command failure — no more
+// hardcoded success). Cancellation is via ctx (CommandContext kills the process,
+// EOFing the pipes and unwinding the pumps).
 func (r *podmanRuntime) Exec(ctx context.Context, h ContainerHandle, req ExecRequest) (ExecStream, error) {
 	if h.ID == "" {
 		return ExecStream{}, fmt.Errorf("runtime: exec: empty container handle")
@@ -178,14 +239,23 @@ func (r *podmanRuntime) Exec(ctx context.Context, h ContainerHandle, req ExecReq
 	if len(req.Argv) == 0 {
 		return ExecStream{}, fmt.Errorf("runtime: exec: empty argv")
 	}
-	out, err := r.runner.run(ctx, "podman", r.execArgs(h, req)...)
+	// Derive a per-exec cancelable context so the consumer can KILL the process on
+	// truncation/early-return (CommandContext kills on cancel). This is what makes
+	// the output cap enforceable against a hostile occupant: without it, a process
+	// that keeps writing past the cap would fill the pipe buffer, block in write(),
+	// and wedge Wait forever. Cancel is idempotent; the consumer also defers it to
+	// release context resources on the clean path.
+	ectx, cancel := context.WithCancel(ctx)
+	sr, err := r.runner.stream(ectx, "podman", r.execArgs(h, req)...)
 	if err != nil {
+		cancel()
 		return ExecStream{}, fmt.Errorf("runtime: exec in %s: %w", h.ID, err)
 	}
 	return ExecStream{
-		Stdout:   bytes.NewReader(out),
-		Stderr:   bytes.NewReader(nil),
-		ExitCode: 0,
+		Stdout: sr.stdout,
+		Stderr: sr.stderr,
+		Wait:   sr.wait,
+		Cancel: cancel,
 	}, nil
 }
 

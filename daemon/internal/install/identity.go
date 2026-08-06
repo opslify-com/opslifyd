@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,5 +78,59 @@ func GenerateIdentity(keyPath string) (Identity, error) {
 		Fingerprint:  pubHex[:16],
 		KeyPath:      keyPath,
 		PubKeyPath:   pubPath,
+	}, nil
+}
+
+// RequiredKeyPerm is the exact permission the daemon identity private key must
+// carry: owner read/write only. Anything looser is a fail-fast condition.
+const RequiredKeyPerm os.FileMode = 0o600
+
+// ErrIdentityKeyPerms is returned by LoadIdentity when the private key file's
+// permission bits are not exactly 0600 (world/group readability is a leak of
+// the daemon's signing identity).
+var ErrIdentityKeyPerms = errors.New("install: identity key permissions must be 0600")
+
+// LoadIdentity loads the daemon Ed25519 identity from the private key at
+// keyPath and fails fast if the key is absent or its permission bits are not
+// exactly 0600. It returns only the PUBLIC half + fingerprint (safe to log): the
+// private key material is parsed to prove it is well-formed, then dropped — it is
+// never returned, logged, or printed. This is the daemon's verify-before-serve
+// identity gate (F1.1).
+func LoadIdentity(keyPath string) (Identity, error) {
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		return Identity{}, fmt.Errorf("install: identity key not found at %s: %w", keyPath, err)
+	}
+	if perm := info.Mode().Perm(); perm != RequiredKeyPerm {
+		return Identity{}, fmt.Errorf("%w: %s has %#o", ErrIdentityKeyPerms, keyPath, perm)
+	}
+
+	pemBytes, err := os.ReadFile(keyPath)
+	if err != nil {
+		return Identity{}, fmt.Errorf("install: read identity key %s: %w", keyPath, err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return Identity{}, fmt.Errorf("install: identity key %s is not valid PEM", keyPath)
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return Identity{}, fmt.Errorf("install: parse identity key %s: %w", keyPath, err)
+	}
+	priv, ok := key.(ed25519.PrivateKey)
+	if !ok {
+		return Identity{}, fmt.Errorf("install: identity key %s is not Ed25519 (got %T)", keyPath, key)
+	}
+
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok {
+		return Identity{}, fmt.Errorf("install: identity key %s has no Ed25519 public half", keyPath)
+	}
+	pubHex := hex.EncodeToString(pub)
+	return Identity{
+		PublicKeyHex: pubHex,
+		Fingerprint:  pubHex[:16],
+		KeyPath:      keyPath,
+		PubKeyPath:   keyPath + ".pub",
 	}, nil
 }

@@ -122,7 +122,7 @@
       "id": "F1.1",
       "phase": "P1",
       "title": "Daemon bootstrap & REST API",
-      "status": "todo",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [],
       "depends_on_phases": [
@@ -144,7 +144,7 @@
       "id": "F1.2",
       "phase": "P1",
       "title": "Session lifecycle API",
-      "status": "todo",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.1",
@@ -172,7 +172,7 @@
       "id": "F1.3",
       "phase": "P1",
       "title": "Warm pool",
-      "status": "todo",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"
@@ -190,7 +190,7 @@
       "id": "F1.4",
       "phase": "P1",
       "title": "Default-deny egress + DNS pinning",
-      "status": "todo",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"

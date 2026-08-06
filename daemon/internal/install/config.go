@@ -15,8 +15,9 @@ const DefaultConfigPath = "/etc/opslify/config.yaml"
 
 // Default daemon config values (spec F0.1 §4).
 const (
-	DefaultSessionTTL   = "30m"
-	DefaultWarmPoolSize = 1
+	DefaultSessionTTL          = "30m"
+	DefaultWarmPoolSize        = 1
+	DefaultWarmPoolConcurrency = 2
 )
 
 // DefaultWorkspaceDir is the per-session writable workspace root.
@@ -31,6 +32,8 @@ type Config struct {
 	SessionTTL string `yaml:"session_ttl"`
 	// WarmPoolSize is how many containers are kept warm for fast session start.
 	WarmPoolSize int `yaml:"warm_pool_size"`
+	// WarmPoolConcurrency caps how many warm containers are (re)built at once.
+	WarmPoolConcurrency int `yaml:"warm_pool_concurrency"`
 	// EgressAllowlist is the default-deny allowlist of egress destinations.
 	EgressAllowlist []string `yaml:"egress_allowlist"`
 	// WorkspaceDir is the host root for per-session writable workspaces.
@@ -49,14 +52,31 @@ type Config struct {
 // DefaultConfig returns a Config populated with the spec defaults.
 func DefaultConfig() Config {
 	return Config{
-		Image:           "",
-		SessionTTL:      DefaultSessionTTL,
-		WarmPoolSize:    DefaultWarmPoolSize,
-		EgressAllowlist: []string{},
-		WorkspaceDir:    DefaultWorkspaceDir,
-		Tier:            string(runtime.TierLocalHardened),
-		IdentityKey:     DefaultIdentityKeyPath,
+		Image:               "",
+		SessionTTL:          DefaultSessionTTL,
+		WarmPoolSize:        DefaultWarmPoolSize,
+		WarmPoolConcurrency: DefaultWarmPoolConcurrency,
+		EgressAllowlist:     []string{},
+		WorkspaceDir:        DefaultWorkspaceDir,
+		Tier:                string(runtime.TierLocalHardened),
+		IdentityKey:         DefaultIdentityKeyPath,
 	}
+}
+
+// LoadConfig reads and parses the daemon config at path. It is the read
+// counterpart to WriteConfig, used by the daemon at startup. Unknown keys are
+// tolerated (forward-compat); a missing file or malformed YAML is a legible,
+// layer-tagged error so the operator learns exactly what failed.
+func LoadConfig(path string) (Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("install: read config %s: %w", path, err)
+	}
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return Config{}, fmt.Errorf("install: parse config %s: %w", path, err)
+	}
+	return c, nil
 }
 
 // MarshalConfig renders a Config as YAML bytes.
