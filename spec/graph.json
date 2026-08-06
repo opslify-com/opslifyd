@@ -69,7 +69,7 @@
       "id": "F0.1",
       "phase": "P0",
       "title": "Interactive install & tool selection",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F0.2"
