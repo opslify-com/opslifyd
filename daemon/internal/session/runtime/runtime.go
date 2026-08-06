@@ -119,6 +119,16 @@ type ExecStream struct {
 	// EOF. A non-zero exit is returned as (code, nil) — only a genuine failure to
 	// reap the process yields a non-nil error.
 	Wait func() (int, error)
+	// Cancel, when non-nil, KILLS the underlying process (SIGKILL via the exec
+	// context). The consumer MUST call it on any early return — cap/truncation, a
+	// read error, or a caller-cancel — BEFORE it drains the pipes, so a hostile
+	// occupant that keeps writing past the output cap cannot wedge Wait forever
+	// (kill → pipes EOF → drain completes → Wait reaps). It is idempotent and safe
+	// to call again (e.g. deferred) to release context resources. On the clean
+	// under-cap path Cancel is NOT called before Wait, so the real exit code is
+	// preserved; a truncation-killed exec surfaces the kill (exit -1), never a
+	// misleading 0.
+	Cancel func()
 }
 
 // ImageRef points at a committed image (from Snapshot).

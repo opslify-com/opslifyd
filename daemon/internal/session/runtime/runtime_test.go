@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeRunner is the test double for the Podman CLI seam. It records the argv of
@@ -376,6 +377,43 @@ func TestExecStreamStartError(t *testing.T) {
 		t.Errorf("stream start error must surface as an exec error, got %v", err)
 	}
 }
+
+// BLOCKING-D1 (gated, no podman): the REAL execRunner.stream must let a caller
+// kill a still-writing process via ctx-cancel and then reap it via wait without
+// hanging — the production kill-then-drain path end-to-end. Uses `sh -c "yes"`
+// (an infinite writer) behind an sh-availability skip, so it is a no-op on hosts
+// without sh; the deterministic seam test in the session package is the primary.
+func TestExecRunnerStreamKillReapGated(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not installed: skipping real kill/reap smoke (seam test covers the logic)")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	sr, err := execRunner{}.stream(ctx, "sh", "-c", "yes ABCDEFGH")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	// Read a bit (well past any single pipe buffer), then stop and kill.
+	buf := make([]byte, 256*1024)
+	if _, err := io.ReadFull(sr.stdout, buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	cancel() // kill the process (mirrors truncation-triggered cancel)
+
+	done := make(chan struct{})
+	go func() {
+		drainReader(sr.stdout) // drain to EOF so Wait can reap
+		drainReader(sr.stderr)
+		_, _ = sr.wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("DEADLOCK: killed process was not reaped within 3s")
+	}
+}
+
+func drainReader(r io.Reader) { _, _ = io.Copy(io.Discard, r) }
 
 // --- FIX #2: Start seam issues `podman start` and validates the handle. -------
 

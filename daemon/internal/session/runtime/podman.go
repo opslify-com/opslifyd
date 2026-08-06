@@ -239,14 +239,23 @@ func (r *podmanRuntime) Exec(ctx context.Context, h ContainerHandle, req ExecReq
 	if len(req.Argv) == 0 {
 		return ExecStream{}, fmt.Errorf("runtime: exec: empty argv")
 	}
-	sr, err := r.runner.stream(ctx, "podman", r.execArgs(h, req)...)
+	// Derive a per-exec cancelable context so the consumer can KILL the process on
+	// truncation/early-return (CommandContext kills on cancel). This is what makes
+	// the output cap enforceable against a hostile occupant: without it, a process
+	// that keeps writing past the cap would fill the pipe buffer, block in write(),
+	// and wedge Wait forever. Cancel is idempotent; the consumer also defers it to
+	// release context resources on the clean path.
+	ectx, cancel := context.WithCancel(ctx)
+	sr, err := r.runner.stream(ectx, "podman", r.execArgs(h, req)...)
 	if err != nil {
+		cancel()
 		return ExecStream{}, fmt.Errorf("runtime: exec in %s: %w", h.ID, err)
 	}
 	return ExecStream{
 		Stdout: sr.stdout,
 		Stderr: sr.stderr,
 		Wait:   sr.wait,
+		Cancel: cancel,
 	}, nil
 }
 
