@@ -62,6 +62,12 @@ type ManagerConfig struct {
 	// OutputCap / ChunkSize bound exec output; zero applies the defaults.
 	OutputCap int
 	ChunkSize int
+	// WarmPoolSize is how many pre-created, paused sandboxes to keep ready for a
+	// sub-second claim (F1.3). Zero disables the pool (pure create-on-demand).
+	WarmPoolSize int
+	// WarmPoolConcurrency caps how many warm containers are (re)built at once, so
+	// replenishment never stampedes the engine or starves claims. Zero => default.
+	WarmPoolConcurrency int
 }
 
 // resolveFunc maps a (tier, location) to a concrete Runtime. Production uses
@@ -80,6 +86,16 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+
+	// digestMu guards cfg.ToolchainDigest, which SetToolchainDigest mutates at
+	// runtime (a signed-toolchain rotation). realize reads it through
+	// toolchainDigest() so the on-demand and warm-pool create paths always agree
+	// on the current digest — safe under -race.
+	digestMu sync.RWMutex
+
+	// pool is the F1.3 warm pool (nil when WarmPoolSize == 0). Create claims from
+	// it before falling back to on-demand realize.
+	pool *warmPool
 
 	reaperStop chan struct{}
 	reaperDone chan struct{}
@@ -148,10 +164,13 @@ type CreateRequest struct {
 	TTL      time.Duration    // <=0 => cfg.DefaultTTL
 }
 
-// Create realises a new sandbox: resolve the runtime for the tier, assert it is
-// available (legible fall-back message otherwise), create the container mounting
-// the signed toolchain RO + a writable /workspace, persist the record, and
-// register the session ready. Create-on-demand — no warm pool (F1.3).
+// Create realises a new sandbox and registers it ready. When a warm pool is
+// configured (F1.3) and holds a container matching the requested rung, Create
+// CLAIMS one — returning in ~one unpause instead of a full engine create — and
+// the pool replenishes in the background (a claim never blocks on a rebuild).
+// Otherwise it falls back to an on-demand realize. Both paths go through the
+// SAME realize (identical hardening + signed toolchain digest); the warm path is
+// never a second, weaker create path.
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, error) {
 	mode := req.Mode
 	if mode == "" {
@@ -173,6 +192,33 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		ttl = m.cfg.DefaultTTL
 	}
 
+	// Fast path: claim a pre-warmed sandbox. The pool triggers its own background
+	// replenishment; the claim itself never waits on it.
+	if m.pool != nil {
+		if s, err := m.pool.claim(ctx, tier, loc, mode, ttl); err != nil {
+			return nil, err
+		} else if s != nil {
+			m.registerReady(s, "claimed")
+			return s, nil
+		}
+		// Pool miss (empty or wrong rung): fall through to on-demand create.
+	}
+
+	s, err := m.realize(ctx, tier, loc, mode, ttl, StateReady)
+	if err != nil {
+		return nil, err
+	}
+	m.registerReady(s, "created")
+	return s, nil
+}
+
+// realize builds one sandbox and persists its record, returning it in state st.
+// It is the SINGLE create path shared by on-demand Create and warm-pool
+// pre-create, so a warm container is guaranteed identical to an on-demand one:
+// same hardening hard-spec (F0.3 base) and same signed toolchain digest. It does
+// NOT register the session in the live map — the caller (Create for ready
+// sessions; the pool for warm ones) decides that.
+func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, ttl time.Duration, st State) (*Session, error) {
 	rt, err := m.resolve(tier, loc)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
@@ -205,7 +251,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		Tier:            tier,
 		Location:        loc,
 		Image:           m.cfg.Image,
-		ToolchainDigest: m.cfg.ToolchainDigest,
+		ToolchainDigest: m.toolchainDigest(),
 		Workspace:       wsDir,
 		Limits:          m.cfg.Limits,
 		Name:            namePrefix + id,
@@ -225,7 +271,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		Mode:         mode,
 		Tier:         tier,
 		Location:     loc,
-		State:        StateReady,
+		State:        st,
 		Handle:       handle,
 		WorkspaceDir: wsDir,
 		Created:      now,
@@ -239,13 +285,55 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		m.cleanupWorkspace(wsDir)
 		return nil, err
 	}
-
-	m.mu.Lock()
-	m.sessions[id] = s
-	m.mu.Unlock()
-
-	m.log.Info("session created", "session", id, "tier", tier, "mode", mode, "container", handle.ID)
 	return s, nil
+}
+
+// registerReady adds a ready session to the live map. origin is "created" (fresh
+// on-demand) or "claimed" (from the warm pool) for the audit log.
+func (m *Manager) registerReady(s *Session, origin string) {
+	m.mu.Lock()
+	m.sessions[s.ID] = s
+	m.mu.Unlock()
+	m.log.Info("session "+origin, "session", s.ID, "tier", s.Tier, "mode", s.Mode, "container", s.Handle.ID)
+}
+
+// toolchainDigest returns the current signed toolchain digest under the digest
+// lock (SetToolchainDigest may rotate it at runtime).
+func (m *Manager) toolchainDigest() string {
+	m.digestMu.RLock()
+	defer m.digestMu.RUnlock()
+	return m.cfg.ToolchainDigest
+}
+
+// SetToolchainDigest rotates the signed toolchain digest used for every NEW
+// sandbox and, if a warm pool exists, drains the now-stale warm containers and
+// rebuilds the pool on the new digest (F1.3: "toolchain change drains + rebuilds
+// the pool"). A no-op when the digest is unchanged. In-flight and future
+// on-demand creates immediately use the new digest via realize.
+func (m *Manager) SetToolchainDigest(digest string) {
+	m.digestMu.Lock()
+	changed := m.cfg.ToolchainDigest != digest
+	m.cfg.ToolchainDigest = digest
+	m.digestMu.Unlock()
+	if changed && m.pool != nil {
+		m.pool.drainAndRebuild(digest)
+	}
+}
+
+// StartWarmPool constructs and starts the warm pool from ManagerConfig
+// (WarmPoolSize / WarmPoolConcurrency). It is a no-op when WarmPoolSize <= 0.
+// Call after Reconcile (so a restart's orphans are reaped first) and before
+// serving. Idempotent-safe: a second call with a pool already running is ignored.
+func (m *Manager) StartWarmPool() {
+	if m.cfg.WarmPoolSize <= 0 || m.pool != nil {
+		return
+	}
+	conc := m.cfg.WarmPoolConcurrency
+	if conc <= 0 {
+		conc = defaultWarmConcurrency
+	}
+	m.pool = newWarmPool(m, m.cfg.WarmPoolSize, conc, m.cfg.DefaultTier, runtime.LocationLocal)
+	m.pool.start()
 }
 
 // Exec runs one mediated command in a ready session, streaming bounded output to
@@ -442,6 +530,12 @@ func (m *Manager) StopReaper() {
 // cleanup on daemon shutdown; the reaper-on-restart path is the safety net).
 func (m *Manager) Shutdown(ctx context.Context) {
 	m.StopReaper()
+	// Drain the warm pool first so no paused warm container is leaked on exit
+	// (F1.3 acceptance: no warm containers leak on shutdown). This blocks until
+	// every in-flight builder has finished and every warm container is destroyed.
+	if m.pool != nil {
+		m.pool.close(ctx)
+	}
 	m.mu.Lock()
 	var all []*Session
 	for id, s := range m.sessions {
