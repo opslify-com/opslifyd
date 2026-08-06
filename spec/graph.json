@@ -106,7 +106,7 @@
       "id": "F0.3",
       "phase": "P0",
       "title": "Runtime & location abstraction",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [],
       "depends_on_phases": [],
