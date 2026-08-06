@@ -42,45 +42,47 @@ type ExecSink interface {
 
 // pump copies one reader to the sink in bounded chunks, stopping at cap and
 // emitting a single truncation marker. It never accumulates more than one chunk
-// in memory. A nil reader is treated as empty.
-func pump(ctx context.Context, sink ExecSink, stream string, r io.Reader, chunk, cap int) error {
+// in memory. A nil reader is treated as empty. It returns truncated=true when it
+// stopped at the cap WITHOUT reaching EOF — the signal streamExec uses to kill
+// and reap the still-writing process instead of blocking on it.
+func pump(ctx context.Context, sink ExecSink, stream string, r io.Reader, chunk, cap int) (truncated bool, err error) {
 	if r == nil {
-		return nil
+		return false, nil
 	}
 	buf := make([]byte, chunk)
 	var sent int
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return true, ctx.Err()
 		default:
 		}
-		n, err := r.Read(buf)
+		n, rerr := r.Read(buf)
 		if n > 0 {
 			// Trim to the remaining cap; emit a truncation marker once we hit it.
 			remaining := cap - sent
 			if remaining <= 0 {
-				return sink.Truncated(stream)
+				return true, sink.Truncated(stream)
 			}
 			out := buf[:n]
-			truncated := false
+			hit := false
 			if n > remaining {
 				out = buf[:remaining]
-				truncated = true
+				hit = true
 			}
 			if cerr := sink.Chunk(stream, out); cerr != nil {
-				return cerr
+				return true, cerr
 			}
 			sent += len(out)
-			if truncated {
-				return sink.Truncated(stream)
+			if hit {
+				return true, sink.Truncated(stream)
 			}
 		}
-		if err == io.EOF {
-			return nil
+		if rerr == io.EOF {
+			return false, nil
 		}
-		if err != nil {
-			return fmt.Errorf("session: read %s: %w", stream, err)
+		if rerr != nil {
+			return true, fmt.Errorf("session: read %s: %w", stream, rerr)
 		}
 	}
 }
@@ -89,27 +91,79 @@ func pump(ctx context.Context, sink ExecSink, stream string, r io.Reader, chunk,
 // the exit code. Concurrency keeps a chatty stderr from blocking stdout (and
 // vice versa) while both stay individually bounded.
 func streamExec(ctx context.Context, sink ExecSink, es runtime.ExecStream, chunk, cap int) error {
+	// Always release the exec context on return (idempotent with the early cancel
+	// below). On the clean path this fires only AFTER Wait, so it never turns a
+	// clean exit into a kill.
+	if es.Cancel != nil {
+		defer es.Cancel()
+	}
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
-	setErr := func(e error) {
-		if e == nil {
-			return
+	// earlyStop KILLS the process the INSTANT either pump early-stops (cap hit or
+	// read error), from inside that pump's own goroutine — NOT after wg.Wait().
+	// This is essential: if stdout truncates while the process floods it, the
+	// process blocks in write() and never exits, so it never closes stderr; the
+	// stderr pump would then Read-block forever and wg.Wait() would hang before any
+	// post-join cancel could run. Killing immediately closes ALL the process's
+	// pipes, unblocking the sibling pump so wg.Wait() completes. Idempotent, so
+	// both pumps racing to call it is fine; the clean under-cap path never calls it,
+	// preserving the real exit code.
+	earlyStop := func() {
+		if es.Cancel != nil {
+			es.Cancel()
 		}
-		mu.Lock()
-		if firstErr == nil {
-			firstErr = e
+	}
+	setResult := func(tr bool, e error) {
+		if tr {
+			earlyStop()
 		}
-		mu.Unlock()
+		if e != nil {
+			mu.Lock()
+			if firstErr == nil {
+				firstErr = e
+			}
+			mu.Unlock()
+		}
 	}
 
 	wg.Add(2)
-	go func() { defer wg.Done(); setErr(pump(ctx, sink, StreamStdout, es.Stdout, chunk, cap)) }()
-	go func() { defer wg.Done(); setErr(pump(ctx, sink, StreamStderr, es.Stderr, chunk, cap)) }()
+	go func() { defer wg.Done(); setResult(pump(ctx, sink, StreamStdout, es.Stdout, chunk, cap)) }()
+	go func() { defer wg.Done(); setResult(pump(ctx, sink, StreamStderr, es.Stderr, chunk, cap)) }()
 	wg.Wait()
 
+	// Both pumps have returned (any early-stop already killed the process above, so
+	// no pump could be blocked). Drain any unread bytes so cmd.Wait() sees both
+	// pipes at EOF (os/exec pipe contract) and returns without leaking the
+	// process/goroutine/fds. On the clean path both readers are already at EOF, so
+	// this is a no-op.
+	drain(es.Stdout)
+	drain(es.Stderr)
+
+	// Reap the process on EVERY path (even on error) so nothing is left running.
+	code := es.ExitCode
+	if es.Wait != nil {
+		c, werr := es.Wait()
+		if firstErr == nil {
+			firstErr = werr
+		}
+		code = c
+	}
 	if firstErr != nil {
 		return firstErr
 	}
-	return sink.Exit(es.ExitCode)
+	// The exit code is delivered LAST, after both streams are drained. A truncation-
+	// killed exec surfaces the kill via code (exit -1), never a misleading 0.
+	return sink.Exit(code)
+}
+
+// drain discards any remaining bytes from r to EOF. After the process is killed
+// its pipes reach EOF promptly, so this unblocks and returns; on the clean path r
+// is already at EOF. A nil reader is a no-op.
+func drain(r io.Reader) {
+	if r == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, r)
 }

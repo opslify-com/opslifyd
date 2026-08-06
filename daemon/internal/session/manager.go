@@ -292,6 +292,24 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		return nil, fmt.Errorf("session: create sandbox: %w", err)
 	}
 
+	// Start the container so its idle entrypoint (sleep infinity) actually runs.
+	// This is the shared start step for BOTH on-demand and warm sessions, so they
+	// are identical up to the warm pool's extra pause: `podman exec` (on-demand)
+	// and `podman pause` (warm freeze) each require a RUNNING container, which a
+	// bare `podman create` does not provide. We start explicitly here (rather than
+	// lazily on first exec) so the two paths stay consistent and the warm freeze
+	// has something to pause. It fails CLOSED: an unstartable container is
+	// unusable, so we destroy it rather than serve/warm a dead sandbox. Optional
+	// Starter seam: a runtime (or fake) that does not implement it yields a
+	// created-but-not-started container, preserving F0.3 unit behavior.
+	if st, ok := rt.(runtime.Starter); ok {
+		if err := st.Start(ctx, handle); err != nil {
+			_ = rt.Destroy(ctx, handle)
+			m.cleanupWorkspace(wsDir)
+			return nil, fmt.Errorf("session: start sandbox: %w", err)
+		}
+	}
+
 	s := &Session{
 		ID:           id,
 		Mode:         mode,
