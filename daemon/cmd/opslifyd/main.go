@@ -19,6 +19,7 @@ import (
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/session"
+	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
 
@@ -54,7 +55,14 @@ func run() error {
 		return err
 	}
 
-	mgr, err := buildSessionManager(cfg, log)
+	// Wire F1.4 default-deny egress. Prefer real nftables enforcement; if the host
+	// lacks nft/root, fall back to an UNENFORCED Noop with a prominent warning
+	// rather than refusing every session (a dev-ergonomics vs. fail-closed trade-off
+	// made LOUD, never silent). The controller resolves the allowlist and pins IPs.
+	egressCtl, egressStop := buildEgress(cfg, log)
+	defer egressStop()
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl)
 	if err != nil {
 		return err
 	}
@@ -95,7 +103,7 @@ func run() error {
 // hard-spec resource caps (pids 256, mem 2G, cpu 2) so no session is unbounded,
 // derives the state dir alongside the workspace root (durable across restarts
 // for orphan reconciliation), and parses the configured idle TTL.
-func buildSessionManager(cfg install.Config, log *slog.Logger) (*session.Manager, error) {
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -113,8 +121,31 @@ func buildSessionManager(cfg install.Config, log *slog.Logger) (*session.Manager
 			WarmPoolSize:        cfg.WarmPoolSize,
 			WarmPoolConcurrency: cfg.WarmPoolConcurrency,
 		},
+		Egress: egressCtl,
 		Logger: log,
 	})
+}
+
+// buildEgress wires the F1.4 egress controller from the configured allowlist. It
+// returns the Controller the Manager calls plus a stop func to run on shutdown.
+// When nftables cannot be programmed here (no nft binary / not root), it degrades
+// to an UNENFORCED egress.Noop and warns loudly — the daemon stays usable in dev
+// while making the missing enforcement impossible to miss in the logs.
+func buildEgress(cfg install.Config, log *slog.Logger) (egress.Controller, func()) {
+	ctl := egress.NewController(egress.Config{
+		Allowlist: cfg.EgressAllowlist,
+		Logger:    log,
+	})
+	if err := ctl.Available(); err != nil {
+		log.Warn("EGRESS NOT ENFORCED: nftables unavailable; sandboxes will have UNCONSTRAINED network. Run the daemon as root with nft installed for default-deny egress.", "err", err)
+		return egress.Noop{}, func() {}
+	}
+	if err := ctl.Start(context.Background()); err != nil {
+		log.Warn("egress: controller failed to start; falling back to unenforced Noop", "err", err)
+		return egress.Noop{}, func() {}
+	}
+	log.Info("egress: default-deny enforcement active (nftables)", "allowlist_entries", len(cfg.EgressAllowlist))
+	return ctl, ctl.Close
 }
 
 func orDefault(v, def string) string {

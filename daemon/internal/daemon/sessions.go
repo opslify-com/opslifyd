@@ -219,6 +219,8 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
 	case errors.Is(err, session.ErrRuntimeUnavailable):
 		writeAPIError(w, http.StatusServiceUnavailable, "runtime", err.Error())
+	case errors.Is(err, session.ErrEgress):
+		writeAPIError(w, http.StatusServiceUnavailable, "egress", err.Error())
 	default:
 		writeAPIError(w, http.StatusInternalServerError, "sandbox", err.Error())
 	}
