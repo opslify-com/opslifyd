@@ -8,10 +8,17 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 // The external tools (devbox/nix, syft, cosign) sit behind these narrow
@@ -47,59 +54,146 @@ type Signer interface {
 }
 
 // ---------------------------------------------------------------------------
-// tarBaker — pure-Go, deterministic, content-addressed layer packer.
+// Layer packing — deterministic tar + real OCI layer (go-containerregistry).
 // ---------------------------------------------------------------------------
 
-// tarBaker walks closurePath and emits a deterministic tar (entries sorted,
-// mtimes/uids/gids zeroed) so the same closure always hashes to the same
-// digest. Uncompressed tar is used deliberately: gzip embeds a timestamp/OS
-// byte that would break content-addressing. P1 swaps this for a full
-// go-containerregistry OCI layer; the content-addressing contract is identical.
-type tarBaker struct{}
-
-func (tarBaker) BuildLayer(_ context.Context, closurePath string, _ ToolSelection) ([]byte, error) {
-	var files []string
-	err := filepath.WalkDir(closurePath, func(p string, d fs.DirEntry, err error) error {
+// deterministicClosureTar walks closurePath and emits a reproducible, ordered
+// tar of the WHOLE tree: directories, regular files, AND symlinks (targets
+// preserved). A Nix closure is a symlink farm, so dropping symlinks/dirs would
+// produce a non-functional layer — all three entry kinds are packed. All
+// entries are sorted and their mtime/uid/gid/uname/gname zeroed so the same
+// closure always produces byte-identical tar output (content-addressing).
+func deterministicClosureTar(closurePath string) ([]byte, error) {
+	var paths []string
+	err := filepath.WalkDir(closurePath, func(p string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.Type().IsRegular() {
-			files = append(files, p)
-		}
+		paths = append(paths, p)
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("env: walk closure: %w", err)
 	}
-	sort.Strings(files)
+	sort.Strings(paths)
 
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	for _, p := range files {
+	for _, p := range paths {
 		rel, err := filepath.Rel(closurePath, p)
 		if err != nil {
 			return nil, fmt.Errorf("env: relpath: %w", err)
 		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return nil, fmt.Errorf("env: read closure file: %w", err)
+		if rel == "." {
+			continue // don't emit the root itself
 		}
-		hdr := &tar.Header{
-			Name: filepath.ToSlash(rel),
-			Mode: 0o444, // read-only toolchain
-			Size: int64(len(data)),
+		name := filepath.ToSlash(rel)
+		// Lstat so symlinks are described, never followed.
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, fmt.Errorf("env: lstat closure entry: %w", err)
+		}
+		hdr := &tar.Header{Name: name}
+		switch {
+		case info.IsDir():
+			hdr.Typeflag = tar.TypeDir
+			hdr.Name = name + "/"
+			hdr.Mode = 0o555 // read-only, traversable
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(p)
+			if err != nil {
+				return nil, fmt.Errorf("env: readlink: %w", err)
+			}
+			hdr.Typeflag = tar.TypeSymlink
+			hdr.Linkname = filepath.ToSlash(target)
+			hdr.Mode = 0o777
+		case info.Mode().IsRegular():
+			hdr.Typeflag = tar.TypeReg
+			hdr.Mode = 0o444 // read-only toolchain
+			hdr.Size = info.Size()
+		default:
+			// Skip sockets/devices/pipes: never valid in a toolchain layer.
+			continue
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return nil, fmt.Errorf("env: tar header: %w", err)
 		}
-		if _, err := tw.Write(data); err != nil {
-			return nil, fmt.Errorf("env: tar write: %w", err)
+		if hdr.Typeflag == tar.TypeReg {
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return nil, fmt.Errorf("env: read closure file: %w", err)
+			}
+			if _, err := tw.Write(data); err != nil {
+				return nil, fmt.Errorf("env: tar write: %w", err)
+			}
 		}
 	}
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("env: tar close: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// ociBaker assembles a real OCI layer with go-containerregistry
+// (github.com/google/go-containerregistry, Apache-2.0 — the only external Go
+// dep, chosen because it is the canonical OCI layer/image builder and lets us
+// mount the toolchain onto a digest-pinned base). It returns the compressed
+// layer blob bytes; the returned bytes' sha256 IS the OCI layer digest, so the
+// builder's content-address (digestSHA256) matches the layer's own digest and
+// Verify can re-derive it from stored bytes. gzip via stdlib zeroes its
+// timestamp, so the blob is reproducible.
+//
+// When sel.BaseImageDigest is set (a full "repo@sha256:..." ref) the toolchain
+// layer is appended onto that digest-pinned base, realising the chain of trust
+// base(signed) -> toolchain(signed). An empty BaseImageDigest uses an empty
+// base image (offline/unit path) and still yields a valid single-layer image.
+type ociBaker struct{}
+
+func (ociBaker) BuildLayer(ctx context.Context, closurePath string, sel ToolSelection) ([]byte, error) {
+	tarBytes, err := deterministicClosureTar(closurePath)
+	if err != nil {
+		return nil, err
+	}
+	layer, err := tarball.LayerFromOpener(
+		func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(tarBytes)), nil },
+	)
+	if err != nil {
+		return nil, fmt.Errorf("env: build oci layer: %w", err)
+	}
+
+	// Assemble the image (base + toolchain) to realise and validate the OCI
+	// chain of trust. The image is realised so a broken base ref fails here.
+	base := empty.Image
+	if d := normalizeSelection(sel).BaseImageDigest; d != "" {
+		ref, err := name.NewDigest(d)
+		if err != nil {
+			return nil, fmt.Errorf("env: base image must be digest-pinned (repo@sha256:...): %w", err)
+		}
+		base, err = remote.Image(ref, remote.WithContext(ctx))
+		if err != nil {
+			return nil, fmt.Errorf("env: pull digest-pinned base: %w", err)
+		}
+	}
+	img, err := mutate.AppendLayers(base, layer)
+	if err != nil {
+		return nil, fmt.Errorf("env: append toolchain layer: %w", err)
+	}
+	if _, err := img.Digest(); err != nil { // force realisation
+		return nil, fmt.Errorf("env: realise oci image: %w", err)
+	}
+
+	// Return the compressed layer blob: its digest is the content-addressed
+	// toolchain layer digest the sandbox mounts and the daemon verifies.
+	rc, err := layer.Compressed()
+	if err != nil {
+		return nil, fmt.Errorf("env: open layer blob: %w", err)
+	}
+	defer rc.Close()
+	blob, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("env: read layer blob: %w", err)
+	}
+	return blob, nil
 }
 
 // ---------------------------------------------------------------------------

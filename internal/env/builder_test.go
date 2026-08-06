@@ -1,8 +1,11 @@
 package env
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -259,17 +262,97 @@ outer:
 	return -1
 }
 
-// tarBaker determinism at the packer level, independent of the builder.
-func TestTarBaker_Deterministic(t *testing.T) {
+// ociBaker determinism at the packer level, independent of the builder.
+func TestOCIBaker_Deterministic(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "a"), []byte("aaa"), 0o600)
 	os.WriteFile(filepath.Join(dir, "b"), []byte("bbb"), 0o600)
-	l1, err := tarBaker{}.BuildLayer(context.Background(), dir, ToolSelection{})
+	l1, err := ociBaker{}.BuildLayer(context.Background(), dir, ToolSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	l2, _ := tarBaker{}.BuildLayer(context.Background(), dir, ToolSelection{})
-	if digestSHA256(l1) != digestSHA256(l2) {
-		t.Fatal("tar not deterministic")
+	l2, err := ociBaker{}.BuildLayer(context.Background(), dir, ToolSelection{})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if digestSHA256(l1) != digestSHA256(l2) {
+		t.Fatal("oci layer not deterministic")
+	}
+}
+
+// A Nix closure is a symlink farm: the layer MUST contain directories and
+// symlinks (targets preserved), not just regular files — and stay reproducible.
+func TestClosureTar_IncludesDirsAndSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	// nested dir + regular file
+	nested := filepath.Join(dir, "nix", "store", "abc-jq", "bin")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realBin := filepath.Join(nested, "jq")
+	if err := os.WriteFile(realBin, []byte("ELF-ish"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// symlink farm entry: /bin/jq -> ../nix/store/abc-jq/bin/jq
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkTarget := "../nix/store/abc-jq/bin/jq"
+	if err := os.Symlink(linkTarget, filepath.Join(binDir, "jq")); err != nil {
+		t.Fatal(err)
+	}
+
+	tarBytes, err := deterministicClosureTar(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	names := map[string]*tar.Header{}
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names[hdr.Name] = hdr
+	}
+	// directory present
+	if h, ok := names["nix/"]; !ok || h.Typeflag != tar.TypeDir {
+		t.Fatalf("directory 'nix/' missing or not a dir: %+v", names)
+	}
+	if h, ok := names["nix/store/abc-jq/bin/"]; !ok || h.Typeflag != tar.TypeDir {
+		t.Fatal("nested directory missing")
+	}
+	// symlink present with target preserved
+	link, ok := names["bin/jq"]
+	if !ok {
+		t.Fatalf("symlink 'bin/jq' missing; entries: %v", keysOf(names))
+	}
+	if link.Typeflag != tar.TypeSymlink || link.Linkname != linkTarget {
+		t.Fatalf("symlink not preserved: type=%d target=%q", link.Typeflag, link.Linkname)
+	}
+	// regular file present
+	if h, ok := names["nix/store/abc-jq/bin/jq"]; !ok || h.Typeflag != tar.TypeReg {
+		t.Fatal("regular file missing")
+	}
+	// reproducible across two runs
+	again, err := deterministicClosureTar(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digestSHA256(tarBytes) != digestSHA256(again) {
+		t.Fatal("closure tar not reproducible across runs")
+	}
+}
+
+func keysOf(m map[string]*tar.Header) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

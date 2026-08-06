@@ -65,7 +65,7 @@ func New(opts Options) (*NixEnvBuilder, error) {
 		WarnFunc: opts.WarnFunc,
 	}
 	if b.baker == nil {
-		b.baker = tarBaker{}
+		b.baker = ociBaker{}
 	}
 	if b.composer == nil {
 		b.composer = devboxComposer{}
