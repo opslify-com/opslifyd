@@ -1,0 +1,1395 @@
+{
+  "generated_by": "spec/tools/specgraph.py",
+  "note": "Deterministic \u2014 regenerated from spec files. Do not hand-edit.",
+  "phases": {
+    "P0": {
+      "phase": "P0",
+      "depends_on": [],
+      "depends_on_phases": [],
+      "source": "spec/phases/p0-scaffold/README.md"
+    },
+    "P1": {
+      "phase": "P1",
+      "depends_on": [
+        "F0.1",
+        "F0.2",
+        "F0.3"
+      ],
+      "depends_on_phases": [
+        "P0"
+      ],
+      "source": "spec/phases/p1-sandbox/README.md"
+    },
+    "P2": {
+      "phase": "P2",
+      "depends_on": [
+        "F1.2"
+      ],
+      "depends_on_phases": [
+        "P1"
+      ],
+      "source": "spec/phases/p2-mcp/README.md"
+    },
+    "P3": {
+      "phase": "P3",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P2"
+      ],
+      "source": "spec/phases/p3-audit-ui/README.md"
+    },
+    "P4": {
+      "phase": "P4",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P3"
+      ],
+      "source": "spec/phases/p4-policy/README.md"
+    },
+    "P5": {
+      "phase": "P5",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P4"
+      ],
+      "source": "spec/phases/p5-broker/README.md"
+    },
+    "P6": {
+      "phase": "P6",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P5",
+        "P4"
+      ],
+      "source": "spec/phases/p6-compliance/README.md"
+    }
+  },
+  "nodes": [
+    {
+      "id": "F0.1",
+      "phase": "P0",
+      "title": "Interactive install & tool selection",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F0.2"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F1.1"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p0-scaffold/features/F0.1-install-tool-selection.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F0.2"
+      ]
+    },
+    {
+      "id": "F0.2",
+      "phase": "P0",
+      "title": "Nix build-time environment composer",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [],
+      "depends_on_phases": [],
+      "blocks": [
+        "F0.1",
+        "F1.2"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p0-scaffold/features/F0.2-nix-env-composer.md",
+      "detailed": true,
+      "depends_on_resolved": []
+    },
+    {
+      "id": "F0.3",
+      "phase": "P0",
+      "title": "Runtime & location abstraction",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [],
+      "depends_on_phases": [],
+      "blocks": [
+        "F1.2"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p0-scaffold/features/F0.3-runtime-location-abstraction.md",
+      "detailed": true,
+      "depends_on_resolved": []
+    },
+    {
+      "id": "F1.1",
+      "phase": "P1",
+      "title": "Daemon bootstrap & REST API",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P0"
+      ],
+      "blocks": [
+        "F1.2"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p1-sandbox/features/F1.1-daemon-bootstrap.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F0.1",
+        "F0.2",
+        "F0.3"
+      ]
+    },
+    {
+      "id": "F1.2",
+      "phase": "P1",
+      "title": "Session lifecycle API",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F1.1",
+        "F0.2",
+        "F0.3"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F1.3",
+        "F1.4",
+        "F1.5"
+      ],
+      "blocks_phases": [
+        "P2"
+      ],
+      "source": "spec/phases/p1-sandbox/features/F1.2-session-lifecycle.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F0.2",
+        "F0.3",
+        "F1.1"
+      ]
+    },
+    {
+      "id": "F1.3",
+      "phase": "P1",
+      "title": "Warm pool",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F1.2"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p1-sandbox/features/F1.3-warm-pool.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F1.2"
+      ]
+    },
+    {
+      "id": "F1.4",
+      "phase": "P1",
+      "title": "Default-deny egress + DNS pinning",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F1.2"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p1-sandbox/features/F1.4-egress-dns-pinning.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F1.2"
+      ]
+    },
+    {
+      "id": "F1.5",
+      "phase": "P1",
+      "title": "CLI + public escape suite",
+      "status": "todo",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F1.2"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p1-sandbox/features/F1.5-cli-escape-suite.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F1.2"
+      ]
+    },
+    {
+      "id": "F2.1",
+      "phase": "P2",
+      "title": "MCP tools",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [
+        "F1.2"
+      ],
+      "depends_on_phases": [
+        "P1"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p2-mcp/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F1.1",
+        "F1.2",
+        "F1.3",
+        "F1.4",
+        "F1.5"
+      ]
+    },
+    {
+      "id": "F2.2",
+      "phase": "P2",
+      "title": "Session modes",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [
+        "F1.2"
+      ],
+      "depends_on_phases": [
+        "P1"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p2-mcp/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F1.1",
+        "F1.2",
+        "F1.3",
+        "F1.4",
+        "F1.5"
+      ]
+    },
+    {
+      "id": "F2.3",
+      "phase": "P2",
+      "title": "Claude Code quickstart",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [
+        "F1.2"
+      ],
+      "depends_on_phases": [
+        "P1"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p2-mcp/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F1.1",
+        "F1.2",
+        "F1.3",
+        "F1.4",
+        "F1.5"
+      ]
+    },
+    {
+      "id": "F3.1",
+      "phase": "P3",
+      "title": "Trace events (schema v1)",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P2"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p3-audit-ui/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F2.1",
+        "F2.2",
+        "F2.3"
+      ]
+    },
+    {
+      "id": "F3.2",
+      "phase": "P3",
+      "title": "Transport",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P2"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p3-audit-ui/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F2.1",
+        "F2.2",
+        "F2.3"
+      ]
+    },
+    {
+      "id": "F3.3",
+      "phase": "P3",
+      "title": "Redaction v1",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P2"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p3-audit-ui/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F2.1",
+        "F2.2",
+        "F2.3"
+      ]
+    },
+    {
+      "id": "F3.4",
+      "phase": "P3",
+      "title": "Cloud dashboard",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P2"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p3-audit-ui/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F2.1",
+        "F2.2",
+        "F2.3"
+      ]
+    },
+    {
+      "id": "F3.5",
+      "phase": "P3",
+      "title": "Local UI (daemon-served, no cloud) \u2b50",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P2"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p3-audit-ui/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F2.1",
+        "F2.2",
+        "F2.3"
+      ]
+    },
+    {
+      "id": "F4.1",
+      "phase": "P4",
+      "title": "`opslify.policy.yaml`",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P3"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p4-policy/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F3.1",
+        "F3.2",
+        "F3.3",
+        "F3.4",
+        "F3.5"
+      ]
+    },
+    {
+      "id": "F4.2",
+      "phase": "P4",
+      "title": "Enforcement points",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P3"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p4-policy/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F3.1",
+        "F3.2",
+        "F3.3",
+        "F3.4",
+        "F3.5"
+      ]
+    },
+    {
+      "id": "F4.3",
+      "phase": "P4",
+      "title": "Approval gates",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P3"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p4-policy/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F3.1",
+        "F3.2",
+        "F3.3",
+        "F3.4",
+        "F3.5"
+      ]
+    },
+    {
+      "id": "F4.4",
+      "phase": "P4",
+      "title": "Dry-run interception",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P3"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p4-policy/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F3.1",
+        "F3.2",
+        "F3.3",
+        "F3.4",
+        "F3.5"
+      ]
+    },
+    {
+      "id": "F5.1",
+      "phase": "P5",
+      "title": "Executor-side credential injection (primary model)",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4"
+      ]
+    },
+    {
+      "id": "F5.2",
+      "phase": "P5",
+      "title": "L7 egress proxy (Rust) \u2014 *research-flagged as hardest*",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4"
+      ]
+    },
+    {
+      "id": "F5.3",
+      "phase": "P5",
+      "title": "Tier 1 adapters",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4"
+      ]
+    },
+    {
+      "id": "F5.4",
+      "phase": "P5",
+      "title": "Tier 2 OAuth2",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4"
+      ]
+    },
+    {
+      "id": "F5.5",
+      "phase": "P5",
+      "title": "Tier 3 vault + package registry proxy",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4"
+      ]
+    },
+    {
+      "id": "F5.6",
+      "phase": "P5",
+      "title": "SecretBackend interface + audit",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4"
+      ]
+    },
+    {
+      "id": "F6.1",
+      "phase": "P6",
+      "title": "Compliance evidence packs (MONETIZATION HERO)",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P5",
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p6-compliance/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4",
+        "F5.1",
+        "F5.2",
+        "F5.3",
+        "F5.4",
+        "F5.5",
+        "F5.6"
+      ]
+    },
+    {
+      "id": "F6.2",
+      "phase": "P6",
+      "title": "Cloud-microvm tier (paid managed)",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P5",
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p6-compliance/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4",
+        "F5.1",
+        "F5.2",
+        "F5.3",
+        "F5.4",
+        "F5.5",
+        "F5.6"
+      ]
+    },
+    {
+      "id": "F6.3",
+      "phase": "P6",
+      "title": "Isolation tiers formalized",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P5",
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p6-compliance/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4",
+        "F5.1",
+        "F5.2",
+        "F5.3",
+        "F5.4",
+        "F5.5",
+        "F5.6"
+      ]
+    },
+    {
+      "id": "F6.4",
+      "phase": "P6",
+      "title": "Distribution",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P5",
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p6-compliance/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4",
+        "F5.1",
+        "F5.2",
+        "F5.3",
+        "F5.4",
+        "F5.5",
+        "F5.6"
+      ]
+    },
+    {
+      "id": "F6.5",
+      "phase": "P6",
+      "title": "Docs & threat-model whitepaper",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P5",
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p6-compliance/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4",
+        "F5.1",
+        "F5.2",
+        "F5.3",
+        "F5.4",
+        "F5.5",
+        "F5.6"
+      ]
+    },
+    {
+      "id": "F6.6",
+      "phase": "P6",
+      "title": "Beta",
+      "status": "spec-level",
+      "owner": "",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P5",
+        "P4"
+      ],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p6-compliance/README.md",
+      "detailed": false,
+      "depends_on_resolved": [
+        "F4.1",
+        "F4.2",
+        "F4.3",
+        "F4.4",
+        "F5.1",
+        "F5.2",
+        "F5.3",
+        "F5.4",
+        "F5.5",
+        "F5.6"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "F0.2",
+      "to": "F0.1"
+    },
+    {
+      "from": "F0.1",
+      "to": "F1.1"
+    },
+    {
+      "from": "F0.2",
+      "to": "F1.1"
+    },
+    {
+      "from": "F0.3",
+      "to": "F1.1"
+    },
+    {
+      "from": "F0.2",
+      "to": "F1.2"
+    },
+    {
+      "from": "F0.3",
+      "to": "F1.2"
+    },
+    {
+      "from": "F1.1",
+      "to": "F1.2"
+    },
+    {
+      "from": "F1.2",
+      "to": "F1.3"
+    },
+    {
+      "from": "F1.2",
+      "to": "F1.4"
+    },
+    {
+      "from": "F1.2",
+      "to": "F1.5"
+    },
+    {
+      "from": "F1.1",
+      "to": "F2.1"
+    },
+    {
+      "from": "F1.2",
+      "to": "F2.1"
+    },
+    {
+      "from": "F1.3",
+      "to": "F2.1"
+    },
+    {
+      "from": "F1.4",
+      "to": "F2.1"
+    },
+    {
+      "from": "F1.5",
+      "to": "F2.1"
+    },
+    {
+      "from": "F1.1",
+      "to": "F2.2"
+    },
+    {
+      "from": "F1.2",
+      "to": "F2.2"
+    },
+    {
+      "from": "F1.3",
+      "to": "F2.2"
+    },
+    {
+      "from": "F1.4",
+      "to": "F2.2"
+    },
+    {
+      "from": "F1.5",
+      "to": "F2.2"
+    },
+    {
+      "from": "F1.1",
+      "to": "F2.3"
+    },
+    {
+      "from": "F1.2",
+      "to": "F2.3"
+    },
+    {
+      "from": "F1.3",
+      "to": "F2.3"
+    },
+    {
+      "from": "F1.4",
+      "to": "F2.3"
+    },
+    {
+      "from": "F1.5",
+      "to": "F2.3"
+    },
+    {
+      "from": "F2.1",
+      "to": "F3.1"
+    },
+    {
+      "from": "F2.2",
+      "to": "F3.1"
+    },
+    {
+      "from": "F2.3",
+      "to": "F3.1"
+    },
+    {
+      "from": "F2.1",
+      "to": "F3.2"
+    },
+    {
+      "from": "F2.2",
+      "to": "F3.2"
+    },
+    {
+      "from": "F2.3",
+      "to": "F3.2"
+    },
+    {
+      "from": "F2.1",
+      "to": "F3.3"
+    },
+    {
+      "from": "F2.2",
+      "to": "F3.3"
+    },
+    {
+      "from": "F2.3",
+      "to": "F3.3"
+    },
+    {
+      "from": "F2.1",
+      "to": "F3.4"
+    },
+    {
+      "from": "F2.2",
+      "to": "F3.4"
+    },
+    {
+      "from": "F2.3",
+      "to": "F3.4"
+    },
+    {
+      "from": "F2.1",
+      "to": "F3.5"
+    },
+    {
+      "from": "F2.2",
+      "to": "F3.5"
+    },
+    {
+      "from": "F2.3",
+      "to": "F3.5"
+    },
+    {
+      "from": "F3.1",
+      "to": "F4.1"
+    },
+    {
+      "from": "F3.2",
+      "to": "F4.1"
+    },
+    {
+      "from": "F3.3",
+      "to": "F4.1"
+    },
+    {
+      "from": "F3.4",
+      "to": "F4.1"
+    },
+    {
+      "from": "F3.5",
+      "to": "F4.1"
+    },
+    {
+      "from": "F3.1",
+      "to": "F4.2"
+    },
+    {
+      "from": "F3.2",
+      "to": "F4.2"
+    },
+    {
+      "from": "F3.3",
+      "to": "F4.2"
+    },
+    {
+      "from": "F3.4",
+      "to": "F4.2"
+    },
+    {
+      "from": "F3.5",
+      "to": "F4.2"
+    },
+    {
+      "from": "F3.1",
+      "to": "F4.3"
+    },
+    {
+      "from": "F3.2",
+      "to": "F4.3"
+    },
+    {
+      "from": "F3.3",
+      "to": "F4.3"
+    },
+    {
+      "from": "F3.4",
+      "to": "F4.3"
+    },
+    {
+      "from": "F3.5",
+      "to": "F4.3"
+    },
+    {
+      "from": "F3.1",
+      "to": "F4.4"
+    },
+    {
+      "from": "F3.2",
+      "to": "F4.4"
+    },
+    {
+      "from": "F3.3",
+      "to": "F4.4"
+    },
+    {
+      "from": "F3.4",
+      "to": "F4.4"
+    },
+    {
+      "from": "F3.5",
+      "to": "F4.4"
+    },
+    {
+      "from": "F4.1",
+      "to": "F5.1"
+    },
+    {
+      "from": "F4.2",
+      "to": "F5.1"
+    },
+    {
+      "from": "F4.3",
+      "to": "F5.1"
+    },
+    {
+      "from": "F4.4",
+      "to": "F5.1"
+    },
+    {
+      "from": "F4.1",
+      "to": "F5.2"
+    },
+    {
+      "from": "F4.2",
+      "to": "F5.2"
+    },
+    {
+      "from": "F4.3",
+      "to": "F5.2"
+    },
+    {
+      "from": "F4.4",
+      "to": "F5.2"
+    },
+    {
+      "from": "F4.1",
+      "to": "F5.3"
+    },
+    {
+      "from": "F4.2",
+      "to": "F5.3"
+    },
+    {
+      "from": "F4.3",
+      "to": "F5.3"
+    },
+    {
+      "from": "F4.4",
+      "to": "F5.3"
+    },
+    {
+      "from": "F4.1",
+      "to": "F5.4"
+    },
+    {
+      "from": "F4.2",
+      "to": "F5.4"
+    },
+    {
+      "from": "F4.3",
+      "to": "F5.4"
+    },
+    {
+      "from": "F4.4",
+      "to": "F5.4"
+    },
+    {
+      "from": "F4.1",
+      "to": "F5.5"
+    },
+    {
+      "from": "F4.2",
+      "to": "F5.5"
+    },
+    {
+      "from": "F4.3",
+      "to": "F5.5"
+    },
+    {
+      "from": "F4.4",
+      "to": "F5.5"
+    },
+    {
+      "from": "F4.1",
+      "to": "F5.6"
+    },
+    {
+      "from": "F4.2",
+      "to": "F5.6"
+    },
+    {
+      "from": "F4.3",
+      "to": "F5.6"
+    },
+    {
+      "from": "F4.4",
+      "to": "F5.6"
+    },
+    {
+      "from": "F4.1",
+      "to": "F6.1"
+    },
+    {
+      "from": "F4.2",
+      "to": "F6.1"
+    },
+    {
+      "from": "F4.3",
+      "to": "F6.1"
+    },
+    {
+      "from": "F4.4",
+      "to": "F6.1"
+    },
+    {
+      "from": "F5.1",
+      "to": "F6.1"
+    },
+    {
+      "from": "F5.2",
+      "to": "F6.1"
+    },
+    {
+      "from": "F5.3",
+      "to": "F6.1"
+    },
+    {
+      "from": "F5.4",
+      "to": "F6.1"
+    },
+    {
+      "from": "F5.5",
+      "to": "F6.1"
+    },
+    {
+      "from": "F5.6",
+      "to": "F6.1"
+    },
+    {
+      "from": "F4.1",
+      "to": "F6.2"
+    },
+    {
+      "from": "F4.2",
+      "to": "F6.2"
+    },
+    {
+      "from": "F4.3",
+      "to": "F6.2"
+    },
+    {
+      "from": "F4.4",
+      "to": "F6.2"
+    },
+    {
+      "from": "F5.1",
+      "to": "F6.2"
+    },
+    {
+      "from": "F5.2",
+      "to": "F6.2"
+    },
+    {
+      "from": "F5.3",
+      "to": "F6.2"
+    },
+    {
+      "from": "F5.4",
+      "to": "F6.2"
+    },
+    {
+      "from": "F5.5",
+      "to": "F6.2"
+    },
+    {
+      "from": "F5.6",
+      "to": "F6.2"
+    },
+    {
+      "from": "F4.1",
+      "to": "F6.3"
+    },
+    {
+      "from": "F4.2",
+      "to": "F6.3"
+    },
+    {
+      "from": "F4.3",
+      "to": "F6.3"
+    },
+    {
+      "from": "F4.4",
+      "to": "F6.3"
+    },
+    {
+      "from": "F5.1",
+      "to": "F6.3"
+    },
+    {
+      "from": "F5.2",
+      "to": "F6.3"
+    },
+    {
+      "from": "F5.3",
+      "to": "F6.3"
+    },
+    {
+      "from": "F5.4",
+      "to": "F6.3"
+    },
+    {
+      "from": "F5.5",
+      "to": "F6.3"
+    },
+    {
+      "from": "F5.6",
+      "to": "F6.3"
+    },
+    {
+      "from": "F4.1",
+      "to": "F6.4"
+    },
+    {
+      "from": "F4.2",
+      "to": "F6.4"
+    },
+    {
+      "from": "F4.3",
+      "to": "F6.4"
+    },
+    {
+      "from": "F4.4",
+      "to": "F6.4"
+    },
+    {
+      "from": "F5.1",
+      "to": "F6.4"
+    },
+    {
+      "from": "F5.2",
+      "to": "F6.4"
+    },
+    {
+      "from": "F5.3",
+      "to": "F6.4"
+    },
+    {
+      "from": "F5.4",
+      "to": "F6.4"
+    },
+    {
+      "from": "F5.5",
+      "to": "F6.4"
+    },
+    {
+      "from": "F5.6",
+      "to": "F6.4"
+    },
+    {
+      "from": "F4.1",
+      "to": "F6.5"
+    },
+    {
+      "from": "F4.2",
+      "to": "F6.5"
+    },
+    {
+      "from": "F4.3",
+      "to": "F6.5"
+    },
+    {
+      "from": "F4.4",
+      "to": "F6.5"
+    },
+    {
+      "from": "F5.1",
+      "to": "F6.5"
+    },
+    {
+      "from": "F5.2",
+      "to": "F6.5"
+    },
+    {
+      "from": "F5.3",
+      "to": "F6.5"
+    },
+    {
+      "from": "F5.4",
+      "to": "F6.5"
+    },
+    {
+      "from": "F5.5",
+      "to": "F6.5"
+    },
+    {
+      "from": "F5.6",
+      "to": "F6.5"
+    },
+    {
+      "from": "F4.1",
+      "to": "F6.6"
+    },
+    {
+      "from": "F4.2",
+      "to": "F6.6"
+    },
+    {
+      "from": "F4.3",
+      "to": "F6.6"
+    },
+    {
+      "from": "F4.4",
+      "to": "F6.6"
+    },
+    {
+      "from": "F5.1",
+      "to": "F6.6"
+    },
+    {
+      "from": "F5.2",
+      "to": "F6.6"
+    },
+    {
+      "from": "F5.3",
+      "to": "F6.6"
+    },
+    {
+      "from": "F5.4",
+      "to": "F6.6"
+    },
+    {
+      "from": "F5.5",
+      "to": "F6.6"
+    },
+    {
+      "from": "F5.6",
+      "to": "F6.6"
+    }
+  ],
+  "topological_order": [
+    "F0.2",
+    "F0.3",
+    "F0.1",
+    "F1.1",
+    "F1.2",
+    "F1.3",
+    "F1.4",
+    "F1.5",
+    "F2.1",
+    "F2.2",
+    "F2.3",
+    "F3.1",
+    "F3.2",
+    "F3.3",
+    "F3.4",
+    "F3.5",
+    "F4.1",
+    "F4.2",
+    "F4.3",
+    "F4.4",
+    "F5.1",
+    "F5.2",
+    "F5.3",
+    "F5.4",
+    "F5.5",
+    "F5.6",
+    "F6.1",
+    "F6.2",
+    "F6.3",
+    "F6.4",
+    "F6.5",
+    "F6.6"
+  ],
+  "valid": true,
+  "errors": [],
+  "warnings": []
+}

@@ -1,0 +1,17 @@
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Build artifacts (populated once code lands)
+/bin/
+/dist/
+*.test
+
+# Local env / secrets — never commit
+*.env
+vault.db
+
+# Claude Code session state
+.claude/
