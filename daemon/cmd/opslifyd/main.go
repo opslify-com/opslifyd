@@ -11,11 +11,15 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
+	"github.com/opslify-com/opslifyd/internal/session"
+	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
 
 // version is overridable at build time via -ldflags "-X main.version=...".
@@ -50,11 +54,17 @@ func run() error {
 		return err
 	}
 
+	mgr, err := buildSessionManager(cfg, log)
+	if err != nil {
+		return err
+	}
+
 	d, err := daemon.New(daemon.Options{
 		Config:      cfg,
 		SocketPath:  *socketPath,
 		SocketGroup: *socketGroup,
 		Verifier:    verifier,
+		Sessions:    mgr,
 		Ready:       sdNotifyReady,
 		Version:     version,
 		Logger:      log,
@@ -67,7 +77,46 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// Reap any sandboxes orphaned by a previous daemon lifetime before serving,
+	// then run the TTL reaper for the duration; destroy live sessions on exit.
+	if _, err := mgr.Reconcile(ctx); err != nil {
+		return err
+	}
+	mgr.StartReaper(30 * time.Second)
+	defer mgr.Shutdown(context.Background())
+
 	return d.Run(ctx)
+}
+
+// buildSessionManager wires the F1.2 session manager from config. It applies the
+// hard-spec resource caps (pids 256, mem 2G, cpu 2) so no session is unbounded,
+// derives the state dir alongside the workspace root (durable across restarts
+// for orphan reconciliation), and parses the configured idle TTL.
+func buildSessionManager(cfg install.Config, log *slog.Logger) (*session.Manager, error) {
+	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
+	}
+	stateDir := filepath.Join(filepath.Dir(cfg.WorkspaceDir), "sessions")
+	return session.NewManager(session.Options{
+		Config: session.ManagerConfig{
+			Image:           cfg.Image,
+			ToolchainDigest: cfg.ToolchainDigest,
+			WorkspaceRoot:   cfg.WorkspaceDir,
+			StateDir:        stateDir,
+			DefaultTier:     runtime.Tier(cfg.Tier),
+			DefaultTTL:      ttl,
+			Limits:          runtime.ResourceLimits{MemoryBytes: 2 << 30, CPUs: 2, PidsLimit: 256},
+		},
+		Logger: log,
+	})
+}
+
+func orDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }
 
 // buildVerifier wires the production verify-before-serve gate from F0.2. If the

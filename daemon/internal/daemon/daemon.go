@@ -61,6 +61,10 @@ type Options struct {
 	Version string
 	// Logger receives structured startup/shutdown logs. nil => slog default.
 	Logger *slog.Logger
+	// Sessions is the F1.2 session manager backing the /v1/sessions routes. nil
+	// keeps the daemon at its F1.1 surface (health only) — the routes 404 —
+	// which is what F1.1-scope tests rely on.
+	Sessions SessionService
 }
 
 // Daemon is the running service. Construct with New; drive with Run (or the
@@ -73,6 +77,7 @@ type Daemon struct {
 	runtimeProbe func() error
 	ready        func()
 	log          *slog.Logger
+	sessions     SessionService
 
 	version  string
 	tier     string
@@ -94,6 +99,7 @@ func New(opts Options) (*Daemon, error) {
 		runtimeProbe: opts.RuntimeProbe,
 		ready:        opts.Ready,
 		log:          opts.Logger,
+		sessions:     opts.Sessions,
 		version:      orDefault(opts.Version, "dev"),
 		tier:         opts.Config.Tier,
 	}
