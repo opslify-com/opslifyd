@@ -103,14 +103,15 @@ func buildSessionManager(cfg install.Config, log *slog.Logger) (*session.Manager
 	stateDir := filepath.Join(filepath.Dir(cfg.WorkspaceDir), "sessions")
 	return session.NewManager(session.Options{
 		Config: session.ManagerConfig{
-			Image:           cfg.Image,
-			ToolchainDigest: cfg.ToolchainDigest,
-			WorkspaceRoot:   cfg.WorkspaceDir,
-			StateDir:        stateDir,
-			DefaultTier:     runtime.Tier(cfg.Tier),
-			DefaultTTL:      ttl,
-			Limits:          runtime.ResourceLimits{MemoryBytes: 2 << 30, CPUs: 2, PidsLimit: 256},
-			WarmPoolSize:    cfg.WarmPoolSize,
+			Image:               cfg.Image,
+			ToolchainDigest:     cfg.ToolchainDigest,
+			WorkspaceRoot:       cfg.WorkspaceDir,
+			StateDir:            stateDir,
+			DefaultTier:         runtime.Tier(cfg.Tier),
+			DefaultTTL:          ttl,
+			Limits:              runtime.ResourceLimits{MemoryBytes: 2 << 30, CPUs: 2, PidsLimit: 256},
+			WarmPoolSize:        cfg.WarmPoolSize,
+			WarmPoolConcurrency: cfg.WarmPoolConcurrency,
 		},
 		Logger: log,
 	})
