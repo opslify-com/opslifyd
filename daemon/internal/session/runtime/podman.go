@@ -1,0 +1,233 @@
+package runtime
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
+)
+
+// DefaultSeccompProfile is the path the hardened base points podman at for its
+// seccomp profile. It is emitted unconditionally so the syscall filter can
+// never be silently dropped by an impl (defense in code, not assumption). The
+// operator provisions the profile at this path; F1.2's escape suite asserts it
+// is enforced at runtime.
+const DefaultSeccompProfile = "/etc/opslify/seccomp.json"
+
+// SandboxUser is the non-root uid:gid the sandbox process runs as. Combined
+// with --userns=auto (host uid remap) the in-container root is never host root.
+const SandboxUser = "1000:1000"
+
+// commandRunner is the seam over the Podman CLI. Isolating command construction
+// behind it lets the argv/flag assembly and tier resolution be unit-tested with
+// no Podman/runsc installed (the valuable, testable core of F0.3); the real
+// impl is execRunner. Missing binaries surface as legible errors, never build
+// breaks.
+type commandRunner interface {
+	// run executes name with args and returns stdout. stderr is folded into the
+	// error (never a log sink) so failures name the failing binary without
+	// leaking output. No secrets are ever passed as args by this package.
+	run(ctx context.Context, name string, args ...string) ([]byte, error)
+	// lookup reports whether a binary is available, with a legible error if not.
+	lookup(name string) error
+}
+
+// execRunner is the production commandRunner: it shells out to the real binary.
+type execRunner struct{}
+
+func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("runtime: %s failed: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+func (execRunner) lookup(name string) error {
+	if _, err := exec.LookPath(name); err != nil {
+		return fmt.Errorf("runtime: %q not found on PATH: %w", name, err)
+	}
+	return nil
+}
+
+// podmanRuntime is the shared base for every local rung. RuncRuntime and
+// GvisorRuntime are thin configs over it — they differ ONLY in runtimeFlag
+// (runc vs runsc) and runtimeBinary (the extra binary Available() must probe).
+// All lifecycle logic (Create/Exec/Destroy/Snapshot) and, crucially, all
+// hardening lives here exactly once, so no impl can drift or forget a flag.
+type podmanRuntime struct {
+	// runtimeFlag is passed as `--runtime <flag>` to podman (runc | runsc).
+	runtimeFlag string
+	// runtimeBinary is the OCI-runtime binary Available() must probe in
+	// addition to podman. Empty means "bundled with podman, no extra probe"
+	// (runc). "runsc" for the gVisor rung.
+	runtimeBinary string
+	// tier records which rung this base serves (stamped onto handles).
+	tier Tier
+	// seccompProfile is the seccomp profile path emitted in the hardening set.
+	seccompProfile string
+	// runner is the command seam (execRunner in production; a fake in tests).
+	runner commandRunner
+}
+
+// hardeningFlags is the single source of truth for the sandbox hardening set.
+// Both local impls inherit it verbatim (see podmanRuntime.createArgs), so the
+// security posture can never be forgotten or weakened by one rung. It enforces,
+// in code (not by relying on engine defaults):
+//   - --cap-drop=ALL                     : drop every Linux capability
+//   - --security-opt=no-new-privileges   : no setuid/privilege escalation
+//   - --userns=auto                      : host uid remap (in-container root
+//     is an unprivileged host uid)
+//   - --user=1000:1000                   : run as non-root inside the container
+//   - --read-only                        : read-only rootfs (writable paths are
+//     explicit tmpfs/volumes only)
+//   - --security-opt=seccomp=<profile>   : explicit syscall filter
+func hardeningFlags(seccompProfile string) []string {
+	return []string{
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges",
+		"--userns=auto",
+		"--user=" + SandboxUser,
+		"--read-only",
+		"--security-opt=seccomp=" + seccompProfile,
+	}
+}
+
+// limitFlags renders resource limits to podman flags. Zero fields are omitted
+// (engine default). Kept separate from hardening so limits can vary per session
+// while the hardening set stays fixed.
+func limitFlags(l ResourceLimits) []string {
+	var args []string
+	if l.MemoryBytes > 0 {
+		args = append(args, "--memory", strconv.FormatInt(l.MemoryBytes, 10))
+	}
+	if l.CPUs > 0 {
+		args = append(args, "--cpus", strconv.FormatFloat(l.CPUs, 'f', -1, 64))
+	}
+	if l.PidsLimit > 0 {
+		args = append(args, "--pids-limit", strconv.FormatInt(l.PidsLimit, 10))
+	}
+	return args
+}
+
+// createArgs assembles the full `podman create` argv for a spec. This is the
+// security-critical assembly the unit tests pin: the runtime flag, the complete
+// hardening set, limits, mounts, image, and entrypoint — in a stable order.
+func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
+	args := []string{"create", "--runtime", r.runtimeFlag}
+	args = append(args, hardeningFlags(r.seccompProfile)...)
+	args = append(args, limitFlags(spec.Limits)...)
+	if spec.Name != "" {
+		args = append(args, "--name", spec.Name)
+	}
+	if spec.ToolchainDigest != "" {
+		// Signed F0.2 toolchain, mounted read-only. Never writable.
+		args = append(args, "--mount",
+			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,ro=true")
+	}
+	if spec.Workspace != "" {
+		// The one writable persistent path.
+		args = append(args, "--volume", spec.Workspace+":/workspace:rw")
+	}
+	args = append(args, spec.Image)
+	args = append(args, spec.Entrypoint...)
+	return args
+}
+
+// Create realises a container from the spec via `podman create`. It returns a
+// handle stamping the tier + OCI runtime actually used (for tracing). Full
+// lifecycle wiring (start, warm-pool claim) is F1.2; F0.3 provides the create
+// seam its tests pin.
+func (r *podmanRuntime) Create(ctx context.Context, spec SessionSpec) (ContainerHandle, error) {
+	out, err := r.runner.run(ctx, "podman", r.createArgs(spec)...)
+	if err != nil {
+		return ContainerHandle{}, fmt.Errorf("runtime: create container: %w", err)
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return ContainerHandle{}, fmt.Errorf("runtime: create container: engine returned empty id")
+	}
+	return ContainerHandle{ID: id, Tier: r.tier, Runtime: r.runtimeFlag}, nil
+}
+
+// execArgs assembles the `podman exec` argv for a request.
+func (r *podmanRuntime) execArgs(h ContainerHandle, req ExecRequest) []string {
+	args := []string{"exec"}
+	if req.Workdir != "" {
+		args = append(args, "--workdir", req.Workdir)
+	}
+	for _, e := range req.Env {
+		args = append(args, "--env", e)
+	}
+	args = append(args, h.ID)
+	args = append(args, req.Argv...)
+	return args
+}
+
+// Exec runs a command inside a created container. F0.3 returns a thin buffered
+// result; true streaming and a faithful exit code come in F1.2.
+func (r *podmanRuntime) Exec(ctx context.Context, h ContainerHandle, req ExecRequest) (ExecStream, error) {
+	if h.ID == "" {
+		return ExecStream{}, fmt.Errorf("runtime: exec: empty container handle")
+	}
+	if len(req.Argv) == 0 {
+		return ExecStream{}, fmt.Errorf("runtime: exec: empty argv")
+	}
+	out, err := r.runner.run(ctx, "podman", r.execArgs(h, req)...)
+	if err != nil {
+		return ExecStream{}, fmt.Errorf("runtime: exec in %s: %w", h.ID, err)
+	}
+	return ExecStream{
+		Stdout:   bytes.NewReader(out),
+		Stderr:   bytes.NewReader(nil),
+		ExitCode: 0,
+	}, nil
+}
+
+// Destroy removes a container and its anonymous volumes.
+func (r *podmanRuntime) Destroy(ctx context.Context, h ContainerHandle) error {
+	if h.ID == "" {
+		return fmt.Errorf("runtime: destroy: empty container handle")
+	}
+	if _, err := r.runner.run(ctx, "podman", "rm", "--force", "--volumes", h.ID); err != nil {
+		return fmt.Errorf("runtime: destroy container %s: %w", h.ID, err)
+	}
+	return nil
+}
+
+// Snapshot commits a container's filesystem to a named image (workspace mode).
+func (r *podmanRuntime) Snapshot(ctx context.Context, h ContainerHandle, name string) (ImageRef, error) {
+	if h.ID == "" {
+		return ImageRef{}, fmt.Errorf("runtime: snapshot: empty container handle")
+	}
+	if name == "" {
+		return ImageRef{}, fmt.Errorf("runtime: snapshot: empty image name")
+	}
+	out, err := r.runner.run(ctx, "podman", "commit", h.ID, name)
+	if err != nil {
+		return ImageRef{}, fmt.Errorf("runtime: snapshot container %s: %w", h.ID, err)
+	}
+	return ImageRef{Name: name, Digest: strings.TrimSpace(string(out))}, nil
+}
+
+// Available probes whether this runtime can actually run here: the podman
+// engine, plus (for the hardened rung) the extra OCI-runtime binary. Errors are
+// layer-tagged and actionable so callers can fall back down the ladder.
+func (r *podmanRuntime) Available() error {
+	if err := r.runner.lookup("podman"); err != nil {
+		return fmt.Errorf("runtime: podman engine unavailable: %w", err)
+	}
+	if r.runtimeBinary != "" {
+		if err := r.runner.lookup(r.runtimeBinary); err != nil {
+			return fmt.Errorf("runtime: OCI runtime %q unavailable "+
+				"(install gVisor/runsc, or fall back to tier local-docker): %w",
+				r.runtimeBinary, err)
+		}
+	}
+	return nil
+}
