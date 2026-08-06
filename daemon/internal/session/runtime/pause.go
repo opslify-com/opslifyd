@@ -25,9 +25,46 @@ type Pauser interface {
 	Unpause(ctx context.Context, h ContainerHandle) error
 }
 
-// Compile-time proof the local Podman base implements the optional capability.
-// The remote stub deliberately does not (its warm story is a P6 concern).
-var _ Pauser = (*podmanRuntime)(nil)
+// Starter is an OPTIONAL capability a Runtime may implement to START a
+// created-but-not-running container (podman start), running its idle entrypoint
+// (e.g. `sleep infinity`). It is the real-engine prerequisite for BOTH paths:
+//   - on-demand exec: `podman exec` requires a RUNNING container; a bare
+//     `podman create` leaves it in "created", so the first exec would fail.
+//   - warm-pool freeze: `podman pause` also requires a RUNNING container, so a
+//     warm container must be started before it can be paused (start→pause).
+//
+// Like Pauser it is kept OUT of the core Runtime interface (purely additive to
+// F0.3): a runtime that cannot start simply does not implement it and the
+// caller falls back to a created-but-not-started container (the F0.3 unit
+// behavior). The shared realize path type-asserts for it so on-demand and warm
+// sessions are started identically.
+type Starter interface {
+	// Start transitions a created container to running (podman start). It is the
+	// prerequisite for exec and for pause. Legible, layer-tagged errors.
+	Start(ctx context.Context, h ContainerHandle) error
+}
+
+// Compile-time proof the local Podman base implements the optional capabilities.
+// The remote stub deliberately does not (its warm/lifecycle story is a P6 concern).
+var (
+	_ Pauser  = (*podmanRuntime)(nil)
+	_ Starter = (*podmanRuntime)(nil)
+)
+
+// Start runs a created container's entrypoint via `podman start`. Idempotent
+// from the caller's view: starting an already-running container is surfaced as a
+// legible error, never a panic. The hardening posture is fixed at create time
+// (createArgs), so a started container carries exactly the cap-drop / seccomp /
+// userns set it was created with.
+func (r *podmanRuntime) Start(ctx context.Context, h ContainerHandle) error {
+	if h.ID == "" {
+		return fmt.Errorf("runtime: start: empty container handle")
+	}
+	if _, err := r.runner.run(ctx, "podman", "start", h.ID); err != nil {
+		return fmt.Errorf("runtime: start container %s: %w", h.ID, err)
+	}
+	return nil
+}
 
 // Pause freezes a container via `podman pause`. The hardening posture is
 // unchanged by a pause — the frozen container carries the exact same cap-drop /

@@ -111,5 +111,17 @@ func streamExec(ctx context.Context, sink ExecSink, es runtime.ExecStream, chunk
 	if firstErr != nil {
 		return firstErr
 	}
-	return sink.Exit(es.ExitCode)
+	// The exit code is delivered LAST, after both streams are fully drained. A
+	// streaming runtime sets Wait (the real code is not known until the process
+	// exits and is only safe to reap once the pipes are at EOF); a buffered result
+	// leaves Wait nil and carries a static ExitCode.
+	code := es.ExitCode
+	if es.Wait != nil {
+		c, err := es.Wait()
+		if err != nil {
+			return err
+		}
+		code = c
+	}
+	return sink.Exit(code)
 }

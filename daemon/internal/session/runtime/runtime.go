@@ -98,12 +98,27 @@ type ExecRequest struct {
 	Workdir string
 }
 
-// ExecStream is the result of an Exec. In F0.3 it is a thin, buffered result;
-// F1.2 replaces it with true streaming + a real exit code from the engine.
+// ExecStream is the result of an Exec. Stdout and Stderr are LIVE readers over
+// the container process's two output streams — the consumer (F1.2 streamExec)
+// pumps them concurrently and incrementally, so the runtime never accumulates
+// full output in memory (the OOM bound is enforced against these readers).
+//
+// ExitCode delivery: for a streaming runtime the real exit code is not known
+// until the process exits, which is only safe to reap AFTER both readers are
+// drained to EOF (os/exec pipe contract). Such a runtime therefore sets Wait —
+// the consumer calls it once, last, after draining both streams, to obtain the
+// faithful exit code (non-zero on command failure). When Wait is nil the static
+// ExitCode field is used instead (buffered results and the remote stub).
 type ExecStream struct {
-	Stdout   io.Reader
-	Stderr   io.Reader
+	Stdout io.Reader
+	Stderr io.Reader
+	// ExitCode is the exit code when Wait is nil (non-streaming results).
 	ExitCode int
+	// Wait, when non-nil, reaps the process and returns its real exit code. It
+	// MUST be called exactly once, after Stdout and Stderr have both been read to
+	// EOF. A non-zero exit is returned as (code, nil) — only a genuine failure to
+	// reap the process yields a non-nil error.
+	Wait func() (int, error)
 }
 
 // ImageRef points at a committed image (from Snapshot).

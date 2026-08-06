@@ -22,12 +22,16 @@ type poolRuntime struct {
 
 	mu           sync.Mutex
 	available    error
+	pauseErr     error // when set, Pause fails (drives safe-degradation test)
 	created      int
+	started      int
 	destroyed    int
 	paused       int
 	unpaused     int
 	specs        map[string]runtime.SessionSpec // by container id
 	pausedSet    map[string]bool                // currently-paused container ids
+	runningSet   map[string]bool                // currently-started (running) ids
+	ops          []string                       // ordered op log: "start:ID","pause:ID","unpause:ID"
 	destroyedIDs []string
 
 	inFlight int32
@@ -36,8 +40,9 @@ type poolRuntime struct {
 
 func newPoolRuntime() *poolRuntime {
 	return &poolRuntime{
-		specs:     map[string]runtime.SessionSpec{},
-		pausedSet: map[string]bool{},
+		specs:      map[string]runtime.SessionSpec{},
+		pausedSet:  map[string]bool{},
+		runningSet: map[string]bool{},
 	}
 }
 
@@ -85,9 +90,29 @@ func (r *poolRuntime) Available() error {
 	return r.available
 }
 
+// Start implements the optional runtime.Starter seam: a warm/on-demand container
+// must be RUNNING before pause (freeze) or exec.
+func (r *poolRuntime) Start(_ context.Context, h runtime.ContainerHandle) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.started++
+	r.runningSet[h.ID] = true
+	r.ops = append(r.ops, "start:"+h.ID)
+	return nil
+}
+
 func (r *poolRuntime) Pause(_ context.Context, h runtime.ContainerHandle) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.ops = append(r.ops, "pause:"+h.ID)
+	if r.pauseErr != nil {
+		return r.pauseErr
+	}
+	if !r.runningSet[h.ID] {
+		// Mirror a real engine: pausing a non-running container fails. A test that
+		// pauses without starting first would trip this.
+		return fmt.Errorf("cannot pause non-running container %s", h.ID)
+	}
 	r.paused++
 	r.pausedSet[h.ID] = true
 	return nil
@@ -98,8 +123,17 @@ func (r *poolRuntime) Unpause(_ context.Context, h runtime.ContainerHandle) erro
 	defer r.mu.Unlock()
 	r.unpaused++
 	delete(r.pausedSet, h.ID)
+	r.ops = append(r.ops, "unpause:"+h.ID)
 	return nil
 }
+
+func (r *poolRuntime) opLog() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ops...)
+}
+
+func (r *poolRuntime) startedCount() int { r.mu.Lock(); defer r.mu.Unlock(); return r.started }
 
 func (r *poolRuntime) counts() (created, destroyed, paused, unpaused int) {
 	r.mu.Lock()
@@ -444,5 +478,68 @@ func TestWarmPool_WrongRungFallsBackOnDemand(t *testing.T) {
 	// Pool for local-hardened is untouched (still 2).
 	if poolReadyLen(m.pool) != 2 {
 		t.Fatalf("pool disturbed by wrong-rung claim: %d", poolReadyLen(m.pool))
+	}
+}
+
+// FIX #2 (real-engine prereq): a warm container is STARTED then PAUSED (in that
+// order) when placed in the pool, and a claim UNPAUSES it. Proving start→pause
+// wiring is what makes `podman pause` valid on a live engine (pause needs a
+// running container).
+func TestWarmPool_StartThenPauseThenUnpauseOnClaim(t *testing.T) {
+	rt := newPoolRuntime()
+	m := newPoolManager(t, rt, 1, 1, "sha256:tool-A")
+	m.StartWarmPool()
+	defer m.Shutdown(context.Background())
+	waitFor(t, time.Second, "warm 1 ready", func() bool { return poolReadyLen(m.pool) == 1 })
+
+	// Exactly one start, and it precedes the pause for the same container.
+	if got := rt.startedCount(); got != 1 {
+		t.Fatalf("started = %d, want 1 (warm container must be started)", got)
+	}
+	ops := rt.opLog()
+	if len(ops) < 2 || !strings.HasPrefix(ops[0], "start:") || !strings.HasPrefix(ops[1], "pause:") {
+		t.Fatalf("warm lifecycle must be start then pause, got %v", ops)
+	}
+	if _, _, paused, _ := rt.counts(); paused != 1 {
+		t.Fatalf("paused = %d, want 1", paused)
+	}
+
+	// Claim thaws it: an unpause appears after the start/pause.
+	if _, err := m.Create(context.Background(), CreateRequest{Mode: ModeScratch}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	waitFor(t, time.Second, "unpause on claim", func() bool {
+		_, _, _, unpaused := rt.counts()
+		return unpaused == 1
+	})
+}
+
+// FIX #2 safe degradation (F1.3 invariant preserved): if pause FAILS, the warm
+// container is held unpaused-but-hardened — still published and still claimable,
+// with no leak. Correctness never depends on the freeze succeeding.
+func TestWarmPool_PauseFailureDegradesSafely(t *testing.T) {
+	rt := newPoolRuntime()
+	rt.pauseErr = fmt.Errorf("pause unsupported on this host")
+	m := newPoolManager(t, rt, 2, 2, "sha256:tool-A")
+	m.StartWarmPool()
+	defer m.Shutdown(context.Background())
+
+	// Despite pause failing, the pool still fills (containers are started &
+	// hardened, just not frozen) and nothing is leaked.
+	waitFor(t, time.Second, "fill despite pause failure", func() bool { return poolReadyLen(m.pool) == 2 })
+	if started := rt.startedCount(); started != 2 {
+		t.Fatalf("started = %d, want 2 (start must still happen)", started)
+	}
+	if _, _, paused, _ := rt.counts(); paused != 0 {
+		t.Fatalf("paused = %d, want 0 (pause failed)", paused)
+	}
+
+	// A claim still yields a ready, listable session (degraded but usable).
+	s, err := m.Create(context.Background(), CreateRequest{Mode: ModeScratch})
+	if err != nil {
+		t.Fatalf("Create after pause failure: %v", err)
+	}
+	if s.State != StateReady {
+		t.Fatalf("claimed session state = %s, want ready", s.State)
 	}
 }

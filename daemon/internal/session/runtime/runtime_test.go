@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -18,6 +19,13 @@ type fakeRunner struct {
 	missing  map[string]bool
 	lastName string
 	lastArgs []string
+
+	// Streaming seam doubles: stdout defaults to `out` so existing callers keep
+	// working; streamStderr/streamExit/streamWaitErr drive the streaming tests.
+	streamStderr   []byte
+	streamExit     int
+	streamWaitErr  error
+	streamStartErr error
 }
 
 func (f *fakeRunner) run(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -27,6 +35,19 @@ func (f *fakeRunner) run(_ context.Context, name string, args ...string) ([]byte
 		return nil, f.runErr
 	}
 	return f.out, nil
+}
+
+func (f *fakeRunner) stream(_ context.Context, name string, args ...string) (streamResult, error) {
+	f.lastName = name
+	f.lastArgs = args
+	if f.streamStartErr != nil {
+		return streamResult{}, f.streamStartErr
+	}
+	return streamResult{
+		stdout: bytes.NewReader(f.out),
+		stderr: bytes.NewReader(f.streamStderr),
+		wait:   func() (int, error) { return f.streamExit, f.streamWaitErr },
+	}, nil
 }
 
 func (f *fakeRunner) lookup(name string) error {
@@ -305,6 +326,76 @@ func TestExecArgsAndValidation(t *testing.T) {
 	if string(body) != "hello" {
 		t.Errorf("stream stdout = %q, want hello", body)
 	}
+}
+
+// --- FIX #1: Exec streams stdout+stderr separately and returns the real exit. -
+
+// stdout and stderr are delivered as DISTINCT readers (not folded together), and
+// Wait surfaces the process's real, non-zero exit code — proving the false-
+// success bug is gone and output is streamed, not buffered into one blob.
+func TestExecStreamsSeparateAndPropagatesExit(t *testing.T) {
+	f := &fakeRunner{
+		out:          []byte("OUT-DATA"),
+		streamStderr: []byte("ERR-DATA"),
+		streamExit:   42,
+	}
+	r := newGvisorRuntime(f)
+	es, err := r.Exec(context.Background(), ContainerHandle{ID: "c1"}, ExecRequest{Argv: []string{"false"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Separate streams: each reader carries only its own stream's bytes.
+	so, _ := io.ReadAll(es.Stdout)
+	se, _ := io.ReadAll(es.Stderr)
+	if string(so) != "OUT-DATA" {
+		t.Errorf("stdout = %q, want OUT-DATA", so)
+	}
+	if string(se) != "ERR-DATA" {
+		t.Errorf("stderr = %q, want ERR-DATA (must be a distinct reader, not empty/folded)", se)
+	}
+
+	// Real exit code delivered via Wait (called after streams are drained).
+	if es.Wait == nil {
+		t.Fatal("streaming Exec must set Wait for lazy exit-code delivery")
+	}
+	code, werr := es.Wait()
+	if werr != nil {
+		t.Fatalf("Wait err = %v, want nil (non-zero exit is not a wait failure)", werr)
+	}
+	if code != 42 {
+		t.Errorf("exit code = %d, want 42 (real code must propagate, not hardcoded 0)", code)
+	}
+}
+
+// A start failure from the seam surfaces legibly (no panic, layer-tagged).
+func TestExecStreamStartError(t *testing.T) {
+	f := &fakeRunner{streamStartErr: errors.New("boom")}
+	_, err := newRuncRuntime(f).Exec(context.Background(), ContainerHandle{ID: "c1"}, ExecRequest{Argv: []string{"ls"}})
+	if err == nil || !strings.Contains(err.Error(), "exec in c1") {
+		t.Errorf("stream start error must surface as an exec error, got %v", err)
+	}
+}
+
+// --- FIX #2: Start seam issues `podman start` and validates the handle. -------
+
+func TestStartArgsAndValidation(t *testing.T) {
+	f := &fakeRunner{}
+	r := newGvisorRuntime(f)
+
+	if err := r.Start(context.Background(), ContainerHandle{}); err == nil {
+		t.Error("start with empty handle must error")
+	}
+	if err := r.Start(context.Background(), ContainerHandle{ID: "c9"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.lastName != "podman" || strings.Join(f.lastArgs, " ") != "start c9" {
+		t.Errorf("start must invoke `podman start c9`, got %s %v", f.lastName, f.lastArgs)
+	}
+
+	// Both local rungs implement the optional Starter capability.
+	var _ Starter = newRuncRuntime(&fakeRunner{})
+	var _ Starter = newGvisorRuntime(&fakeRunner{})
 }
 
 func TestDestroyAndSnapshotArgs(t *testing.T) {
