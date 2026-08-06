@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  push:
+    branches: [main, "phase/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast gate: runs on every push/PR. No external toolchain needed.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate requirements graph (anti-hallucination gate)
+        run: python3 spec/tools/specgraph.py --check
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache: true
+          cache-dependency-path: daemon/go.sum
+
+      - name: Format check
+        working-directory: daemon
+        run: test -z "$(gofmt -l internal/ cmd/ 2>/dev/null)"
+
+      - name: Vet
+        working-directory: daemon
+        run: go vet ./...
+
+      - name: Build
+        working-directory: daemon
+        run: go build ./...
+
+      - name: Unit tests (race)
+        working-directory: daemon
+        run: go test -race ./...
+
+  # Heavy gate: exercises the tool-dependent acceptance criteria (AC1/AC2/AC4/AC5)
+  # that cannot be proven without nix + devbox + cosign + syft. Verifies real
+  # flake.lock resolution, real OCI layer + cosign signing, and syft SBOM.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache: true
+          cache-dependency-path: daemon/go.sum
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Install devbox
+        run: curl -fsSL https://get.jetify.com/devbox | bash -s -- -f
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate ephemeral cosign keypair
+        working-directory: daemon
+        env:
+          COSIGN_PASSWORD: ""
+        run: |
+          cosign generate-key-pair
+          echo "OPSLIFY_COSIGN_KEY=$PWD/cosign.key" >> "$GITHUB_ENV"
+          echo "OPSLIFY_COSIGN_PUBKEY=$PWD/cosign.pub" >> "$GITHUB_ENV"
+
+      - name: Integration tests (real nix/devbox/cosign/syft)
+        working-directory: daemon
+        env:
+          OPSLIFY_INTEGRATION: "1"
+          COSIGN_PASSWORD: ""
+        run: go test -v -run 'Integration' ./internal/env/...
