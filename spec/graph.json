@@ -144,7 +144,7 @@
       "id": "F1.2",
       "phase": "P1",
       "title": "Session lifecycle API",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.1",
