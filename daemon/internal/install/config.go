@@ -59,6 +59,22 @@ func DefaultConfig() Config {
 	}
 }
 
+// LoadConfig reads and parses the daemon config at path. It is the read
+// counterpart to WriteConfig, used by the daemon at startup. Unknown keys are
+// tolerated (forward-compat); a missing file or malformed YAML is a legible,
+// layer-tagged error so the operator learns exactly what failed.
+func LoadConfig(path string) (Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("install: read config %s: %w", path, err)
+	}
+	var c Config
+	if err := yaml.Unmarshal(b, &c); err != nil {
+		return Config{}, fmt.Errorf("install: parse config %s: %w", path, err)
+	}
+	return c, nil
+}
+
 // MarshalConfig renders a Config as YAML bytes.
 func MarshalConfig(c Config) ([]byte, error) {
 	b, err := yaml.Marshal(c)

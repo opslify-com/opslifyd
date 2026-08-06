@@ -114,6 +114,47 @@ func (s *Store) putAttestation(locked LockedEnv, layer SignedLayer) error {
 	return nil
 }
 
+// SignedLayer reconstructs the SignedLayer described by this attestation record
+// (env_id, layer digest, SBOM ref, and the decoded signature) so a verifier can
+// re-check it against stored content. It is the read counterpart to the fields
+// putAttestation persists.
+func (a Attestation) SignedLayer() (SignedLayer, error) {
+	sig, err := base64.StdEncoding.DecodeString(a.Signature)
+	if err != nil {
+		return SignedLayer{}, fmt.Errorf("env: decode attestation signature for %s: %w", a.EnvID, err)
+	}
+	return SignedLayer{
+		EnvID:       a.EnvID,
+		LayerDigest: a.LayerDigest,
+		SBOMRef:     a.SBOMRef,
+		Signature:   sig,
+	}, nil
+}
+
+// FindAttestationByDigest scans the attestation store for the record whose
+// layer digest matches. The daemon uses it at startup to resolve the configured
+// toolchain digest to the SignedLayer it must verify before serving.
+func (s *Store) FindAttestationByDigest(layerDigest string) (Attestation, error) {
+	entries, err := os.ReadDir(s.envsDir())
+	if err != nil {
+		return Attestation{}, fmt.Errorf("env: list attestations: %w", err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		envID := e.Name()[:len(e.Name())-len(".json")]
+		rec, err := s.GetAttestation(envID)
+		if err != nil {
+			continue
+		}
+		if rec.LayerDigest == layerDigest {
+			return rec, nil
+		}
+	}
+	return Attestation{}, fmt.Errorf("%w: no attestation for digest %s", ErrLayerNotFound, layerDigest)
+}
+
 // GetAttestation retrieves a persisted attestation record by env_id.
 func (s *Store) GetAttestation(envID string) (Attestation, error) {
 	var rec Attestation
