@@ -15,3 +15,6 @@ vault.db
 
 # Claude Code session state
 .claude/
+
+# Scratch / external-tool experiments (kept local, not part of opslifyd history)
+cline-test/

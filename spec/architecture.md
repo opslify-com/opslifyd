@@ -4,6 +4,21 @@ All diagrams are Mermaid so agents can parse them. This is the shared mental mod
 
 ---
 
+## 0. Repo layout (locked)
+
+All Go code lives under **`daemon/`** so the repo root stays docs-first. Module path is `github.com/opslify-com/opslifyd`; the module root is `daemon/` (that's where `go.mod`/`go.sum` live). Run all `go` commands from `daemon/`; CI uses `working-directory: daemon`.
+
+```
+opslifyd/
+├── spec/                # all docs & agent specs (goal/mission/architecture/phases/best-practices/tools)
+├── .github/workflows/   # CI (validate + integration)
+└── daemon/              # the Go module
+    ├── go.mod  go.sum
+    ├── cmd/{opslifyd,opslify}/     # daemon + CLI entrypoints
+    └── internal/{env,session,trace,policy,broker,mcp}/
+```
+(P5 Rust components live under `daemon/` too, e.g. `daemon/broker-rs/`, `daemon/proxy-rs/`, when introduced.)
+
 ## 1. Stack (locked)
 
 | Concern | Choice | Why |
@@ -161,6 +176,7 @@ type Runtime interface {
     Exec(ctx, ContainerHandle, ExecRequest) (ExecStream, error)
     Destroy(ctx, ContainerHandle) error
     Snapshot(ctx, ContainerHandle, name string) (ImageRef, error) // workspace mode
+    Available() error // F0.3: capability probe (engine + OCI runtime present) so callers fall back down the ladder legibly
 }
 
 // EnvBuilder — Nix/devbox build-time composer (D1). Produces signed read-only toolchain.

@@ -33,7 +33,7 @@ git add "$file" spec/graph.json spec/graph.mmd
 git commit -m "${fid}: approved (QA pass + manual sign-off)
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-git push origin "$branch"
+git push origin "$branch" 2>/dev/null || echo "(remote push skipped; run 'git push origin ${branch}' when authenticated)"
 
 echo
-echo "Approved ${fid} -> status=approved, pushed to ${branch}. Dependents may now unblock."
+echo "Approved ${fid} -> status=approved, committed to ${branch}. Dependents may now unblock."

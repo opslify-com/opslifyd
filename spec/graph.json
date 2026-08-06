@@ -69,7 +69,7 @@
       "id": "F0.1",
       "phase": "P0",
       "title": "Interactive install & tool selection",
-      "status": "todo",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F0.2"
@@ -89,7 +89,7 @@
       "id": "F0.2",
       "phase": "P0",
       "title": "Nix build-time environment composer",
-      "status": "todo",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [],
       "depends_on_phases": [],
@@ -106,7 +106,7 @@
       "id": "F0.3",
       "phase": "P0",
       "title": "Runtime & location abstraction",
-      "status": "todo",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [],
       "depends_on_phases": [],
