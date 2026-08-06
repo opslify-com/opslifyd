@@ -388,7 +388,14 @@ func TestExecRunnerStreamKillReapGated(t *testing.T) {
 		t.Skip("sh not installed: skipping real kill/reap smoke (seam test covers the logic)")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	sr, err := execRunner{}.stream(ctx, "sh", "-c", "yes ABCDEFGH")
+	// D3: the worker (`yes`) is BACKGROUNDED and the shell `wait`s on it, so `yes`
+	// runs as a forked child/grandchild that outlives a naive single-process kill
+	// of just the shell. It keeps the stdout pipe's write end open, so a
+	// single-process kill leaks it and drainReader never hits EOF → deadlock. The
+	// process-group kill (D3 fix) reaps the whole tree, so wait returns. This
+	// holds regardless of whether /bin/sh is bash or dash. Against the pre-fix
+	// single-process-kill code this test DEADLOCKS and trips the 3s guard.
+	sr, err := execRunner{}.stream(ctx, "sh", "-c", "yes ABCDEFGH & wait")
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
