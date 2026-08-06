@@ -190,7 +190,7 @@
       "id": "F1.4",
       "phase": "P1",
       "title": "Default-deny egress + DNS pinning",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"
