@@ -72,8 +72,8 @@ func splitFamilies(ips []netip.Addr) (v4, v6 []netip.Addr) {
 //     table already existed (a bare `delete` would abort the script if absent, and
 //     a bare `add` would leak the prior rules) — so re-apply on an allowlist change
 //     never leaks a prior rule.
-//   - The base chain hooks `forward` with policy ACCEPT and immediately returns any
-//     packet that is not this sandbox's (wrong bridge / wrong source) — so this
+//   - The `egress` chain hooks `forward` with policy ACCEPT and immediately returns
+//     any packet that is not this sandbox's (wrong bridge / wrong source) — so this
 //     table only ever governs its own sandbox and never breaks host or sibling
 //     traffic. The DENY is the terminal `drop`, reached only by this sandbox.
 //   - `udp/tcp dport 53 drop` sits ABOVE the allowlist accepts, so there is NO path
@@ -81,6 +81,29 @@ func splitFamilies(ips []netip.Addr) (v4, v6 []netip.Addr) {
 //     channel is closed with no fallback resolver reachable.
 //   - `ct state established,related accept` lets replies to daemon-initiated flows
 //     back in without widening what the sandbox may INITIATE.
+//
+// The `host_input` chain closes the F1.4-QA gap (prereq #3): the `forward` hook only
+// sees ROUTED egress. Traffic the sandbox sends to a service bound to the HOST itself
+// — a runtime-injected resolver such as podman/aardvark-dns, `127.0.0.11`, or anything
+// listening on the `opslify0` bridge IP — is delivered locally and traverses the
+// kernel's `input` hook, NOT `forward`, so the forward-chain port-53 drop and
+// default-deny never apply. Without this chain a sandbox could reach a host-local
+// resolver and re-open the DNS/exfil channel the forward chain closes. `host_input`
+// therefore mirrors the forward posture on the input path, but is scoped STRICTLY to
+// sandbox-sourced packets so it cannot disturb the host's own inbound traffic or any
+// other interface:
+//
+//   - It hooks `input` with policy ACCEPT and returns immediately for anything not
+//     arriving on this sandbox's bridge (`iifname != opslify0`) or not from this
+//     sandbox's source address — the host's own services and sibling sandboxes are
+//     never affected.
+//   - `ct state established,related accept` admits return/related packets (e.g. ICMP
+//     errors) without widening what the sandbox may INITIATE toward the host: a fresh
+//     DNS query is conntrack state `new`, so it can never match here and is dropped.
+//   - `udp/tcp dport 53 drop` blocks any host-local resolver, matching the DNS-pinning
+//     posture (the sandbox gets NO resolver; the daemon resolves and pins IPs).
+//   - The terminal `drop` is default-deny for host-local services generally, following
+//     the same no-fallback posture as the forward chain.
 func buildApplyScript(net SessionNet, ips []netip.Addr) string {
 	v4, v6 := splitFamilies(ips)
 	tbl := tableName(net.SessionID)
@@ -105,19 +128,11 @@ func buildApplyScript(net SessionNet, ips []netip.Addr) string {
 	}
 	b.WriteString("\t}\n")
 
-	// Egress chain — order is security-critical (see doc above).
+	// Egress chain — order is security-critical (see doc above). Governs ROUTED
+	// egress via the forward hook.
 	b.WriteString("\tchain egress {\n")
 	b.WriteString("\t\ttype filter hook forward priority filter; policy accept;\n")
-	fmt.Fprintf(&b, "\t\tiifname != \"%s\" accept\n", br)
-	if net.SandboxIP != "" {
-		if ip, err := netip.ParseAddr(net.SandboxIP); err == nil {
-			if ip.Unmap().Is4() {
-				fmt.Fprintf(&b, "\t\tip saddr != %s accept\n", ip.Unmap())
-			} else {
-				fmt.Fprintf(&b, "\t\tip6 saddr != %s accept\n", ip.Unmap())
-			}
-		}
-	}
+	writeSandboxScope(&b, br, net.SandboxIP)
 	b.WriteString("\t\tct state established,related accept\n")
 	// No direct DNS — above the allowlist accepts so it can never be bypassed.
 	b.WriteString("\t\tudp dport 53 drop\n")
@@ -128,8 +143,47 @@ func buildApplyScript(net SessionNet, ips []netip.Addr) string {
 	// Default-deny: the terminal verdict for this sandbox.
 	b.WriteString("\t\tdrop\n")
 	b.WriteString("\t}\n")
+
+	// host_input chain — governs traffic the sandbox sends to the HOST itself (a
+	// host-local resolver, bridge-IP service, etc.), which the kernel delivers via
+	// the input hook, not forward. Scoped STRICTLY to this sandbox's packets so the
+	// host's own inbound traffic and sibling interfaces are never touched (see doc
+	// above). Same delete-table teardown as `egress` — no separate cleanup, no leak.
+	b.WriteString("\tchain host_input {\n")
+	b.WriteString("\t\ttype filter hook input priority filter; policy accept;\n")
+	writeSandboxScope(&b, br, net.SandboxIP)
+	// Return/related packets (e.g. ICMP errors) pass; a fresh sandbox→host query is
+	// conntrack state `new`, so this never admits a new host-local flow.
+	b.WriteString("\t\tct state established,related accept\n")
+	// No host-local resolver: block DNS to the host, matching the forward-path drop.
+	b.WriteString("\t\tudp dport 53 drop\n")
+	b.WriteString("\t\ttcp dport 53 drop\n")
+	// Default-deny host-local services generally (no fallback), mirroring egress.
+	b.WriteString("\t\tdrop\n")
+	b.WriteString("\t}\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// writeSandboxScope emits the early-accept lines shared by both hooks: any packet not
+// arriving on this sandbox's bridge, or not from this sandbox's source address, is
+// accepted immediately so the per-session table only ever governs its own sandbox and
+// never disturbs host or sibling traffic. An empty SandboxIP omits the saddr line
+// (bridge-scoped only — the F0.3 seam where the runtime exposes no container IP yet).
+func writeSandboxScope(b *strings.Builder, bridge, sandboxIP string) {
+	fmt.Fprintf(b, "\t\tiifname != \"%s\" accept\n", bridge)
+	if sandboxIP == "" {
+		return
+	}
+	ip, err := netip.ParseAddr(sandboxIP)
+	if err != nil {
+		return
+	}
+	if ip.Unmap().Is4() {
+		fmt.Fprintf(b, "\t\tip saddr != %s accept\n", ip.Unmap())
+	} else {
+		fmt.Fprintf(b, "\t\tip6 saddr != %s accept\n", ip.Unmap())
+	}
 }
 
 // buildTeardownScript renders the `nft -f` script that removes a session's table.

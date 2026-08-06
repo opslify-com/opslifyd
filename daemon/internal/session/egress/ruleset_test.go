@@ -44,6 +44,83 @@ func TestBuildApplyScript_DefaultDenyAndAllowlist(t *testing.T) {
 	mustContain(t, got, "ip daddr @allow4 accept")
 }
 
+// prereq #3 (F1.4 QA): traffic to a host-local resolver traverses the input hook, not
+// forward, so the table MUST also carry an input-hook chain that drops sandbox→host:53
+// and default-denies host-local services — scoped strictly to this sandbox's traffic.
+func TestBuildApplyScript_HostInputChainDropsHostLocalDNS(t *testing.T) {
+	net := SessionNet{SessionID: "abc123", SandboxIP: "10.88.0.5", Bridge: "opslify0"}
+	got := buildApplyScript(net, addrs(t, "93.184.216.34"))
+
+	// The input-hook chain exists with policy accept (host's own traffic untouched).
+	mustContain(t, got, "chain host_input {")
+	mustContain(t, got, "type filter hook input priority filter; policy accept;")
+	// Scoped strictly to this sandbox: non-bridge and non-sandbox sources bail early.
+	mustContainInOrder(t, got,
+		"chain host_input {",
+		`iifname != "opslify0" accept`,
+		"ip saddr != 10.88.0.5 accept",
+		"ct state established,related accept",
+		"udp dport 53 drop",
+		"tcp dport 53 drop",
+		"drop",
+	)
+	// The forward (egress) chain is preserved and still comes first.
+	if strings.Index(got, "hook forward") > strings.Index(got, "hook input") {
+		t.Fatal("forward (egress) chain must precede the input (host_input) chain")
+	}
+	// Both hooks live in the same per-session table, so `delete table` tears both
+	// down atomically — assert host_input is inside the table braces, before the close.
+	tblOpen := strings.Index(got, "table inet opslify_sess_abc123 {")
+	inputChain := strings.Index(got, "chain host_input {")
+	tblClose := strings.LastIndex(got, "\n}\n")
+	if !(tblOpen >= 0 && tblOpen < inputChain && inputChain < tblClose) {
+		t.Fatalf("host_input chain must be inside the session table, got:\n%s", got)
+	}
+}
+
+// The input-hook DNS drop must sit ABOVE the terminal drop and be unconditional: even
+// an allowlisted resolver IP bound to the host is blocked (the sandbox gets NO
+// resolver). There is no allowlist accept on the input path at all.
+func TestBuildApplyScript_HostInputNoAllowlistBypass(t *testing.T) {
+	got := buildApplyScript(SessionNet{SessionID: "s1", SandboxIP: "10.88.0.9"}, addrs(t, "8.8.8.8"))
+	inputChain := got[strings.Index(got, "chain host_input {"):]
+	if strings.Contains(inputChain, "@allow4 accept") || strings.Contains(inputChain, "@allow6 accept") {
+		t.Fatalf("input chain must NOT admit allowlisted daddrs (host-local deny), got:\n%s", inputChain)
+	}
+	// port-53 drop precedes the terminal drop within the input chain.
+	if strings.Index(inputChain, "udp dport 53 drop") < 0 ||
+		strings.Index(inputChain, "udp dport 53 drop") > strings.LastIndex(inputChain, "drop") {
+		t.Fatalf("input chain port-53 drop must precede terminal drop, got:\n%s", inputChain)
+	}
+}
+
+// Both hook chains vanish with the table on teardown — a single `delete table` removes
+// forward AND input rules atomically, so the input drop can never leak past a session.
+func TestBuildApplyScript_HostInputTornDownWithTable(t *testing.T) {
+	td := buildTeardownScript("abc123")
+	// Teardown targets the whole table (which contains both chains) — no per-chain
+	// delete needed, no orphaned input rule.
+	mustContainInOrder(t, td,
+		"add table inet opslify_sess_abc123",
+		"delete table inet opslify_sess_abc123",
+	)
+	if strings.Contains(td, "host_input") || strings.Contains(td, "chain") {
+		t.Fatalf("teardown must drop the whole table, not name chains, got:\n%s", td)
+	}
+}
+
+// Bridge-only scoping (no SandboxIP) applies to the input chain too: no saddr line, but
+// still bridge-scoped + host-local DNS drop + default-deny.
+func TestBuildApplyScript_HostInputBridgeScopedWhenNoIP(t *testing.T) {
+	got := buildApplyScript(SessionNet{SessionID: "s1"}, addrs(t, "1.2.3.4"))
+	inputChain := got[strings.Index(got, "chain host_input {"):]
+	if strings.Contains(inputChain, "saddr") {
+		t.Fatalf("no SandboxIP must omit saddr scope in input chain, got:\n%s", inputChain)
+	}
+	mustContain(t, inputChain, `iifname != "opslify0" accept`)
+	mustContain(t, inputChain, "udp dport 53 drop")
+}
+
 // No direct DNS: the port-53 drops MUST appear before the allowlist accepts so an
 // allowlisted resolver IP can never be used for DNS (closes the exfil channel).
 func TestBuildApplyScript_DNSBlockedAboveAllowlist(t *testing.T) {
