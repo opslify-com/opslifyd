@@ -19,6 +19,7 @@ import (
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/session"
+	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
 
@@ -34,12 +35,18 @@ func main() {
 
 func run() error {
 	var (
-		configPath  = flag.String("config", install.DefaultConfigPath, "daemon config path")
-		socketPath  = flag.String("socket", daemon.DefaultSocketPath, "REST API Unix socket path")
-		socketGroup = flag.String("socket-group", daemon.DefaultSocketGroup, "group that owns the socket (empty to skip chown)")
-		envBaseDir  = flag.String("env-dir", env.DefaultBaseDir, "toolchain attestation/artifact root (F0.2)")
+		configPath       = flag.String("config", install.DefaultConfigPath, "daemon config path")
+		socketPath       = flag.String("socket", daemon.DefaultSocketPath, "REST API Unix socket path")
+		socketGroup      = flag.String("socket-group", daemon.DefaultSocketGroup, "group that owns the socket (empty to skip chown)")
+		envBaseDir       = flag.String("env-dir", env.DefaultBaseDir, "toolchain attestation/artifact root (F0.2)")
+		insecureNoEgress = flag.Bool("insecure-no-egress", false,
+			"DEV/INSECURE: run with UNENFORCED egress (no default-deny) when nftables is unavailable. Never use in production.")
 	)
 	flag.Parse()
+
+	// Env override for the insecure opt-out (e.g. container/CI dev), so the choice
+	// can be set without editing the unit file; the CLI flag remains primary.
+	insecure := *insecureNoEgress || os.Getenv("OPSLIFY_INSECURE_NO_EGRESS") == "1"
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
@@ -54,7 +61,17 @@ func run() error {
 		return err
 	}
 
-	mgr, err := buildSessionManager(cfg, log)
+	// Wire F1.4 default-deny egress. The daemon FAILS CLOSED: if nftables can't be
+	// programmed here, it refuses to start rather than silently serving sandboxes
+	// with unconstrained network. `--insecure-no-egress` (or OPSLIFY_INSECURE_NO_EGRESS=1)
+	// is the explicit dev opt-out that permits an UNENFORCED Noop, and it logs loudly.
+	egressCtl, egressStop, err := buildEgress(cfg, log, insecure)
+	if err != nil {
+		return err
+	}
+	defer egressStop()
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl)
 	if err != nil {
 		return err
 	}
@@ -95,7 +112,7 @@ func run() error {
 // hard-spec resource caps (pids 256, mem 2G, cpu 2) so no session is unbounded,
 // derives the state dir alongside the workspace root (durable across restarts
 // for orphan reconciliation), and parses the configured idle TTL.
-func buildSessionManager(cfg install.Config, log *slog.Logger) (*session.Manager, error) {
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -113,8 +130,64 @@ func buildSessionManager(cfg install.Config, log *slog.Logger) (*session.Manager
 			WarmPoolSize:        cfg.WarmPoolSize,
 			WarmPoolConcurrency: cfg.WarmPoolConcurrency,
 		},
+		Egress: egressCtl,
 		Logger: log,
 	})
+}
+
+// buildEgress wires the F1.4 egress controller from the configured allowlist. It
+// FAILS CLOSED: if nftables cannot be programmed here, it returns an error and the
+// daemon refuses to start — never silently serving sandboxes with unconstrained
+// network. The `insecure` opt-out (from --insecure-no-egress) is the only way to
+// run with an UNENFORCED egress.Noop, and that path warns loudly. Returns the
+// Controller the Manager calls plus a stop func to run on shutdown.
+func buildEgress(cfg install.Config, log *slog.Logger, insecure bool) (egress.Controller, func(), error) {
+	ctl := egress.NewController(egress.Config{
+		Allowlist: cfg.EgressAllowlist,
+		Logger:    log,
+	})
+	decision, avail := egressDecision(ctl.Available(), insecure)
+	switch decision {
+	case egressInsecureNoop:
+		log.Warn("EGRESS NOT ENFORCED: nftables unavailable; sandboxes will have UNCONSTRAINED network. Run the daemon as root with nft installed for default-deny egress.", "err", avail, "insecure_opt_out", true)
+		return egress.Noop{}, func() {}, nil
+	case egressFailClosed:
+		return nil, func() {}, fmt.Errorf("opslifyd: egress: default-deny egress cannot be enforced (nftables unavailable): %w; run the daemon as root with nft installed, or pass --insecure-no-egress (OPSLIFY_INSECURE_NO_EGRESS=1) to run WITHOUT egress enforcement in dev", avail)
+	}
+
+	if err := ctl.Start(context.Background()); err != nil {
+		return nil, func() {}, fmt.Errorf("opslifyd: egress: controller failed to start: %w", err)
+	}
+	log.Info("egress: default-deny enforcement active (nftables)", "allowlist_entries", len(cfg.EgressAllowlist))
+	return ctl, ctl.Close, nil
+}
+
+// egressMode is the outcome of the egress wiring decision, factored out so the
+// fail-closed-by-default / insecure-opt-out policy is unit-testable without a real
+// nft binary or root.
+type egressMode int
+
+const (
+	// egressEnforce: nftables is available → program real default-deny egress.
+	egressEnforce egressMode = iota
+	// egressFailClosed: unavailable and no opt-out → refuse to start.
+	egressFailClosed
+	// egressInsecureNoop: unavailable but the operator opted out → unenforced Noop.
+	egressInsecureNoop
+)
+
+// egressDecision maps (availability, insecure-opt-out) to the wiring mode. When nft
+// is available, enforcement wins regardless of the flag (the flag only lets an
+// UNAVAILABLE host degrade instead of failing closed). It passes the availability
+// error through so the caller can log/wrap it.
+func egressDecision(availErr error, insecure bool) (egressMode, error) {
+	if availErr == nil {
+		return egressEnforce, nil
+	}
+	if insecure {
+		return egressInsecureNoop, availErr
+	}
+	return egressFailClosed, availErr
 }
 
 func orDefault(v, def string) string {

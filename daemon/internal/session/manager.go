@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
 
@@ -37,6 +38,12 @@ var (
 	// ErrRuntimeUnavailable wraps an F0.3 Available() failure (engine/OCI runtime
 	// missing) so a create failure is legibly a runtime problem, not a bug.
 	ErrRuntimeUnavailable = errors.New("session: runtime unavailable")
+	// ErrEgress wraps an F1.4 egress-programming failure so a create that fails
+	// because default-deny egress could not be installed is legibly an EGRESS-layer
+	// problem — never confused with a sandbox or runtime failure. It fails CLOSED:
+	// a session whose egress could not be programmed is destroyed, never served
+	// with unconstrained network.
+	ErrEgress = errors.New("session: egress")
 )
 
 // ManagerConfig carries the non-secret settings a Manager needs to realise
@@ -82,7 +89,14 @@ type Manager struct {
 	resolve resolveFunc
 	clock   Clock
 	store   Store
-	log     *slog.Logger
+	egress  egress.Controller
+	// sandboxIP maps a fresh container handle to its address on the egress bridge,
+	// so per-session egress rules can be source-scoped. It is a seam: the F0.3
+	// runtime does not yet expose a container IP, so production leaves it nil and
+	// the egress rules are bridge-scoped (still default-deny + no direct DNS). Tests
+	// inject it to exercise source-scoped rule generation.
+	sandboxIP func(runtime.ContainerHandle) string
+	log       *slog.Logger
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -108,7 +122,14 @@ type Options struct {
 	Resolve resolveFunc
 	Clock   Clock
 	Store   Store
-	Logger  *slog.Logger
+	// Egress programs per-session default-deny egress (F1.4). nil => egress.Noop
+	// (no enforcement) so F1.1–F1.3 tests need no egress wiring; the daemon wires a
+	// real NftController (or a loudly-warned Noop when nft/root is unavailable).
+	Egress egress.Controller
+	// SandboxIP resolves a container handle to its bridge address for source-scoped
+	// egress rules; nil => bridge-scoped rules (see Manager.sandboxIP).
+	SandboxIP func(runtime.ContainerHandle) string
+	Logger    *slog.Logger
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -127,15 +148,20 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:      cfg,
-		resolve:  opts.Resolve,
-		clock:    opts.Clock,
-		store:    opts.Store,
-		log:      opts.Logger,
-		sessions: make(map[string]*Session),
+		cfg:       cfg,
+		resolve:   opts.Resolve,
+		clock:     opts.Clock,
+		store:     opts.Store,
+		egress:    opts.Egress,
+		sandboxIP: opts.SandboxIP,
+		log:       opts.Logger,
+		sessions:  make(map[string]*Session),
 	}
 	if m.resolve == nil {
 		m.resolve = runtime.ResolveRuntime
+	}
+	if m.egress == nil {
+		m.egress = egress.Noop{}
 	}
 	if m.clock == nil {
 		m.clock = SystemClock()
@@ -285,6 +311,22 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		m.cleanupWorkspace(wsDir)
 		return nil, err
 	}
+
+	// Install default-deny egress for this sandbox BEFORE it is ever handed out
+	// (this path is shared by on-demand Create and warm pre-create, so both get it
+	// identically). Fail CLOSED: if egress can't be programmed, destroy the sandbox
+	// rather than serve one with unconstrained network. The failure is tagged
+	// ErrEgress so the operator sees an egress-layer problem, not a sandbox bug.
+	var sandboxIP string
+	if m.sandboxIP != nil {
+		sandboxIP = m.sandboxIP(handle)
+	}
+	if err := m.egress.SetupSession(ctx, egress.SessionNet{SessionID: id, SandboxIP: sandboxIP}); err != nil {
+		_ = m.store.Delete(id)
+		_ = rt.Destroy(ctx, handle)
+		m.cleanupWorkspace(wsDir)
+		return nil, fmt.Errorf("%w: %v", ErrEgress, err)
+	}
 	return s, nil
 }
 
@@ -414,6 +456,12 @@ func (m *Manager) teardown(ctx context.Context, s *Session) error {
 	if rt, err := m.resolve(s.Tier, s.Location); err != nil {
 		errs = append(errs, err)
 	} else if err := rt.Destroy(ctx, s.Handle); err != nil {
+		errs = append(errs, err)
+	}
+	// Remove the session's egress rules. Idempotent, so it is safe on the
+	// reconcile/reap paths too (a session whose egress was never set up, or a
+	// restart orphan, tears down cleanly with no rule leak).
+	if err := m.egress.TeardownSession(ctx, s.ID); err != nil {
 		errs = append(errs, err)
 	}
 	if err := m.store.Delete(s.ID); err != nil {
