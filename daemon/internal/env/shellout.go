@@ -108,8 +108,29 @@ type cosignSigner struct {
 	PubKeyRef string
 }
 
+// cosign contract note (verified against cosign GitVersion v3.1.1, the version
+// resolved from current nixpkgs). cosign 3.x flipped sign-blob's defaults so
+// that verification material is emitted as a Sigstore bundle: --use-signing-config
+// now defaults to true and *requires* --bundle, so the old
+// `sign-blob --yes [--key K] <file>` (which streamed a bare base64 signature to
+// stdout and paired with `verify-blob --signature <sig> ...`) now aborts with
+// "must specify --bundle with --new-bundle-format". The signature artifact is
+// therefore the *bundle file*, not a bare signature.
+//
+// We do offline, key-based (not keyless/OIDC) signing, so we opt out of the TUF
+// signing-config lookup (--use-signing-config=false) and the Rekor transparency
+// log (--tlog-upload=false on sign, --insecure-ignore-tlog on verify) — both
+// would require network and neither is our trust root here; the key is. The
+// bundle binds the signed payload (our digest string) internally, so verify
+// fails on a tampered digest or a tampered/wrong bundle exactly as before.
+//
+//   sign:   cosign sign-blob --yes [--key K] --bundle <bundle> \
+//                            --use-signing-config=false --tlog-upload=false <blob>
+//   verify: cosign verify-blob [--key P] --bundle <bundle> \
+//                              --insecure-ignore-tlog <blob>
+
 func (c cosignSigner) Sign(ctx context.Context, digest string) ([]byte, error) {
-	args := []string{"sign-blob", "--yes"}
+	args := []string{"sign-blob", "--yes", "--use-signing-config=false", "--tlog-upload=false"}
 	if c.KeyRef != "" {
 		args = append(args, "--key", c.KeyRef)
 	}
@@ -125,23 +146,39 @@ func (c cosignSigner) Sign(ctx context.Context, digest string) ([]byte, error) {
 		return nil, fmt.Errorf("env: write digest: %w", err)
 	}
 	f.Close()
-	return runCommand(ctx, "", "cosign", append(args, f.Name())...)
+
+	// The Sigstore bundle (signature + verification material) is written to this
+	// file; its bytes are the opaque signature artifact returned to the caller.
+	bundle, err := os.CreateTemp("", "opslify-bundle-*")
+	if err != nil {
+		return nil, fmt.Errorf("env: temp bundle file: %w", err)
+	}
+	bundlePath := bundle.Name()
+	bundle.Close()
+	defer os.Remove(bundlePath)
+
+	args = append(args, "--bundle", bundlePath, f.Name())
+	if _, err := runCommand(ctx, "", "cosign", args...); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(bundlePath)
 }
 
 func (c cosignSigner) VerifySignature(ctx context.Context, digest string, sig []byte) error {
 	if len(sig) == 0 {
 		return ErrUnsignedLayer
 	}
-	sigFile, err := os.CreateTemp("", "opslify-sig-*")
+	// sig is the Sigstore bundle produced by Sign; write it back to a file.
+	bundleFile, err := os.CreateTemp("", "opslify-bundle-*")
 	if err != nil {
-		return fmt.Errorf("env: temp sig file: %w", err)
+		return fmt.Errorf("env: temp bundle file: %w", err)
 	}
-	defer os.Remove(sigFile.Name())
-	if _, err := sigFile.Write(sig); err != nil {
-		sigFile.Close()
-		return fmt.Errorf("env: write sig: %w", err)
+	defer os.Remove(bundleFile.Name())
+	if _, err := bundleFile.Write(sig); err != nil {
+		bundleFile.Close()
+		return fmt.Errorf("env: write bundle: %w", err)
 	}
-	sigFile.Close()
+	bundleFile.Close()
 
 	digestFile, err := os.CreateTemp("", "opslify-digest-*")
 	if err != nil {
@@ -154,7 +191,7 @@ func (c cosignSigner) VerifySignature(ctx context.Context, digest string, sig []
 	}
 	digestFile.Close()
 
-	args := []string{"verify-blob", "--signature", sigFile.Name()}
+	args := []string{"verify-blob", "--bundle", bundleFile.Name(), "--insecure-ignore-tlog"}
 	if c.PubKeyRef != "" {
 		args = append(args, "--key", c.PubKeyRef)
 	}
