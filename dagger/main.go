@@ -90,6 +90,72 @@ func (m *Opslifyd) Integration(ctx context.Context, source *dagger.Directory) (s
 		Stdout(ctx)
 }
 
+// runscURL is the gVisor release download (proven to work on this host's arch).
+const runscURL = "https://storage.googleapis.com/gvisor/releases/release/latest/x86_64/runsc"
+
+// EscapeSuite runs the F1.5 container-escape / kernel-identity / toolchain probe
+// matrix INSIDE a real hardened sandbox driven by the REAL F0.3 runtime
+// (podman create/start/exec with the fixed hardening set), on the runc rung and
+// — when runsc initialises under nesting — the gVisor rung. Base is
+// quay.io/podman/stable (podman preinstalled); the Go 1.26 toolchain is mounted
+// from the golang image so the gated Go tests run natively. Requires privileged
+// nesting (podman-in-Dagger).
+//
+// It emits the machine- + human-readable results matrix under /src/artifacts.
+func (m *Opslifyd) EscapeSuite(ctx context.Context, source *dagger.Directory) (string, error) {
+	goToolchain := dag.Container().From(goImage).Directory("/usr/local/go")
+	return dag.Container().
+		From("quay.io/podman/stable").
+		// Native Go toolchain (avoids a slow dnf golang that may lag 1.26).
+		WithMountedDirectory("/usr/local/go", goToolchain).
+		WithEnvVariable("PATH", "/usr/local/go/bin:/usr/local/bin:${PATH}", dagger.ContainerWithEnvVariableOpts{Expand: true}).
+		WithMountedCache("/go/pkg/mod", dag.CacheVolume("opslifyd-gomod")).
+		WithMountedCache("/root/.cache/go-build", dag.CacheVolume("opslifyd-gobuild")).
+		WithMountedDirectory("/src", source).
+		WithWorkdir("/src/daemon").
+		// Install gVisor/runsc (download proven on this arch) and register it as a
+		// podman OCI runtime name.
+		WithExec([]string{"sh", "-c",
+			"curl -fsSL " + runscURL + " -o /usr/local/bin/runsc && chmod 0755 /usr/local/bin/runsc"}).
+		WithExec([]string{"sh", "-c",
+			`mkdir -p /etc/containers && printf '[engine.runtimes]\nrunsc = ["/usr/local/bin/runsc"]\n' >> /etc/containers/containers.conf`}).
+		// Provision the seccomp profile the hardened base points at (podman ships a
+		// default we reuse — the hardening set is never weakened).
+		WithExec([]string{"sh", "-c",
+			"install -D /usr/share/containers/seccomp.json /etc/opslify/seccomp.json"}).
+		WithExec([]string{"mkdir", "-p", "/src/artifacts"}).
+		WithEnvVariable("OPSLIFY_ESCAPE", "1").
+		WithEnvVariable("OPSLIFY_ESCAPE_IMAGE", "docker.io/library/alpine:3.20").
+		WithEnvVariable("OPSLIFY_ESCAPE_MATRIX_OUT", "/src/artifacts/escape-matrix").
+		WithExec([]string{"go", "test", "-count=1", "-v", "-timeout", "900s",
+			"-run", "TestEscapeSuite", "./internal/escape/"},
+			dagger.ContainerWithExecOpts{
+				ExperimentalPrivilegedNesting: true,
+				InsecureRootCapabilities:      true,
+			}).
+		Stdout(ctx)
+}
+
+// EscapeEgress runs the F1.5 exfil half: it builds a real Linux network
+// namespace attached to the opslify0 bridge and programs the REAL F1.4 nftables
+// egress ruleset, then asserts direct DNS and non-allowlisted egress are DROPPED
+// while the allowlisted host stays reachable — with a no-rules baseline first so
+// "blocked" is attributable to the ruleset, not to missing connectivity. Needs
+// nft + ip + root/CAP_NET_ADMIN (InsecureRootCapabilities), no podman.
+func (m *Opslifyd) EscapeEgress(ctx context.Context, source *dagger.Directory) (string, error) {
+	return m.goBase(source).
+		// nft, iproute2, dnsutils(dig), netcat for the probes.
+		WithExec([]string{"sh", "-c",
+			"apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nftables iproute2 dnsutils netcat-openbsd >/dev/null"}).
+		WithExec([]string{"mkdir", "-p", "/src/artifacts"}).
+		WithEnvVariable("OPSLIFY_ESCAPE_EGRESS", "1").
+		WithEnvVariable("OPSLIFY_ESCAPE_EGRESS_MATRIX_OUT", "/src/artifacts/exfil-matrix").
+		WithExec([]string{"go", "test", "-count=1", "-v", "-timeout", "300s",
+			"-run", "TestExfilSuite", "./internal/escape/"},
+			dagger.ContainerWithExecOpts{InsecureRootCapabilities: true}).
+		Stdout(ctx)
+}
+
 // All runs the fast gate: graph validation then the unit suite.
 func (m *Opslifyd) All(ctx context.Context, source *dagger.Directory) (string, error) {
 	if _, err := m.Graph(ctx, source); err != nil {
