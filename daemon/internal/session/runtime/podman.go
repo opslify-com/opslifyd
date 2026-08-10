@@ -201,8 +201,11 @@ func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 	}
 	if spec.ToolchainDigest != "" {
 		// Signed F0.2 toolchain, mounted read-only. Never writable.
+		// podman --mount type=image expresses read-only as rw=false (it does NOT
+		// accept ro=true — that errors "ro: invalid mount option"). Image mounts
+		// are read-only by default; rw=false is explicit and unambiguous.
 		args = append(args, "--mount",
-			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,ro=true")
+			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,rw=false")
 	}
 	if spec.Workspace != "" {
 		// The one writable persistent path.

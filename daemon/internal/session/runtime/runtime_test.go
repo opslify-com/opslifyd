@@ -150,7 +150,7 @@ func TestCreateArgsMountsAndLimits(t *testing.T) {
 			t.Errorf("missing %q in %v", want, args)
 		}
 	}
-	if !hasFlag(args, "type=image,source=tool@sha256:cafe,destination=/opt/toolchain,ro=true") {
+	if !hasFlag(args, "type=image,source=tool@sha256:cafe,destination=/opt/toolchain,rw=false") {
 		t.Errorf("toolchain must be mounted read-only: %v", args)
 	}
 	if !hasFlag(args, "/host/ws:/workspace:rw") {

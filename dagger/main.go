@@ -104,6 +104,17 @@ const runscURL = "https://storage.googleapis.com/gvisor/releases/release/latest/
 // It emits the machine- + human-readable results matrix under /src/artifacts.
 func (m *Opslifyd) EscapeSuite(ctx context.Context, source *dagger.Directory) (string, error) {
 	goToolchain := dag.Container().From(goImage).Directory("/usr/local/go")
+	// Fetch runsc via the DAGGER ENGINE network (not an in-container curl, which is
+	// throttled to storage.googleapis.com here) and mount it executable.
+	runsc := dag.HTTP(runscURL)
+	// containers.conf that makes the F0.3 GvisorRuntime's plain `podman --runtime
+	// runsc` work under nesting: cgroupfs manager (rootful, no systemd) and runsc
+	// registered with --ignore-cgroups (runsc rejects NoCgroups otherwise). runc is
+	// installed below (podman/stable defaults to crun, so the runc rung needs it).
+	containersConf := "[engine]\n" +
+		"cgroup_manager = \"cgroupfs\"\n" +
+		"[engine.runtimes]\n" +
+		"runsc = [\"/usr/local/bin/runsc\", \"--ignore-cgroups\"]\n"
 	return dag.Container().
 		From("quay.io/podman/stable").
 		// Native Go toolchain (avoids a slow dnf golang that may lag 1.26).
@@ -113,16 +124,21 @@ func (m *Opslifyd) EscapeSuite(ctx context.Context, source *dagger.Directory) (s
 		WithMountedCache("/root/.cache/go-build", dag.CacheVolume("opslifyd-gobuild")).
 		WithMountedDirectory("/src", source).
 		WithWorkdir("/src/daemon").
-		// Install gVisor/runsc (download proven on this arch) and register it as a
-		// podman OCI runtime name.
-		WithExec([]string{"sh", "-c",
-			"curl -fsSL " + runscURL + " -o /usr/local/bin/runsc && chmod 0755 /usr/local/bin/runsc"}).
-		WithExec([]string{"sh", "-c",
-			`mkdir -p /etc/containers && printf '[engine.runtimes]\nrunsc = ["/usr/local/bin/runsc"]\n' >> /etc/containers/containers.conf`}).
+		// gVisor/runsc, mounted executable — fetched by the engine, not curl'd inside.
+		WithFile("/usr/local/bin/runsc", runsc, dagger.ContainerWithFileOpts{Permissions: 0o755}).
+		// runc for the local-docker rung (podman/stable ships crun as default only).
+		WithExec([]string{"sh", "-c", "dnf install -y -q runc >/dev/null 2>&1 || true"}).
+		WithNewFile("/etc/containers/containers.conf", containersConf).
 		// Provision the seccomp profile the hardened base points at (podman ships a
 		// default we reuse — the hardening set is never weakened).
 		WithExec([]string{"sh", "-c",
 			"install -D /usr/share/containers/seccomp.json /etc/opslify/seccomp.json"}).
+		// The hardened spec uses user-namespace remapping (--userns=auto), which
+		// needs subuid/subgid ranges for the users podman maps into. This nested
+		// image ships none — provision generous, non-overlapping ranges so the
+		// userns hardening is exercised for real (not disabled).
+		WithExec([]string{"sh", "-c",
+			`printf 'root:100000:65536\ncontainers:200000:65536\npodman:300000:65536\n' | tee /etc/subuid > /etc/subgid`}).
 		WithExec([]string{"mkdir", "-p", "/src/artifacts"}).
 		WithEnvVariable("OPSLIFY_ESCAPE", "1").
 		WithEnvVariable("OPSLIFY_ESCAPE_IMAGE", "docker.io/library/alpine:3.20").
