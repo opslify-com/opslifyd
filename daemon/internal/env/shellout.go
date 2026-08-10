@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strings"
 )
 
 // runCommand runs an external tool and returns stdout. stderr is folded into
@@ -61,10 +65,208 @@ func (devboxComposer) Realize(ctx context.Context, workDir string, sel ToolSelec
 	} {
 		if b, err := os.ReadFile(cand); err == nil {
 			profile := filepath.Join(workDir, ".devbox", "nix", "profile", "default")
-			return b, profile, nil
+			// The devbox/nix profile is a symlink farm: its bin/* point into
+			// /nix/store, so the profile dir itself contains no real tool files.
+			// Baking/scanning it directly would pack dangling symlinks (no tools
+			// in the layer, no tools in the SBOM, and a digest that doesn't vary
+			// with the selection). Assemble a staging rootfs of the FULL
+			// transitive store closure — real files — and return THAT as the
+			// closure path, so ociBaker/syft (generic "dir of real files") work
+			// unchanged and produce a functional, reproducible, selection-distinct
+			// layer.
+			staging, err := assembleStoreClosure(ctx, workDir, profile)
+			if err != nil {
+				return nil, "", err
+			}
+			return b, staging, nil
 		}
 	}
 	return nil, "", fmt.Errorf("env: no lock file produced by devbox in %s", workDir)
+}
+
+// assembleStoreClosure builds a staging rootfs directory of REAL files that is
+// the full transitive nix store closure of the devbox profile. The result S has
+// the shape:
+//
+//	S/nix/store/<hash>-*   real file trees of every requisite (copied)
+//	S/bin, S/lib, ...      the profile's own tree, with every absolute
+//	                       /nix/store symlink rewritten to a path RELATIVE to S
+//
+// so S/bin/terraform resolves within S to a real binary under S/nix/store,
+// `syft scan dir:S` finds the tools + transitive deps, and the packed layer
+// contains actual binaries. It is deterministic (content comes from nix; the
+// tar layer sorts + zeroes metadata), so the same selection yields the same
+// digest and distinct selections yield distinct closures/digests.
+func assembleStoreClosure(ctx context.Context, workDir, profile string) (string, error) {
+	// Resolve the profile symlink to its real store path, then query the full
+	// transitive closure (the profile store path itself is included).
+	realProfile, err := filepath.EvalSymlinks(profile)
+	if err != nil {
+		return "", fmt.Errorf("env: resolve profile %q: %w", profile, err)
+	}
+	out, err := runCommand(ctx, workDir, "nix-store", "--query", "--requisites", realProfile)
+	if err != nil {
+		return "", err
+	}
+	var storePaths []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			storePaths = append(storePaths, p)
+		}
+	}
+	if len(storePaths) == 0 {
+		return "", fmt.Errorf("env: empty closure for profile %q", realProfile)
+	}
+	sort.Strings(storePaths)
+
+	// Fresh staging rootfs under the workDir.
+	staging := filepath.Join(workDir, ".opslify-closure")
+	if err := os.RemoveAll(staging); err != nil {
+		return "", fmt.Errorf("env: reset staging: %w", err)
+	}
+	storeDir := filepath.Join(staging, "nix", "store")
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		return "", fmt.Errorf("env: mkdir staging store: %w", err)
+	}
+
+	// Copy each requisite store path as REAL files. Done in pure Go (no reliance
+	// on a coreutils cp being on PATH in the minimal nix image): directories are
+	// recreated, symlinks preserved verbatim, and regular files HARDLINKED to the
+	// read-only store entry when possible (instant, no data copy) or data-copied
+	// across a device boundary. The tar layer zeroes mtime/uid/gid, so copy
+	// metadata never affects the digest.
+	for _, sp := range storePaths {
+		dst := filepath.Join(storeDir, filepath.Base(sp))
+		if _, err := os.Lstat(dst); err == nil {
+			continue // already staged
+		}
+		if err := cloneTree(sp, dst); err != nil {
+			return "", fmt.Errorf("env: stage store path %q: %w", sp, err)
+		}
+	}
+
+	// Mirror the profile's own tree into the staging root, rewriting every
+	// absolute /nix/store symlink target to a path relative to its location in
+	// the staging rootfs so it resolves WITHIN S (not against the host store).
+	if err := mirrorProfileTree(realProfile, staging); err != nil {
+		return "", err
+	}
+	return staging, nil
+}
+
+// cloneTree replicates the file tree at src into dst: dirs are recreated,
+// symlinks copied verbatim, and regular files hardlinked to the (read-only)
+// source when the filesystem allows, else data-copied. Store paths are
+// immutable, so hardlinking is safe and avoids copying multi-GB closures.
+func cloneTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := dst
+		if rel != "." {
+			target = filepath.Join(dst, rel)
+		}
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, 0o755)
+		case d.Type()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			_ = os.Remove(target)
+			return os.Symlink(link, target)
+		case d.Type().IsRegular():
+			if err := os.Link(p, target); err == nil {
+				return nil // hardlink succeeded (same filesystem)
+			}
+			return copyFile(p, target)
+		default:
+			return nil // skip sockets/devices/fifos
+		}
+	})
+}
+
+// copyFile data-copies src to dst, preserving the source's mode bits.
+func copyFile(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// mirrorProfileTree recreates the directory structure of the profile store path
+// under dst. Directories become real dirs; symlinks are recreated with their
+// targets rewritten from an absolute /nix/store path to a path relative to the
+// symlink's own location within dst (so it points into dst/nix/store/...).
+// Regular files (rare at the profile top level) are copied.
+func mirrorProfileTree(profileRoot, dst string) error {
+	return filepath.WalkDir(profileRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(profileRoot, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil // dst root already exists
+		}
+		target := filepath.Join(dst, rel)
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, 0o755)
+		case d.Type()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(p)
+			if err != nil {
+				return fmt.Errorf("env: readlink profile entry: %w", err)
+			}
+			if strings.HasPrefix(link, "/nix/store/") {
+				// Point at the staged copy, relative to this symlink's dir.
+				staged := filepath.Join(dst, "nix", "store", link[len("/nix/store/"):])
+				relTarget, err := filepath.Rel(filepath.Dir(target), staged)
+				if err != nil {
+					return fmt.Errorf("env: relativise symlink: %w", err)
+				}
+				link = relTarget
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			_ = os.Remove(target)
+			return os.Symlink(link, target)
+		case d.Type().IsRegular():
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			in, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			return os.WriteFile(target, in, 0o644)
+		default:
+			return nil
+		}
+	})
 }
 
 // devboxManifest renders a devbox.json from a selection. Tool "name@version"
