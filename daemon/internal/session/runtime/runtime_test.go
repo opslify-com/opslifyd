@@ -136,6 +136,9 @@ func TestRuntimeFlagIsTheOnlyDifference(t *testing.T) {
 // --- createArgs: mounts, limits, order. --------------------------------------
 
 func TestCreateArgsMountsAndLimits(t *testing.T) {
+	// Pin the workspace remap so the assertion is deterministic regardless of
+	// whether the test runs as root (would otherwise pick idmap) or not.
+	t.Setenv("OPSLIFY_WORKSPACE_REMAP", "U")
 	spec := SessionSpec{
 		Image:           "base@sha256:deadbeef",
 		ToolchainDigest: "tool@sha256:cafe",
@@ -164,6 +167,24 @@ func TestCreateArgsMountsAndLimits(t *testing.T) {
 	}
 	if args[0] != "create" {
 		t.Errorf("first arg must be 'create': %v", args)
+	}
+}
+
+// workspaceMountRemap must honor the env override for both values, so the root
+// (idmap) and rootless (U) mount options are both exercisable in a test.
+func TestWorkspaceMountRemapOverride(t *testing.T) {
+	t.Setenv("OPSLIFY_WORKSPACE_REMAP", "idmap")
+	if got := workspaceMountRemap(); got != "idmap" {
+		t.Errorf("override idmap: got %q", got)
+	}
+	t.Setenv("OPSLIFY_WORKSPACE_REMAP", "U")
+	if got := workspaceMountRemap(); got != "U" {
+		t.Errorf("override U: got %q", got)
+	}
+	// A bogus value is ignored; the euid-derived default wins.
+	t.Setenv("OPSLIFY_WORKSPACE_REMAP", "nonsense")
+	if got := workspaceMountRemap(); got != "idmap" && got != "U" {
+		t.Errorf("default must be idmap or U, got %q", got)
 	}
 }
 
