@@ -38,17 +38,32 @@ func (r twoStreamRuntime) Available() error { return nil }
 // fakeManager is a SessionService double so the REST layer is tested without a
 // real Manager, runtime, or podman.
 type fakeManager struct {
-	created    *session.Session
-	createErr  error
-	execErr    error
-	execOut    func(session.ExecSink) error
-	destroyed  []string
-	destroyErr error
-	list       []session.View
-	lastExec   session.ExecOptions
-	uploaded   []byte
-	downloaded []byte
-	fileErr    error
+	created     *session.Session
+	createErr   error
+	execErr     error
+	execOut     func(session.ExecSink) error
+	destroyed   []string
+	destroyErr  error
+	list        []session.View
+	lastExec    session.ExecOptions
+	uploaded    []byte
+	downloaded  []byte
+	fileErr     error
+	workspaces  []session.WorkspaceView
+	wsRemoved   []string
+	wsRemoveErr error
+}
+
+func (f *fakeManager) ListWorkspaces() ([]session.WorkspaceView, error) {
+	return f.workspaces, nil
+}
+
+func (f *fakeManager) RemoveWorkspace(_ context.Context, name string) error {
+	if f.wsRemoveErr != nil {
+		return f.wsRemoveErr
+	}
+	f.wsRemoved = append(f.wsRemoved, name)
+	return nil
 }
 
 func (f *fakeManager) Create(_ context.Context, req session.CreateRequest) (*session.Session, error) {

@@ -176,7 +176,7 @@ func (p *warmPool) build(gen string) {
 // generation check in build() discards any container a concurrent drain made
 // stale, so nothing built here is ever published on the wrong digest.
 func (p *warmPool) realizeWarm(ctx context.Context) (*Session, error) {
-	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, 0, StateWarm)
+	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, "", 0, StateWarm)
 	if err != nil {
 		return nil, err
 	}

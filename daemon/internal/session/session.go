@@ -47,8 +47,11 @@ const (
 // no lock of its own so the Manager can reason about state transitions and the
 // reaper atomically.
 type Session struct {
-	ID       string
-	Mode     Mode
+	ID   string
+	Mode Mode
+	// Name is the workspace name (workspace mode only; empty for scratch). It
+	// keys the snapshot committed on end and resumed on the next create.
+	Name     string
 	Tier     runtime.Tier
 	Location runtime.Location
 	State    State
