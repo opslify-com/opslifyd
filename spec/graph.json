@@ -208,7 +208,7 @@
       "id": "F1.5",
       "phase": "P1",
       "title": "CLI + public escape suite",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"
