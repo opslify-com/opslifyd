@@ -176,7 +176,7 @@ func (p *warmPool) build(gen string) {
 // generation check in build() discards any container a concurrent drain made
 // stale, so nothing built here is ever published on the wrong digest.
 func (p *warmPool) realizeWarm(ctx context.Context) (*Session, error) {
-	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, 0, StateWarm)
+	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, "", 0, StateWarm)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func (p *warmPool) pauser(s *Session) runtime.Pauser {
 // (container + record + workspace), so warm cleanup is as deterministic as
 // session cleanup — no leaked containers, records, or scratch dirs.
 func (p *warmPool) destroy(ctx context.Context, s *Session) {
-	if err := p.m.teardown(ctx, s); err != nil {
+	if err := p.m.teardown(ctx, s, false); err != nil {
 		p.m.log.Warn("warm pool: teardown error", "session", s.ID, "err", err)
 	}
 }

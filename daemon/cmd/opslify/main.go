@@ -53,6 +53,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(initCmd())
 	root.AddCommand(runCmd())
 	root.AddCommand(sessionCmd())
+	root.AddCommand(wsCmd())
 	return root
 }
 

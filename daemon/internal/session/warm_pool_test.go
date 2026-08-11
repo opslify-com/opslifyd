@@ -220,7 +220,7 @@ func TestWarmPool_DigestAndHardeningParity(t *testing.T) {
 	// On-demand spec (no pool): realize one directly.
 	rtOnDemand := newPoolRuntime()
 	mOnDemand := newPoolManager(t, rtOnDemand, 0, 0, digest)
-	sod, err := mOnDemand.realize(context.Background(), runtime.TierLocalHardened, runtime.LocationLocal, ModeScratch, time.Minute, StateReady)
+	sod, err := mOnDemand.realize(context.Background(), runtime.TierLocalHardened, runtime.LocationLocal, ModeScratch, "", time.Minute, StateReady)
 	if err != nil {
 		t.Fatalf("on-demand realize: %v", err)
 	}

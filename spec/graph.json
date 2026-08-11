@@ -226,72 +226,61 @@
       "id": "F2.1",
       "phase": "P2",
       "title": "MCP tools",
-      "status": "spec-level",
-      "owner": "",
+      "status": "approved",
+      "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"
       ],
-      "depends_on_phases": [
-        "P1"
+      "depends_on_phases": [],
+      "blocks": [
+        "F2.2",
+        "F2.3"
       ],
-      "blocks": [],
       "blocks_phases": [],
-      "source": "spec/phases/p2-mcp/README.md",
-      "detailed": false,
+      "source": "spec/phases/p2-mcp/features/F2.1-mcp-tools.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F1.1",
-        "F1.2",
-        "F1.3",
-        "F1.4",
-        "F1.5"
+        "F1.2"
       ]
     },
     {
       "id": "F2.2",
       "phase": "P2",
-      "title": "Session modes",
-      "status": "spec-level",
-      "owner": "",
+      "title": "Session modes (scratch / workspace)",
+      "status": "approved",
+      "owner": "Builder (Go)",
       "depends_on": [
-        "F1.2"
+        "F2.1"
       ],
-      "depends_on_phases": [
-        "P1"
+      "depends_on_phases": [],
+      "blocks": [
+        "F2.3"
       ],
-      "blocks": [],
       "blocks_phases": [],
-      "source": "spec/phases/p2-mcp/README.md",
-      "detailed": false,
+      "source": "spec/phases/p2-mcp/features/F2.2-session-modes.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F1.1",
-        "F1.2",
-        "F1.3",
-        "F1.4",
-        "F1.5"
+        "F2.1"
       ]
     },
     {
       "id": "F2.3",
       "phase": "P2",
       "title": "Claude Code quickstart",
-      "status": "spec-level",
-      "owner": "",
+      "status": "approved",
+      "owner": "Builder (Go)",
       "depends_on": [
-        "F1.2"
+        "F2.1",
+        "F2.2"
       ],
-      "depends_on_phases": [
-        "P1"
-      ],
+      "depends_on_phases": [],
       "blocks": [],
       "blocks_phases": [],
-      "source": "spec/phases/p2-mcp/README.md",
-      "detailed": false,
+      "source": "spec/phases/p2-mcp/features/F2.3-claude-code-quickstart.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F1.1",
-        "F1.2",
-        "F1.3",
-        "F1.4",
-        "F1.5"
+        "F2.1",
+        "F2.2"
       ]
     },
     {
@@ -819,63 +808,19 @@
       "to": "F1.5"
     },
     {
-      "from": "F1.1",
-      "to": "F2.1"
-    },
-    {
       "from": "F1.2",
       "to": "F2.1"
     },
     {
-      "from": "F1.3",
-      "to": "F2.1"
-    },
-    {
-      "from": "F1.4",
-      "to": "F2.1"
-    },
-    {
-      "from": "F1.5",
-      "to": "F2.1"
-    },
-    {
-      "from": "F1.1",
+      "from": "F2.1",
       "to": "F2.2"
     },
     {
-      "from": "F1.2",
-      "to": "F2.2"
-    },
-    {
-      "from": "F1.3",
-      "to": "F2.2"
-    },
-    {
-      "from": "F1.4",
-      "to": "F2.2"
-    },
-    {
-      "from": "F1.5",
-      "to": "F2.2"
-    },
-    {
-      "from": "F1.1",
+      "from": "F2.1",
       "to": "F2.3"
     },
     {
-      "from": "F1.2",
-      "to": "F2.3"
-    },
-    {
-      "from": "F1.3",
-      "to": "F2.3"
-    },
-    {
-      "from": "F1.4",
-      "to": "F2.3"
-    },
-    {
-      "from": "F1.5",
+      "from": "F2.2",
       "to": "F2.3"
     },
     {

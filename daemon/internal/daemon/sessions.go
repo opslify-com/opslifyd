@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -20,11 +21,19 @@ type SessionService interface {
 	Exec(ctx context.Context, id string, opts session.ExecOptions, sink session.ExecSink) error
 	Destroy(ctx context.Context, id string) error
 	List() []session.View
+	// WriteFile / ReadFile are the mediated file-transfer surface (F2.1). They
+	// are confined to the session's /workspace and size-bounded in the Manager.
+	WriteFile(ctx context.Context, id, path string, content []byte) error
+	ReadFile(ctx context.Context, id, path string) ([]byte, error)
+	// ListWorkspaces / RemoveWorkspace back the F2.2 `opslify ws ls|rm` surface.
+	ListWorkspaces() ([]session.WorkspaceView, error)
+	RemoveWorkspace(ctx context.Context, name string) error
 }
 
 // createRequest is the POST /v1/sessions body.
 type createRequest struct {
 	Mode     string `json:"mode"`
+	Name     string `json:"name,omitempty"` // workspace name (workspace mode)
 	Tier     string `json:"tier,omitempty"`
 	Location string `json:"location,omitempty"`
 	TTL      string `json:"ttl,omitempty"` // Go duration string, e.g. "30m"
@@ -63,6 +72,35 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /"+APIVersion+"/sessions", d.handleSessionList)
 	mux.HandleFunc("POST /"+APIVersion+"/sessions/{id}/exec", d.handleSessionExec)
 	mux.HandleFunc("DELETE /"+APIVersion+"/sessions/{id}", d.handleSessionDelete)
+	// F2.1 mediated file transfer, confined to the session's /workspace.
+	mux.HandleFunc("PUT /"+APIVersion+"/sessions/{id}/files", d.handleFileUpload)
+	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/files", d.handleFileDownload)
+	// F2.2 workspace management.
+	mux.HandleFunc("GET /"+APIVersion+"/workspaces", d.handleWorkspaceList)
+	mux.HandleFunc("DELETE /"+APIVersion+"/workspaces/{name}", d.handleWorkspaceDelete)
+}
+
+// handleWorkspaceList backs `opslify ws ls`.
+func (d *Daemon) handleWorkspaceList(w http.ResponseWriter, r *http.Request) {
+	ws, err := d.sessions.ListWorkspaces()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "sandbox", err.Error())
+		return
+	}
+	if ws == nil {
+		ws = []session.WorkspaceView{}
+	}
+	writeJSON(w, http.StatusOK, ws)
+}
+
+// handleWorkspaceDelete backs `opslify ws rm <name>`.
+func (d *Daemon) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := d.sessions.RemoveWorkspace(r.Context(), name); err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +111,7 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	req := session.CreateRequest{
 		Mode:     session.Mode(body.Mode),
+		Name:     body.Name,
 		Tier:     runtime.Tier(body.Tier),
 		Location: runtime.Location(body.Location),
 	}
@@ -103,6 +142,53 @@ func (d *Daemon) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// uploadRequest is the PUT /v1/sessions/{id}/files body: base64 content written
+// to a path confined to the session's /workspace.
+type uploadRequest struct {
+	Path       string `json:"path"`
+	ContentB64 string `json:"content_b64"`
+}
+
+// downloadResponse is the GET /v1/sessions/{id}/files reply.
+type downloadResponse struct {
+	ContentB64 string `json:"content_b64"`
+}
+
+// handleFileUpload writes a base64-decoded blob to a /workspace-confined path.
+// The base64 is decoded here so the daemon bounds the DECODED size (the Manager
+// re-checks against session.MaxFileBytes), and traversal is rejected in the
+// Manager's path resolver.
+func (d *Daemon) handleFileUpload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body uploadRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
+		return
+	}
+	content, err := base64.StdEncoding.DecodeString(body.ContentB64)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", "invalid content_b64: "+err.Error())
+		return
+	}
+	if err := d.sessions.WriteFile(r.Context(), id, body.Path, content); err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleFileDownload reads a /workspace-confined path and returns it base64.
+func (d *Daemon) handleFileDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	path := r.URL.Query().Get("path")
+	content, err := d.sessions.ReadFile(r.Context(), id, path)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, downloadResponse{ContentB64: base64.StdEncoding.EncodeToString(content)})
 }
 
 // handleSessionExec streams bounded stdout/stderr frames then an exit frame as

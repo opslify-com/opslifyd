@@ -42,9 +42,12 @@ type fakeRuntime struct {
 	createErr    error
 	execErr      error
 	lastSpec     runtime.SessionSpec
+	specs        []runtime.SessionSpec // every Create spec, in order (resume-base checks)
 	created      int
 	destroyed    int
 	destroyedIDs []string
+	snapshots    []string // images committed via Snapshot, in order
+	removed      []string // images deleted via RemoveImage (ImageRemover)
 	nextExec     runtime.ExecStream
 }
 
@@ -65,6 +68,7 @@ func (f *fakeRuntime) Create(_ context.Context, spec runtime.SessionSpec) (runti
 		return runtime.ContainerHandle{}, f.createErr
 	}
 	f.lastSpec = spec
+	f.specs = append(f.specs, spec)
 	f.created++
 	return runtime.ContainerHandle{
 		ID:      fmt.Sprintf("ctr-%d", f.created),
@@ -91,7 +95,19 @@ func (f *fakeRuntime) Destroy(_ context.Context, h runtime.ContainerHandle) erro
 }
 
 func (f *fakeRuntime) Snapshot(_ context.Context, _ runtime.ContainerHandle, name string) (runtime.ImageRef, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshots = append(f.snapshots, name)
 	return runtime.ImageRef{Name: name}, nil
+}
+
+// RemoveImage makes fakeRuntime satisfy runtime.ImageRemover so retention prune
+// and `ws rm` are exercised in unit tests.
+func (f *fakeRuntime) RemoveImage(_ context.Context, ref string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, ref)
+	return nil
 }
 
 func (f *fakeRuntime) Available() error {
@@ -110,11 +126,14 @@ func (f *fakeRuntime) spec() runtime.SessionSpec {
 
 // memStore is an in-memory Store double.
 type memStore struct {
-	mu      sync.Mutex
-	records map[string]record
+	mu         sync.Mutex
+	records    map[string]record
+	workspaces map[string]workspaceRecord
 }
 
-func newMemStore() *memStore { return &memStore{records: map[string]record{}} }
+func newMemStore() *memStore {
+	return &memStore{records: map[string]record{}, workspaces: map[string]workspaceRecord{}}
+}
 
 func (s *memStore) Save(r record) error {
 	s.mu.Lock()
@@ -141,6 +160,37 @@ func (s *memStore) LoadAll() ([]record, error) {
 }
 
 func (s *memStore) count() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.records) }
+
+func (s *memStore) SaveWorkspace(w workspaceRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workspaces[w.Name] = w
+	return nil
+}
+
+func (s *memStore) LoadWorkspace(name string) (workspaceRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.workspaces[name]
+	return w, ok, nil
+}
+
+func (s *memStore) LoadWorkspaces() ([]workspaceRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]workspaceRecord, 0, len(s.workspaces))
+	for _, w := range s.workspaces {
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+func (s *memStore) DeleteWorkspace(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.workspaces, name)
+	return nil
+}
 
 // captureSink is an in-memory ExecSink recording frames for assertions.
 type captureSink struct {
