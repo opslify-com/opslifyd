@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -14,10 +15,32 @@ import (
 )
 
 func main() {
-	if err := rootCmd().Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+	os.Exit(run())
+}
+
+// run executes the root command and maps errors to a process exit code. A
+// sandboxed command's non-zero exit is mirrored verbatim (no extra "error:"
+// noise); every other failure prints its message — layered errors already carry
+// their "error [layer]: ..." prefix — and exits 1.
+func run() int {
+	err := rootCmd().ExecuteContext(context.Background())
+	if err == nil {
+		return 0
 	}
+	var ec *exitCodeError
+	if errors.As(err, &ec) {
+		return ec.code
+	}
+	// layerError and connError already carry a fully-formed, layer-named message;
+	// print them verbatim rather than prefixing a redundant "error:".
+	var le *layerError
+	var ce *connError
+	if errors.As(err, &le) || errors.As(err, &ce) {
+		fmt.Fprintln(os.Stderr, err.Error())
+		return 1
+	}
+	fmt.Fprintln(os.Stderr, "error:", err)
+	return 1
 }
 
 func rootCmd() *cobra.Command {
@@ -28,6 +51,8 @@ func rootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(initCmd())
+	root.AddCommand(runCmd())
+	root.AddCommand(sessionCmd())
 	return root
 }
 

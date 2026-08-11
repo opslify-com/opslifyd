@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // DefaultSeccompProfile is the path the hardened base points podman at for its
@@ -73,8 +74,26 @@ func (execRunner) run(ctx context.Context, name string, args ...string) ([]byte,
 // reaps it. Wait also closes both pipes, so there is no fd/goroutine leak
 // provided the caller honors the contract (drain both readers, then wait) —
 // which the F1.2 consumer does.
+//
+// D3 fix — kill the whole process TREE, not just the direct child. The command
+// we launch is typically a shell (`sh -c ...` inside `podman exec`, or a
+// real DevOps script) that forks worker children/grandchildren (terraform, a
+// backgrounded `yes`, a subshell). Go's default CommandContext cancel sends
+// SIGKILL to ONLY the direct child; on shells that exec-through vs. fork this
+// leaves grandchildren alive holding the stdout pipe's write end open, so
+// drainReader never hits EOF and Wait never reaps — a process-tree-level
+// re-introduction of the D1/D2 hang. We put the child in its OWN process group
+// (Setpgid, pgid == child PID) and override cmd.Cancel to SIGKILL the negative
+// PGID, so cancel tears down every descendant and closes all pipe write-ends.
 func (execRunner) stream(ctx context.Context, name string, args ...string) (streamResult, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// New process group rooted at the child so cancel can signal the whole tree.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Override the default single-process kill: signal the negative PGID (==child
+	// PID) to SIGKILL the entire group, reaping every forked descendant.
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return streamResult{}, fmt.Errorf("runtime: %s stdout pipe: %w", name, err)
@@ -142,6 +161,16 @@ type podmanRuntime struct {
 //   - --read-only                        : read-only rootfs (writable paths are
 //     explicit tmpfs/volumes only)
 //   - --security-opt=seccomp=<profile>   : explicit syscall filter
+//   - --pid=private                      : a private PID namespace, so the
+//     sandbox owns its own PID 1 and can neither see nor signal host/parent
+//     processes, nor reach a host rootfs via /proc/<host-pid>/root. Podman's
+//     default is already a private PID ns, but we set it EXPLICITLY so the
+//     boundary can never be silently downgraded by a config/default change
+//     (defense in code). This completes the F1.2-deferred /proc + PID-namespace
+//     isolation and is what the escape suite's pid-namespace-isolation probe
+//     verifies at runtime. (Sensitive /proc paths — /proc/kcore, /proc/sys, … —
+//     are masked by podman's default OCI spec and re-implemented harmlessly by
+//     gVisor, so no extra --security-opt=mask is required to close this.)
 func hardeningFlags(seccompProfile string) []string {
 	return []string{
 		"--cap-drop=ALL",
@@ -149,6 +178,7 @@ func hardeningFlags(seccompProfile string) []string {
 		"--userns=auto",
 		"--user=" + SandboxUser,
 		"--read-only",
+		"--pid=private",
 		"--security-opt=seccomp=" + seccompProfile,
 	}
 }
@@ -182,8 +212,11 @@ func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 	}
 	if spec.ToolchainDigest != "" {
 		// Signed F0.2 toolchain, mounted read-only. Never writable.
+		// podman --mount type=image expresses read-only as rw=false (it does NOT
+		// accept ro=true — that errors "ro: invalid mount option"). Image mounts
+		// are read-only by default; rw=false is explicit and unambiguous.
 		args = append(args, "--mount",
-			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,ro=true")
+			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,rw=false")
 	}
 	if spec.Workspace != "" {
 		// The one writable persistent path.

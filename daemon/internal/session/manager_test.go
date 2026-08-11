@@ -88,7 +88,7 @@ func TestCreateSpecFlowsHardeningToContainer(t *testing.T) {
 		}
 	}
 	// Signed toolchain RO + resource caps flowed through.
-	if !strings.Contains(joined, "destination=/opt/toolchain,ro=true") {
+	if !strings.Contains(joined, "destination=/opt/toolchain,rw=false") {
 		t.Errorf("toolchain must be mounted read-only: %v", args)
 	}
 	if !strings.Contains(joined, ":/workspace:rw") {
