@@ -104,8 +104,55 @@ func (c *client) decodeError(resp *http.Response) error {
 
 type createReq struct {
 	Mode string `json:"mode,omitempty"`
+	Name string `json:"name,omitempty"`
 	Tier string `json:"tier,omitempty"`
 	TTL  string `json:"ttl,omitempty"`
+}
+
+// workspaceView mirrors session.WorkspaceView for the `ws ls` table.
+type workspaceView struct {
+	Name       string `json:"name"`
+	Snapshots  int    `json:"snapshots"`
+	LatestTag  int    `json:"latest_tag"`
+	LatestTime string `json:"latest_time,omitempty"`
+}
+
+// listWorkspaces GETs /v1/workspaces.
+func (c *client) listWorkspaces(ctx context.Context) ([]workspaceView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/workspaces", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []workspaceView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// removeWorkspace DELETEs /v1/workspaces/{name}.
+func (c *client) removeWorkspace(ctx context.Context, name string) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/workspaces/"+name, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
 }
 
 type createResp struct {

@@ -39,6 +39,7 @@ type server struct {
 
 type sessionCreateIn struct {
 	Mode  string `json:"mode,omitempty" jsonschema:"session mode: scratch (ephemeral, default) or workspace (persisted)"`
+	Name  string `json:"name,omitempty" jsonschema:"workspace name (required for mode=workspace); persists /workspace + resumes deps across sessions. [a-z0-9][a-z0-9_-]*"`
 	Image string `json:"image,omitempty" jsonschema:"reserved; the daemon pins the sandbox image from its signed config, so this is currently ignored"`
 	TTL   string `json:"ttl,omitempty" jsonschema:"idle lifetime as a Go duration (e.g. 30m); empty uses the daemon default"`
 }
@@ -153,7 +154,7 @@ func toolError[Out any](err error) (*mcp.CallToolResult, Out, error) {
 }
 
 func (s *server) sessionCreate(ctx context.Context, _ *mcp.CallToolRequest, in sessionCreateIn) (*mcp.CallToolResult, sessionCreateOut, error) {
-	resp, err := s.c.createSession(ctx, createReq{Mode: in.Mode, TTL: in.TTL})
+	resp, err := s.c.createSession(ctx, createReq{Mode: in.Mode, Name: in.Name, TTL: in.TTL})
 	if err != nil {
 		return toolError[sessionCreateOut](err)
 	}

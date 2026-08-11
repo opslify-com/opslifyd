@@ -25,11 +25,15 @@ type SessionService interface {
 	// are confined to the session's /workspace and size-bounded in the Manager.
 	WriteFile(ctx context.Context, id, path string, content []byte) error
 	ReadFile(ctx context.Context, id, path string) ([]byte, error)
+	// ListWorkspaces / RemoveWorkspace back the F2.2 `opslify ws ls|rm` surface.
+	ListWorkspaces() ([]session.WorkspaceView, error)
+	RemoveWorkspace(ctx context.Context, name string) error
 }
 
 // createRequest is the POST /v1/sessions body.
 type createRequest struct {
 	Mode     string `json:"mode"`
+	Name     string `json:"name,omitempty"` // workspace name (workspace mode)
 	Tier     string `json:"tier,omitempty"`
 	Location string `json:"location,omitempty"`
 	TTL      string `json:"ttl,omitempty"` // Go duration string, e.g. "30m"
@@ -71,6 +75,32 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	// F2.1 mediated file transfer, confined to the session's /workspace.
 	mux.HandleFunc("PUT /"+APIVersion+"/sessions/{id}/files", d.handleFileUpload)
 	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/files", d.handleFileDownload)
+	// F2.2 workspace management.
+	mux.HandleFunc("GET /"+APIVersion+"/workspaces", d.handleWorkspaceList)
+	mux.HandleFunc("DELETE /"+APIVersion+"/workspaces/{name}", d.handleWorkspaceDelete)
+}
+
+// handleWorkspaceList backs `opslify ws ls`.
+func (d *Daemon) handleWorkspaceList(w http.ResponseWriter, r *http.Request) {
+	ws, err := d.sessions.ListWorkspaces()
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "sandbox", err.Error())
+		return
+	}
+	if ws == nil {
+		ws = []session.WorkspaceView{}
+	}
+	writeJSON(w, http.StatusOK, ws)
+}
+
+// handleWorkspaceDelete backs `opslify ws rm <name>`.
+func (d *Daemon) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := d.sessions.RemoveWorkspace(r.Context(), name); err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +111,7 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	req := session.CreateRequest{
 		Mode:     session.Mode(body.Mode),
+		Name:     body.Name,
 		Tier:     runtime.Tier(body.Tier),
 		Location: runtime.Location(body.Location),
 	}

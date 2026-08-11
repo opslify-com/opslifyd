@@ -21,6 +21,7 @@ func runCmd() *cobra.Command {
 		socket string
 		tier   string
 		mode   string
+		name   string
 		cwd    string
 		keep   bool
 	)
@@ -32,7 +33,7 @@ func runCmd() *cobra.Command {
 			ctx := cmd.Context()
 			c := newClient(socket)
 
-			created, err := c.createSession(ctx, createReq{Mode: mode, Tier: tier})
+			created, err := c.createSession(ctx, createReq{Mode: mode, Name: name, Tier: tier})
 			if err != nil {
 				return err
 			}
@@ -60,6 +61,7 @@ func runCmd() *cobra.Command {
 	cmd.Flags().StringVar(&socket, "socket", daemon.DefaultSocketPath, "daemon Unix socket path")
 	cmd.Flags().StringVar(&tier, "tier", "", "isolation tier (default: daemon default, e.g. local-hardened)")
 	cmd.Flags().StringVar(&mode, "mode", "", "session mode: scratch|workspace (default: daemon default)")
+	cmd.Flags().StringVar(&name, "name", "", "workspace name (required for --mode workspace)")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "working directory inside the sandbox")
 	cmd.Flags().BoolVar(&keep, "keep", false, "do not destroy the session after the command exits")
 	// Stop flag parsing at the first positional so the sandboxed command keeps its

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +24,37 @@ import (
 // for out-of-band orphan detection (the persisted-record reconcile is the path
 // unit-tested here; the podman sweep is gated on a real engine).
 const namePrefix = "opslify-sess-"
+
+// DefaultSnapshotRetention is how many workspace snapshots per name are kept
+// when ManagerConfig.SnapshotRetention is left zero. Older snapshots are pruned
+// (and their images removed) on each commit, so a workspace never accumulates
+// unbounded images.
+const DefaultSnapshotRetention = 3
+
+// wsImagePrefix is the local image namespace every workspace snapshot lives in.
+// A workspace name is validated (validateWorkspaceName) before it is ever
+// interpolated here, so a snapshot ref can never escape this namespace or the
+// on-disk workspace-record path.
+const wsImagePrefix = "opslify/ws-"
+
+// wsNameRe bounds a workspace name to a safe, traversal-free token: it must be a
+// lowercase alnum start followed by alnum / '-' / '_', up to 64 chars. This
+// keeps both the image ref (opslify/ws-<name>:<n>) and the on-disk record path
+// (<state>/workspaces/<name>.json) inside their namespace — no '/', '..', ':',
+// or whitespace can appear.
+var wsNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// validateWorkspaceName rejects any name that could traverse out of the
+// opslify/ws-* image namespace or the workspace-record directory.
+func validateWorkspaceName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: workspace mode requires a name", ErrInvalidInput)
+	}
+	if !wsNameRe.MatchString(name) {
+		return fmt.Errorf("%w: workspace name %q must match %s", ErrInvalidInput, name, wsNameRe.String())
+	}
+	return nil
+}
 
 // Sentinel errors. Each names its failure LAYER so callers (and the HTTP surface)
 // can distinguish sandbox-lifecycle errors from runtime/engine errors from bad
@@ -75,6 +107,10 @@ type ManagerConfig struct {
 	// WarmPoolConcurrency caps how many warm containers are (re)built at once, so
 	// replenishment never stampedes the engine or starves claims. Zero => default.
 	WarmPoolConcurrency int
+	// SnapshotRetention is how many rootfs snapshots per workspace name are kept
+	// (older ones are pruned + their images removed on each commit). Zero =>
+	// DefaultSnapshotRetention.
+	SnapshotRetention int
 }
 
 // resolveFunc maps a (tier, location) to a concrete Runtime. Production uses
@@ -110,6 +146,12 @@ type Manager struct {
 	// pool is the F1.3 warm pool (nil when WarmPoolSize == 0). Create claims from
 	// it before falling back to on-demand realize.
 	pool *warmPool
+
+	// wsMu serializes workspace-name-sensitive operations (a workspace create and
+	// RemoveWorkspace) so a `ws rm` can never race a concurrent create of the same
+	// name and delete the host dir out from under a starting session (F2.2 TOCTOU).
+	// It is NOT on the exec/list hot path — only workspace create + rm take it.
+	wsMu sync.Mutex
 
 	reaperStop chan struct{}
 	reaperDone chan struct{}
@@ -185,6 +227,7 @@ func NewManager(opts Options) (*Manager, error) {
 // CreateRequest is the mediated session_create input.
 type CreateRequest struct {
 	Mode     Mode
+	Name     string           // workspace name (workspace mode only; validated)
 	Tier     runtime.Tier     // empty => cfg.DefaultTier
 	Location runtime.Location // empty => local
 	TTL      time.Duration    // <=0 => cfg.DefaultTTL
@@ -205,6 +248,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	if mode != ModeScratch && mode != ModeWorkspace {
 		return nil, fmt.Errorf("%w: mode %q (want scratch|workspace)", ErrInvalidInput, mode)
 	}
+	name := ""
+	if mode == ModeWorkspace {
+		if err := validateWorkspaceName(req.Name); err != nil {
+			return nil, err
+		}
+		name = req.Name
+	}
 	tier := req.Tier
 	if tier == "" {
 		tier = m.cfg.DefaultTier
@@ -218,9 +268,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		ttl = m.cfg.DefaultTTL
 	}
 
-	// Fast path: claim a pre-warmed sandbox. The pool triggers its own background
-	// replenishment; the claim itself never waits on it.
-	if m.pool != nil {
+	// Fast path: claim a pre-warmed sandbox. The pool holds only generic SCRATCH
+	// containers (no per-name workspace dir or resume base), so a workspace create
+	// always takes the on-demand realize path — never a warm claim.
+	if m.pool != nil && mode == ModeScratch {
 		if s, err := m.pool.claim(ctx, tier, loc, mode, ttl); err != nil {
 			return nil, err
 		} else if s != nil {
@@ -230,7 +281,16 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		// Pool miss (empty or wrong rung): fall through to on-demand create.
 	}
 
-	s, err := m.realize(ctx, tier, loc, mode, ttl, StateReady)
+	// Serialize workspace create against RemoveWorkspace: while this create holds
+	// wsMu, a concurrent `ws rm <name>` blocks until the session is registered,
+	// then its in-use check sees the live session and refuses — so a rm can never
+	// delete the host dir out from under a starting workspace session.
+	if mode == ModeWorkspace {
+		m.wsMu.Lock()
+		defer m.wsMu.Unlock()
+	}
+
+	s, err := m.realize(ctx, tier, loc, mode, name, ttl, StateReady)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +304,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 // same hardening hard-spec (F0.3 base) and same signed toolchain digest. It does
 // NOT register the session in the live map — the caller (Create for ready
 // sessions; the pool for warm ones) decides that.
-func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, ttl time.Duration, st State) (*Session, error) {
+func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, name string, ttl time.Duration, st State) (*Session, error) {
 	rt, err := m.resolve(tier, loc)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
@@ -261,22 +321,46 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	}
 	now := m.clock.Now()
 
-	// Per-session writable workspace on the host, mounted rw at /workspace. The
-	// one persistent writable path; everything else is read-only rootfs + the RO
-	// toolchain (asserted in F0.3's hardening base).
-	wsDir := filepath.Join(m.cfg.WorkspaceRoot, id)
+	// Writable workspace on the host, mounted rw at /workspace — the one writable
+	// path (rootfs is read-only + RO toolchain, asserted in F0.3's base). This is
+	// where ALL persistent workspace state lives: a `podman commit` snapshot would
+	// NOT capture a bind mount, so the host dir IS the persistence mechanism.
+	//   - scratch:   a per-SESSION dir (<root>/<id>), discarded on end.
+	//   - workspace: a stable per-NAME dir (<root>/ws-<name>), kept across sessions
+	//                and re-mounted on resume so installed deps/clones persist —
+	//                including across a daemon restart (it is just a host directory).
+	var wsDir string
 	if m.cfg.WorkspaceRoot != "" {
+		if mode == ModeWorkspace {
+			wsDir = m.workspaceDir(name)
+		} else {
+			wsDir = filepath.Join(m.cfg.WorkspaceRoot, id)
+		}
 		if err := os.MkdirAll(wsDir, 0o700); err != nil {
 			return nil, fmt.Errorf("session: create workspace %s: %w", wsDir, err)
 		}
-	} else {
-		wsDir = ""
+	}
+
+	// Resume base image: for a workspace with a prior snapshot, boot from the
+	// latest committed rootfs image; otherwise the signed base. (Under read-only
+	// rootfs the rootfs snapshot captures little, but resuming from it is correct
+	// and future-proofs a writable-rootfs tier; the /workspace host dir above is
+	// what actually carries agent state.)
+	baseImage := m.cfg.Image
+	if mode == ModeWorkspace {
+		if rec, ok, err := m.store.LoadWorkspace(name); err != nil {
+			return nil, fmt.Errorf("session: load workspace %q: %w", name, err)
+		} else if ok {
+			if latest, has := rec.latest(); has {
+				baseImage = latest
+			}
+		}
 	}
 
 	spec := runtime.SessionSpec{
 		Tier:            tier,
 		Location:        loc,
-		Image:           m.cfg.Image,
+		Image:           baseImage,
 		ToolchainDigest: m.toolchainDigest(),
 		Workspace:       wsDir,
 		Limits:          m.cfg.Limits,
@@ -313,6 +397,7 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	s := &Session{
 		ID:           id,
 		Mode:         mode,
+		Name:         name,
 		Tier:         tier,
 		Location:     loc,
 		State:        st,
@@ -463,18 +548,39 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 	delete(m.sessions, id)
 	s.State = StateEnded
 	m.mu.Unlock()
-	return m.teardown(ctx, s)
+	return m.teardown(ctx, s, true)
 }
 
 // teardown destroys the container + workspace + record for an already-detached
 // session. Errors are joined so a container-destroy failure still attempts (and
 // reports) the record/workspace cleanup rather than leaking silently.
-func (m *Manager) teardown(ctx context.Context, s *Session) error {
+// teardown destroys the container + record for an already-detached session.
+// snapshot=true commits a workspace rootfs snapshot first — set on a clean end
+// (Destroy / TTL reap / graceful Shutdown), where the container is live and its
+// state worth preserving. It is FALSE on restart Reconcile: an orphan from a
+// prior daemon life is reaped, not re-snapshotted (its clean state is already in
+// the last graceful snapshot, and the /workspace host dir carries the real
+// state regardless — re-snapshotting a stale container on every restart would
+// only churn the retention window with near-empty rootfs commits).
+func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool) error {
 	var errs []error
-	if rt, err := m.resolve(s.Tier, s.Location); err != nil {
-		errs = append(errs, err)
-	} else if err := rt.Destroy(ctx, s.Handle); err != nil {
-		errs = append(errs, err)
+	rt, rErr := m.resolve(s.Tier, s.Location)
+	if rErr != nil {
+		errs = append(errs, rErr)
+	}
+	// Workspace mode, clean end: commit a rootfs snapshot BEFORE destroying the
+	// container (it must still exist to commit), record it (restart-surviving),
+	// and prune to retention. The /workspace host dir is the real state carrier
+	// and persists on its own — snapshotWorkspace never touches it.
+	if snapshot && rErr == nil && s.Mode == ModeWorkspace && s.Name != "" {
+		if err := m.snapshotWorkspace(ctx, rt, s); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if rErr == nil {
+		if err := rt.Destroy(ctx, s.Handle); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	// Remove the session's egress rules. Idempotent, so it is safe on the
 	// reconcile/reap paths too (a session whose egress was never set up, or a
@@ -485,6 +591,9 @@ func (m *Manager) teardown(ctx context.Context, s *Session) error {
 	if err := m.store.Delete(s.ID); err != nil {
 		errs = append(errs, err)
 	}
+	// Only scratch sessions discard their (per-session) workspace dir. A
+	// workspace's per-NAME dir persists across sessions for the next resume — it
+	// is removed only by `ws rm` (RemoveWorkspace).
 	if s.Mode == ModeScratch {
 		m.cleanupWorkspace(s.WorkspaceDir)
 	}
@@ -492,6 +601,123 @@ func (m *Manager) teardown(ctx context.Context, s *Session) error {
 		return fmt.Errorf("session: teardown %s: %w", s.ID, errors.Join(errs...))
 	}
 	m.log.Info("session destroyed", "session", s.ID)
+	return nil
+}
+
+// workspaceDir is the stable host directory backing a workspace name's
+// /workspace across sessions and restarts. name is validated before this.
+func (m *Manager) workspaceDir(name string) string {
+	return filepath.Join(m.cfg.WorkspaceRoot, "ws-"+name)
+}
+
+// snapshotWorkspace commits the container's rootfs to opslify/ws-<name>:<tag>,
+// appends it to the workspace's restart-surviving record, prunes older snapshots
+// past the retention cap (removing their images best-effort), and persists the
+// record. Called from teardown while the container is still alive.
+func (m *Manager) snapshotWorkspace(ctx context.Context, rt runtime.Runtime, s *Session) error {
+	rec, _, err := m.store.LoadWorkspace(s.Name)
+	if err != nil {
+		return fmt.Errorf("session: load workspace %q: %w", s.Name, err)
+	}
+	rec.Name = s.Name
+	tag := rec.nextTag()
+	image := fmt.Sprintf("%s%s:%d", wsImagePrefix, s.Name, tag)
+	if _, err := rt.Snapshot(ctx, s.Handle, image); err != nil {
+		return fmt.Errorf("session: snapshot workspace %q: %w", s.Name, err)
+	}
+	rec.Snapshots = append(rec.Snapshots, snapshotMeta{Image: image, Tag: tag, Created: m.clock.Now()})
+
+	ret := m.cfg.SnapshotRetention
+	if ret <= 0 {
+		ret = DefaultSnapshotRetention
+	}
+	if len(rec.Snapshots) > ret {
+		prune := rec.Snapshots[:len(rec.Snapshots)-ret]
+		rec.Snapshots = rec.Snapshots[len(rec.Snapshots)-ret:]
+		if remover, ok := rt.(runtime.ImageRemover); ok {
+			for _, sm := range prune {
+				if err := remover.RemoveImage(ctx, sm.Image); err != nil {
+					m.log.Warn("prune workspace snapshot image", "workspace", s.Name, "image", sm.Image, "err", err)
+				}
+			}
+		}
+	}
+	return m.store.SaveWorkspace(rec)
+}
+
+// WorkspaceView summarises a persisted workspace for `opslify ws ls`.
+type WorkspaceView struct {
+	Name       string    `json:"name"`
+	Snapshots  int       `json:"snapshots"`
+	LatestTag  int       `json:"latest_tag"`
+	LatestTime time.Time `json:"latest_time,omitempty"`
+}
+
+// ListWorkspaces returns every persisted workspace (name + snapshot summary),
+// name-sorted — the data behind `opslify ws ls`.
+func (m *Manager) ListWorkspaces() ([]WorkspaceView, error) {
+	recs, err := m.store.LoadWorkspaces()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WorkspaceView, 0, len(recs))
+	for _, r := range recs {
+		v := WorkspaceView{Name: r.Name, Snapshots: len(r.Snapshots)}
+		if n := len(r.Snapshots); n > 0 {
+			v.LatestTag = r.Snapshots[n-1].Tag
+			v.LatestTime = r.Snapshots[n-1].Created
+		}
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// RemoveWorkspace deletes a workspace end-to-end: its snapshot images (best
+// effort, via ImageRemover), its persisted record, and its /workspace host dir.
+// It refuses while a live session is using the workspace so state is never
+// pulled from under a running sandbox. A missing workspace is not an error.
+func (m *Manager) RemoveWorkspace(ctx context.Context, name string) error {
+	if err := validateWorkspaceName(name); err != nil {
+		return err
+	}
+	// Serialize against workspace create (see Create): holding wsMu means an
+	// in-flight create of this name has either finished (its session is now
+	// visible to the in-use check below and we refuse) or has not started (and
+	// will block until we finish), so the dir is never removed mid-start.
+	m.wsMu.Lock()
+	defer m.wsMu.Unlock()
+
+	m.mu.Lock()
+	for _, s := range m.sessions {
+		if s.Mode == ModeWorkspace && s.Name == name {
+			m.mu.Unlock()
+			return fmt.Errorf("%w: workspace %q in use by session %s", ErrInvalidInput, name, s.ID)
+		}
+	}
+	m.mu.Unlock()
+
+	rec, ok, err := m.store.LoadWorkspace(name)
+	if err != nil {
+		return err
+	}
+	if ok {
+		if rt, rErr := m.resolve(m.cfg.DefaultTier, runtime.LocationLocal); rErr == nil {
+			if remover, isRemover := rt.(runtime.ImageRemover); isRemover {
+				for _, sm := range rec.Snapshots {
+					if err := remover.RemoveImage(ctx, sm.Image); err != nil {
+						m.log.Warn("ws rm: remove snapshot image", "workspace", name, "image", sm.Image, "err", err)
+					}
+				}
+			}
+		}
+		if err := m.store.DeleteWorkspace(name); err != nil {
+			return err
+		}
+	}
+	if m.cfg.WorkspaceRoot != "" {
+		m.cleanupWorkspace(m.workspaceDir(name))
+	}
 	return nil
 }
 
@@ -525,7 +751,7 @@ func (m *Manager) ReapExpired(ctx context.Context, now time.Time) []string {
 
 	var reaped []string
 	for _, s := range due {
-		if err := m.teardown(ctx, s); err != nil {
+		if err := m.teardown(ctx, s, true); err != nil {
 			m.log.Warn("reaper teardown error", "session", s.ID, "err", err)
 		}
 		m.log.Info("session reaped (ttl)", "session", s.ID)
@@ -546,7 +772,7 @@ func (m *Manager) Reconcile(ctx context.Context) ([]string, error) {
 	var reaped []string
 	for _, r := range records {
 		s := sessionOf(r)
-		if err := m.teardown(ctx, s); err != nil {
+		if err := m.teardown(ctx, s, false); err != nil {
 			// Log and continue: one un-reapable orphan must not block startup or
 			// stop us reaping the rest. The record is left so a later sweep retries.
 			m.log.Warn("orphan reconcile teardown error", "session", r.ID, "err", err)
@@ -611,7 +837,7 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	}
 	m.mu.Unlock()
 	for _, s := range all {
-		if err := m.teardown(ctx, s); err != nil {
+		if err := m.teardown(ctx, s, true); err != nil {
 			m.log.Warn("shutdown teardown error", "session", s.ID, "err", err)
 		}
 	}

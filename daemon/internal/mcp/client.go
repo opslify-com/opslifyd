@@ -104,6 +104,7 @@ func (c *client) decodeError(resp *http.Response) error {
 
 type createReq struct {
 	Mode string `json:"mode,omitempty"`
+	Name string `json:"name,omitempty"`
 	TTL  string `json:"ttl,omitempty"`
 }
 
