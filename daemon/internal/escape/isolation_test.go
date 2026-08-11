@@ -89,6 +89,7 @@ func TestEscapeSuiteRealEngine(t *testing.T) {
 	sb := SandboxSpec{
 		Image:           escapeImage(),
 		ToolchainDigest: escapeImage(), // mount the image read-only at /opt/toolchain to exercise toolchain-readonly
+		Workspace:       buildPtraceHelperDir(t),
 	}
 
 	byTier := map[runtime.Tier]map[string]Outcome{}
@@ -123,6 +124,31 @@ func TestEscapeSuiteRealEngine(t *testing.T) {
 			t.Errorf("gvisor-kernel-identity on local-hardened = %s, want blocked (uname must show gVisor)", got)
 		}
 	}
+}
+
+// buildPtraceHelperDir compiles the static ptrace helper (CGO-free) into a
+// world-readable+executable temp dir and returns that dir, to be bind-mounted at
+// /workspace so the ptrace-attach probe can exec PtraceHelperPath. The dir/file
+// are chmod 0755 because the sandbox runs as an unprivileged, userns-remapped uid
+// that must be able to traverse+exec them. Skips (not fails) if the toolchain
+// can't build the helper, keeping the gated path honest.
+func buildPtraceHelperDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "opslify-ptrace-*")
+	if err != nil {
+		t.Fatalf("mkdir helper dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	bin := dir + "/ptrace_probe"
+	cmd := exec.Command("go", "build", "-o", bin, "./ptracehelper")
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cannot build ptrace helper (toolchain unavailable): %v\n%s", err, out)
+	}
+	// World rx so the remapped sandbox uid can traverse the dir and exec the file.
+	_ = os.Chmod(dir, 0o755)
+	_ = os.Chmod(bin, 0o755)
+	return dir
 }
 
 func writeArtifact(t *testing.T, path string, m Matrix) {
@@ -169,6 +195,10 @@ func TestEscapeSuiteHasTeeth(t *testing.T) {
 		byName[p.Name] = p
 	}
 
+	// The ptrace teeth case needs the compiled helper mounted at /workspace, and a
+	// config where ptrace is PERMITTED (CAP_SYS_PTRACE back + seccomp unconfined).
+	helperDir := buildPtraceHelperDir(t)
+
 	// Each case: a probe + a DELIBERATELY WEAKENED podman config that should make
 	// that probe's Secure predicate return FALSE (escape NOT blocked). If a probe
 	// still reports "blocked" under the weakened config, it has no teeth — fail.
@@ -188,6 +218,13 @@ func TestEscapeSuiteHasTeeth(t *testing.T) {
 		// /root is not our own hostname (denied / different) → pid-namespace-
 		// isolation must go RED (a genuine host-PID escape the probe now catches).
 		{"pid-namespace-isolation", []string{"--pid=host"}},
+		// CAP_SYS_PTRACE restored + seccomp unconfined → the PTRACE_ATTACH on PID 1
+		// SUCCEEDS → ptrace-attach must go RED (proves the probe catches a real
+		// ptrace escape, not an always-deny).
+		{"ptrace-attach", []string{
+			"-v", helperDir + ":/workspace:rw",
+			"--cap-add=SYS_PTRACE", "--security-opt=seccomp=unconfined",
+		}},
 	}
 	for _, c := range cases {
 		p := byName[c.probe]

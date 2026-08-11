@@ -29,6 +29,7 @@ func TestProbeSecurePredicatesAreHonest(t *testing.T) {
 		{"rootfs-write", ExecResult{Stdout: "READONLY\n"}, ExecResult{Stdout: "WROTE\n"}},
 		{"proc-other-pid-mem", ExecResult{Stdout: "DENIED\n"}, ExecResult{Stdout: "READ\n"}},
 		{"pid-namespace-isolation", ExecResult{Stdout: "PRIVATE_PIDNS\n"}, ExecResult{Stdout: "HOST_PIDNS\n"}},
+		{"ptrace-attach", ExecResult{Stdout: "PTRACE_DENIED errno=1\n"}, ExecResult{Stdout: "PTRACE_ATTACHED pid=1\n"}},
 		{"gvisor-kernel-identity", ExecResult{Stdout: "4.19.0-gvisor\n"}, ExecResult{Stdout: "7.1.5-arch1-2\n"}},
 		{"toolchain-readonly", ExecResult{Stdout: "READONLY\n"}, ExecResult{Stdout: "WROTE\n"}},
 	}

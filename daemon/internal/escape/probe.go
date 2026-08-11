@@ -22,6 +22,11 @@ import (
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
 
+// PtraceHelperPath is where the compiled ptrace helper is mounted inside the
+// sandbox (read-write /workspace bind-mount, via the real runtime — see
+// SandboxSpec.Workspace and RunInSandbox). The ptrace-attach probe execs it.
+const PtraceHelperPath = "/workspace/ptrace_probe"
+
 // Category groups probes for the results matrix.
 type Category string
 
@@ -158,6 +163,22 @@ func InSandboxProbes() []Probe {
 			Tiers:  bothLocalTiers,
 			Secure: func(r ExecResult) bool {
 				return strings.Contains(r.Stdout, "PRIVATE_PIDNS") && !strings.Contains(r.Stdout, "HOST_PIDNS")
+			},
+		},
+		{
+			Name:     "ptrace-attach",
+			Category: CatContainerEscape,
+			Desc:     "ptrace(PTRACE_ATTACH) on another process (the sandbox init, PID 1) must be DENIED — caps dropped (no CAP_SYS_PTRACE) + seccomp + gVisor close the debugger/secret-scraping vector",
+			// A genuine PTRACE_ATTACH, not a proxy: a tiny static helper the suite
+			// compiles and mounts read-only at /workspace/ptrace_probe (see
+			// ptracehelper/ and RunInSandbox). It targets PID 1, which is the
+			// sandbox's own init and NOT the helper's child, so an attach that
+			// SUCCEEDS genuinely means the sandbox could trace an unrelated process.
+			// Under the hardened config the syscall is refused → PTRACE_DENIED.
+			Script: PtraceHelperPath,
+			Tiers:  bothLocalTiers,
+			Secure: func(r ExecResult) bool {
+				return strings.Contains(r.Stdout, "PTRACE_DENIED") && !strings.Contains(r.Stdout, "PTRACE_ATTACHED")
 			},
 		},
 		{

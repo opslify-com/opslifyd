@@ -37,7 +37,12 @@ func (o Outcome) Secure() bool { return o == OutcomeBlocked || o == OutcomeNA }
 type SandboxSpec struct {
 	Image           string
 	ToolchainDigest string // mounted read-only at /opt/toolchain; enables the toolchain probe
-	SeccompUnused   bool   // documentation only; hardening is fixed in the runtime
+	// Workspace is a host directory bind-mounted read-write at /workspace by the
+	// real runtime. The suite drops the compiled ptrace helper here so the
+	// ptrace-attach probe can exec it at PtraceHelperPath. Empty = no workspace
+	// (the ptrace-attach probe is then not runnable and is reported N/A).
+	Workspace     string
+	SeccompUnused bool // documentation only; hardening is fixed in the runtime
 }
 
 // lifecycle is the subset of the runtime a sandbox needs: create, start, exec,
@@ -58,6 +63,7 @@ func RunInSandbox(ctx context.Context, rt lifecycle, tier runtime.Tier, sb Sandb
 		Location:        runtime.LocationLocal,
 		Image:           sb.Image,
 		ToolchainDigest: sb.ToolchainDigest,
+		Workspace:       sb.Workspace,
 		// Idle entrypoint so the container stays up for exec probing.
 		Entrypoint: []string{"sleep", "3600"},
 	}
@@ -80,6 +86,12 @@ func RunInSandbox(ctx context.Context, rt lifecycle, tier runtime.Tier, sb Sandb
 			continue // exfil probes are handled by the egress harness
 		}
 		if !p.appliesTo(tier) {
+			results[p.Name] = OutcomeNA
+			continue
+		}
+		// The ptrace-attach probe needs its compiled helper mounted at /workspace;
+		// without a Workspace it is not runnable → N/A (never a false red/green).
+		if p.Name == "ptrace-attach" && sb.Workspace == "" {
 			results[p.Name] = OutcomeNA
 			continue
 		}
