@@ -226,7 +226,7 @@
       "id": "F2.1",
       "phase": "P2",
       "title": "MCP tools",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"
