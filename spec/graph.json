@@ -267,7 +267,7 @@
       "id": "F2.3",
       "phase": "P2",
       "title": "Claude Code quickstart",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F2.1",
