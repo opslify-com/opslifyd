@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -18,6 +19,18 @@ import (
 // operator provisions the profile at this path; F1.2's escape suite asserts it
 // is enforced at runtime.
 const DefaultSeccompProfile = "/etc/opslify/seccomp.json"
+
+// seccompProfilePath returns the seccomp profile to emit. It defaults to
+// DefaultSeccompProfile but can be overridden by OPSLIFY_SECCOMP_PROFILE so an
+// operator (or a rootless dev box that can't write /etc/opslify) can point at a
+// profile elsewhere — e.g. podman's shipped /usr/share/containers/seccomp.json.
+// The profile is still emitted unconditionally; only its path is configurable.
+func seccompProfilePath() string {
+	if p := os.Getenv("OPSLIFY_SECCOMP_PROFILE"); p != "" {
+		return p
+	}
+	return DefaultSeccompProfile
+}
 
 // SandboxUser is the non-root uid:gid the sandbox process runs as. Combined
 // with --userns=auto (host uid remap) the in-container root is never host root.
@@ -219,8 +232,12 @@ func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,rw=false")
 	}
 	if spec.Workspace != "" {
-		// The one writable persistent path.
-		args = append(args, "--volume", spec.Workspace+":/workspace:rw")
+		// The one writable persistent path. The `U` option makes podman chown the
+		// host source into the container's user-namespace UID/GID mapping — without
+		// it, `--userns=auto` + `--user` remaps the sandbox process to a subuid that
+		// does not own the host dir, so `/workspace` would be read-only-by-accident
+		// (writes fail with EACCES) even though it is mounted rw.
+		args = append(args, "--volume", spec.Workspace+":/workspace:rw,U")
 	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Entrypoint...)

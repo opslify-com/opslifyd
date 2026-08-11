@@ -16,7 +16,7 @@ func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 // No toolchain digest configured => fail-closed DenyVerifier (never serves an
 // unverified toolchain).
 func TestBuildVerifierFailsClosedWithoutDigest(t *testing.T) {
-	v, err := buildVerifier(install.Config{}, t.TempDir())
+	v, err := buildVerifier(install.Config{}, t.TempDir(), false)
 	if err != nil {
 		t.Fatalf("buildVerifier: %v", err)
 	}
@@ -25,11 +25,24 @@ func TestBuildVerifierFailsClosedWithoutDigest(t *testing.T) {
 	}
 }
 
+// --dev-skip-verify (skip=true) returns a pass verifier even with no digest,
+// so a dev box without nix/cosign can serve. Fail-closed remains the default
+// (skip=false), asserted by the tests above.
+func TestBuildVerifierDevSkip(t *testing.T) {
+	v, err := buildVerifier(install.Config{}, t.TempDir(), true)
+	if err != nil {
+		t.Fatalf("buildVerifier: %v", err)
+	}
+	if err := v.VerifyToolchain(context.Background()); err != nil {
+		t.Fatalf("dev-skip-verify must pass, got: %v", err)
+	}
+}
+
 // A configured digest with no matching attestation on disk => startup error
 // (legible), not a silent pass.
 func TestBuildVerifierMissingAttestation(t *testing.T) {
 	cfg := install.Config{ToolchainDigest: "sha256:doesnotexist"}
-	if _, err := buildVerifier(cfg, t.TempDir()); err == nil {
+	if _, err := buildVerifier(cfg, t.TempDir(), false); err == nil {
 		t.Fatal("expected error locating a missing toolchain attestation")
 	}
 }
