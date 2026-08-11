@@ -326,18 +326,25 @@ func TestReaperGoroutine(t *testing.T) {
 	m.StartReaper(2 * time.Millisecond)
 	defer m.StopReaper()
 
+	// Poll on the SETTLED effect (the container was destroyed), not on List()==0.
+	// ReapExpired deletes the session from the map under the lock and only then
+	// (lock released) runs teardown → Destroy, so List() can read empty a beat
+	// before the destroy is counted — polling List() here raced the assertion.
+	// destroyedCount incrementing is the last observable step, so it is the
+	// race-free condition to wait on; once it fires, the map delete has already
+	// happened.
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if len(m.List()) == 0 {
-			break
-		}
+	for rt.destroyedCount() == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("reaper goroutine did not reap the expired session")
+			t.Fatal("reaper goroutine did not reap the expired session within 2s")
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	if rt.destroyedCount() != 1 {
-		t.Fatalf("reaper did not destroy the container")
+	if n := rt.destroyedCount(); n != 1 {
+		t.Fatalf("reaper destroyed %d containers, want 1", n)
+	}
+	if len(m.List()) != 0 {
+		t.Fatalf("reaped session still present in List(): %d", len(m.List()))
 	}
 }
 
