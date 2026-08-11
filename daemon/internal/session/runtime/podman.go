@@ -161,6 +161,16 @@ type podmanRuntime struct {
 //   - --read-only                        : read-only rootfs (writable paths are
 //     explicit tmpfs/volumes only)
 //   - --security-opt=seccomp=<profile>   : explicit syscall filter
+//   - --pid=private                      : a private PID namespace, so the
+//     sandbox owns its own PID 1 and can neither see nor signal host/parent
+//     processes, nor reach a host rootfs via /proc/<host-pid>/root. Podman's
+//     default is already a private PID ns, but we set it EXPLICITLY so the
+//     boundary can never be silently downgraded by a config/default change
+//     (defense in code). This completes the F1.2-deferred /proc + PID-namespace
+//     isolation and is what the escape suite's pid-namespace-isolation probe
+//     verifies at runtime. (Sensitive /proc paths — /proc/kcore, /proc/sys, … —
+//     are masked by podman's default OCI spec and re-implemented harmlessly by
+//     gVisor, so no extra --security-opt=mask is required to close this.)
 func hardeningFlags(seccompProfile string) []string {
 	return []string{
 		"--cap-drop=ALL",
@@ -168,6 +178,7 @@ func hardeningFlags(seccompProfile string) []string {
 		"--userns=auto",
 		"--user=" + SandboxUser,
 		"--read-only",
+		"--pid=private",
 		"--security-opt=seccomp=" + seccompProfile,
 	}
 }

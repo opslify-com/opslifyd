@@ -141,13 +141,23 @@ func InSandboxProbes() []Probe {
 			},
 		},
 		{
-			Name:     "host-proc-root",
+			Name:     "pid-namespace-isolation",
 			Category: CatContainerEscape,
-			Desc:     "the host's filesystem must not be reachable via /proc/1/root (no host rootfs escape)",
-			Script:   `if cat /proc/1/root/etc/hostname >/dev/null 2>&1; then echo READ; else echo DENIED; fi`,
-			Tiers:    bothLocalTiers,
+			Desc:     "the sandbox must own its own PID namespace — it cannot see host/parent processes, so /proc/1 is its OWN init and no host rootfs is reachable via /proc/<host-pid>/root",
+			// Honest calibration (see the F1.5 QA note): under a PRIVATE PID
+			// namespace /proc/1 IS the sandbox's own init, so reading
+			// /proc/1/root/etc/hostname simply returns the sandbox's OWN hostname
+			// (benign — reading your own rootfs is not an escape). The real escape
+			// this guards is a SHARED host PID namespace (--pid=host): then /proc/1
+			// is the HOST init, its /root belongs to the host (permission-denied to
+			// our unprivileged uid, or a DIFFERENT hostname), and host processes are
+			// visible. So the secure signal is "we own PID 1": /proc/1/root/etc/
+			// hostname equals our own /etc/hostname. This PASSES under correct
+			// isolation and turns RED only under a genuine host-PID escape.
+			Script: `h1=$(cat /proc/1/root/etc/hostname 2>/dev/null || echo __DENIED__); h2=$(cat /etc/hostname); if [ "$h1" = "$h2" ]; then echo PRIVATE_PIDNS; else echo HOST_PIDNS; fi`,
+			Tiers:  bothLocalTiers,
 			Secure: func(r ExecResult) bool {
-				return strings.Contains(r.Stdout, "DENIED") && !strings.Contains(r.Stdout, "READ")
+				return strings.Contains(r.Stdout, "PRIVATE_PIDNS") && !strings.Contains(r.Stdout, "HOST_PIDNS")
 			},
 		},
 		{

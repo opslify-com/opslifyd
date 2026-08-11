@@ -28,7 +28,7 @@ func TestProbeSecurePredicatesAreHonest(t *testing.T) {
 		{"root-escalation", ExecResult{Stdout: "1000\n"}, ExecResult{Stdout: "0\n"}},
 		{"rootfs-write", ExecResult{Stdout: "READONLY\n"}, ExecResult{Stdout: "WROTE\n"}},
 		{"proc-other-pid-mem", ExecResult{Stdout: "DENIED\n"}, ExecResult{Stdout: "READ\n"}},
-		{"host-proc-root", ExecResult{Stdout: "DENIED\n"}, ExecResult{Stdout: "READ\n"}},
+		{"pid-namespace-isolation", ExecResult{Stdout: "PRIVATE_PIDNS\n"}, ExecResult{Stdout: "HOST_PIDNS\n"}},
 		{"gvisor-kernel-identity", ExecResult{Stdout: "4.19.0-gvisor\n"}, ExecResult{Stdout: "7.1.5-arch1-2\n"}},
 		{"toolchain-readonly", ExecResult{Stdout: "READONLY\n"}, ExecResult{Stdout: "WROTE\n"}},
 	}

@@ -76,6 +76,7 @@ var expectedHardening = []string{
 	"--userns=auto",
 	"--user=" + SandboxUser,
 	"--read-only",
+	"--pid=private",
 	"--security-opt=seccomp=" + DefaultSeccompProfile,
 }
 

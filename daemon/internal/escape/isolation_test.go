@@ -184,6 +184,10 @@ func TestEscapeSuiteHasTeeth(t *testing.T) {
 		{"root-escalation", nil},
 		// toolchain mounted READ-WRITE → the write succeeds → toolchain-readonly RED.
 		{"toolchain-readonly", []string{"-v", "/tmp:/opt/toolchain:rw"}},
+		// SHARED host PID namespace (--pid=host) → /proc/1 is the HOST init, whose
+		// /root is not our own hostname (denied / different) → pid-namespace-
+		// isolation must go RED (a genuine host-PID escape the probe now catches).
+		{"pid-namespace-isolation", []string{"--pid=host"}},
 	}
 	for _, c := range cases {
 		p := byName[c.probe]
