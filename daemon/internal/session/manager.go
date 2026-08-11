@@ -147,6 +147,12 @@ type Manager struct {
 	// it before falling back to on-demand realize.
 	pool *warmPool
 
+	// wsMu serializes workspace-name-sensitive operations (a workspace create and
+	// RemoveWorkspace) so a `ws rm` can never race a concurrent create of the same
+	// name and delete the host dir out from under a starting session (F2.2 TOCTOU).
+	// It is NOT on the exec/list hot path — only workspace create + rm take it.
+	wsMu sync.Mutex
+
 	reaperStop chan struct{}
 	reaperDone chan struct{}
 }
@@ -273,6 +279,15 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 			return s, nil
 		}
 		// Pool miss (empty or wrong rung): fall through to on-demand create.
+	}
+
+	// Serialize workspace create against RemoveWorkspace: while this create holds
+	// wsMu, a concurrent `ws rm <name>` blocks until the session is registered,
+	// then its in-use check sees the live session and refuses — so a rm can never
+	// delete the host dir out from under a starting workspace session.
+	if mode == ModeWorkspace {
+		m.wsMu.Lock()
+		defer m.wsMu.Unlock()
 	}
 
 	s, err := m.realize(ctx, tier, loc, mode, name, ttl, StateReady)
@@ -533,23 +548,31 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 	delete(m.sessions, id)
 	s.State = StateEnded
 	m.mu.Unlock()
-	return m.teardown(ctx, s)
+	return m.teardown(ctx, s, true)
 }
 
 // teardown destroys the container + workspace + record for an already-detached
 // session. Errors are joined so a container-destroy failure still attempts (and
 // reports) the record/workspace cleanup rather than leaking silently.
-func (m *Manager) teardown(ctx context.Context, s *Session) error {
+// teardown destroys the container + record for an already-detached session.
+// snapshot=true commits a workspace rootfs snapshot first — set on a clean end
+// (Destroy / TTL reap / graceful Shutdown), where the container is live and its
+// state worth preserving. It is FALSE on restart Reconcile: an orphan from a
+// prior daemon life is reaped, not re-snapshotted (its clean state is already in
+// the last graceful snapshot, and the /workspace host dir carries the real
+// state regardless — re-snapshotting a stale container on every restart would
+// only churn the retention window with near-empty rootfs commits).
+func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool) error {
 	var errs []error
 	rt, rErr := m.resolve(s.Tier, s.Location)
 	if rErr != nil {
 		errs = append(errs, rErr)
 	}
-	// Workspace mode: commit a rootfs snapshot BEFORE destroying the container
-	// (the container must still exist to commit), record it (restart-surviving),
+	// Workspace mode, clean end: commit a rootfs snapshot BEFORE destroying the
+	// container (it must still exist to commit), record it (restart-surviving),
 	// and prune to retention. The /workspace host dir is the real state carrier
 	// and persists on its own — snapshotWorkspace never touches it.
-	if rErr == nil && s.Mode == ModeWorkspace && s.Name != "" {
+	if snapshot && rErr == nil && s.Mode == ModeWorkspace && s.Name != "" {
 		if err := m.snapshotWorkspace(ctx, rt, s); err != nil {
 			errs = append(errs, err)
 		}
@@ -658,6 +681,13 @@ func (m *Manager) RemoveWorkspace(ctx context.Context, name string) error {
 	if err := validateWorkspaceName(name); err != nil {
 		return err
 	}
+	// Serialize against workspace create (see Create): holding wsMu means an
+	// in-flight create of this name has either finished (its session is now
+	// visible to the in-use check below and we refuse) or has not started (and
+	// will block until we finish), so the dir is never removed mid-start.
+	m.wsMu.Lock()
+	defer m.wsMu.Unlock()
+
 	m.mu.Lock()
 	for _, s := range m.sessions {
 		if s.Mode == ModeWorkspace && s.Name == name {
@@ -721,7 +751,7 @@ func (m *Manager) ReapExpired(ctx context.Context, now time.Time) []string {
 
 	var reaped []string
 	for _, s := range due {
-		if err := m.teardown(ctx, s); err != nil {
+		if err := m.teardown(ctx, s, true); err != nil {
 			m.log.Warn("reaper teardown error", "session", s.ID, "err", err)
 		}
 		m.log.Info("session reaped (ttl)", "session", s.ID)
@@ -742,7 +772,7 @@ func (m *Manager) Reconcile(ctx context.Context) ([]string, error) {
 	var reaped []string
 	for _, r := range records {
 		s := sessionOf(r)
-		if err := m.teardown(ctx, s); err != nil {
+		if err := m.teardown(ctx, s, false); err != nil {
 			// Log and continue: one un-reapable orphan must not block startup or
 			// stop us reaping the rest. The record is left so a later sweep retries.
 			m.log.Warn("orphan reconcile teardown error", "session", r.ID, "err", err)
@@ -807,7 +837,7 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	}
 	m.mu.Unlock()
 	for _, s := range all {
-		if err := m.teardown(ctx, s); err != nil {
+		if err := m.teardown(ctx, s, true); err != nil {
 			m.log.Warn("shutdown teardown error", "session", s.ID, "err", err)
 		}
 	}

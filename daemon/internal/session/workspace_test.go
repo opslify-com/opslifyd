@@ -266,6 +266,11 @@ func TestWorkspaceMode_ReconcilePreservesHostDir(t *testing.T) {
 	if _, err := m2.Reconcile(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
+	// Reconcile REAPS orphans but must NOT snapshot them (that would churn the
+	// retention window on every restart; the host dir carries the real state).
+	if len(rt.snapshots) != 0 {
+		t.Fatalf("reconcile snapshotted an orphan: %v", rt.snapshots)
+	}
 	if b, err := os.ReadFile(filepath.Join(s.WorkspaceDir, "deps.txt")); err != nil || string(b) != "installed" {
 		t.Fatalf("reconcile destroyed workspace state: err=%v content=%q", err, b)
 	}
