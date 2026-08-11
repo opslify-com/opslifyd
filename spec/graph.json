@@ -247,7 +247,7 @@
       "id": "F2.2",
       "phase": "P2",
       "title": "Session modes (scratch / workspace)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F2.1"
