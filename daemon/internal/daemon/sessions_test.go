@@ -46,6 +46,9 @@ type fakeManager struct {
 	destroyErr error
 	list       []session.View
 	lastExec   session.ExecOptions
+	uploaded   []byte
+	downloaded []byte
+	fileErr    error
 }
 
 func (f *fakeManager) Create(_ context.Context, req session.CreateRequest) (*session.Session, error) {
@@ -74,6 +77,18 @@ func (f *fakeManager) Destroy(_ context.Context, id string) error {
 }
 
 func (f *fakeManager) List() []session.View { return f.list }
+
+func (f *fakeManager) WriteFile(_ context.Context, _ string, _ string, content []byte) error {
+	f.uploaded = content
+	return f.fileErr
+}
+
+func (f *fakeManager) ReadFile(_ context.Context, _ string, _ string) ([]byte, error) {
+	if f.fileErr != nil {
+		return nil, f.fileErr
+	}
+	return f.downloaded, nil
+}
 
 // mustPost/mustGet issue a request and fail the test on a transport error, so
 // callers can assert on the response without a repeated err check (which go vet
@@ -132,6 +147,61 @@ func TestHTTPCreateSession(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&body)
 	if body.SessionID != "sess-1" || body.State != "ready" {
 		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestHTTPFileUploadDownload(t *testing.T) {
+	mgr := &fakeManager{downloaded: []byte("payload")}
+	d := newTestDaemon(t, mgr)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+
+	// Upload: base64 body decoded by the handler, forwarded to the manager.
+	up := `{"path":"/workspace/f.txt","content_b64":"aGVsbG8="}` // "hello"
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/v1/sessions/sess-1/files", strings.NewReader(up))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("upload status = %d, want 204", resp.StatusCode)
+	}
+	if string(mgr.uploaded) != "hello" {
+		t.Fatalf("manager got %q, want hello", mgr.uploaded)
+	}
+
+	// Download: manager bytes come back base64 in the envelope.
+	dresp := mustGet(t, srv.URL+"/v1/sessions/sess-1/files?path=/workspace/f.txt")
+	defer dresp.Body.Close()
+	if dresp.StatusCode != http.StatusOK {
+		t.Fatalf("download status = %d, want 200", dresp.StatusCode)
+	}
+	var db struct {
+		ContentB64 string `json:"content_b64"`
+	}
+	json.NewDecoder(dresp.Body).Decode(&db)
+	if db.ContentB64 != "cGF5bG9hZA==" { // "payload"
+		t.Fatalf("content_b64 = %q", db.ContentB64)
+	}
+}
+
+func TestHTTPFileUploadBadBase64(t *testing.T) {
+	d := newTestDaemon(t, &fakeManager{})
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/v1/sessions/sess-1/files",
+		strings.NewReader(`{"path":"/workspace/f","content_b64":"!!!not-base64"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }
 

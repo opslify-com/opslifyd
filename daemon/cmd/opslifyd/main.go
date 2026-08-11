@@ -27,6 +27,16 @@ import (
 var version = "dev"
 
 func main() {
+	// Subcommand dispatch: `opslifyd mcp` runs the F2.1 stdio MCP server (a client
+	// of the daemon over its Unix socket), not the daemon itself. Everything else
+	// is the daemon (default), preserving the existing flag-based entrypoint.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := runMCP(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "opslifyd mcp: fatal:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "opslifyd: fatal:", err)
 		os.Exit(1)
