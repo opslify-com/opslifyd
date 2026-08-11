@@ -64,6 +64,9 @@ tier: local-hardened                      # gVisor; use local-docker for runc
 session_ttl: 30m
 workspace_dir: /var/lib/opslify/workspaces
 warm_pool_size: 0
+egress_allowlist:                         # default-deny; only these destinations are reachable
+  - github.com
+  - "*.githubusercontent.com"
 # toolchain_digest: sha256:...           # written by `opslify init` (required to serve)
 ```
 
@@ -135,6 +138,9 @@ A typical tool sequence the agent runs:
    sessions** (installed deps and clones survive), even across a daemon restart. (Use
    `mode: "scratch"` — the default — for throwaway work that's discarded on end.)
 2. `opslify_exec({ session_id, command: ["git", "clone", "https://…", "."], cwd: "/workspace" })`
+   The clone only succeeds if the host is in `egress_allowlist` (default-deny) — the sample
+   config above allows `github.com`. For a quick throwaway demo you can instead start the
+   daemon with the dev-only `--insecure-no-egress`.
 3. `opslify_exec({ session_id, command: ["make", "build"], cwd: "/workspace" })`
 4. `opslify_exec({ session_id, command: ["make", "test"], cwd: "/workspace" })` → the agent
    reads `exit_code` + `stderr` and reports failures.
