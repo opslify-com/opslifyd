@@ -241,3 +241,35 @@ func TestScratchModeNoSnapshotEphemeralDir(t *testing.T) {
 		t.Fatalf("scratch dir must be discarded: %v", err)
 	}
 }
+
+// Adversarial (self-QA): a daemon CRASH (record persists, no clean Destroy)
+// followed by restart Reconcile must NOT delete the workspace host dir or its
+// state — only scratch dirs are ephemeral. The workspace must still resume.
+func TestWorkspaceMode_ReconcilePreservesHostDir(t *testing.T) {
+	rt := newFakeRuntime()
+	st := newMemStore()
+	root := t.TempDir()
+	clk := newFakeClock(time.Unix(0, 0))
+	m := newWSManager(t, rt, clk, st, root)
+	ctx := context.Background()
+
+	s, err := m.Create(ctx, CreateRequest{Mode: ModeWorkspace, Name: "proj"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(s.WorkspaceDir, "deps.txt"), []byte("installed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a crash: do NOT Destroy; the session record persists in the store.
+	// A fresh manager reconciles the orphan on restart.
+	m2 := newWSManager(t, rt, clk, st, root)
+	if _, err := m2.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(s.WorkspaceDir, "deps.txt")); err != nil || string(b) != "installed" {
+		t.Fatalf("reconcile destroyed workspace state: err=%v content=%q", err, b)
+	}
+	if _, err := m2.Create(ctx, CreateRequest{Mode: ModeWorkspace, Name: "proj"}); err != nil {
+		t.Fatalf("resume after reconcile: %v", err)
+	}
+}
