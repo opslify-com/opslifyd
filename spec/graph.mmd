@@ -12,9 +12,9 @@ flowchart LR
         F1_5["F1.5<br/>CLI + public escape suite"]
     end
     subgraph P2
-        F2_1["F2.1 ~<br/>MCP tools"]
-        F2_2["F2.2 ~<br/>Session modes"]
-        F2_3["F2.3 ~<br/>Claude Code quickstart"]
+        F2_1["F2.1<br/>MCP tools"]
+        F2_2["F2.2<br/>Session modes (scratch / workspace)"]
+        F2_3["F2.3<br/>Claude Code quickstart"]
     end
     subgraph P3
         F3_1["F3.1 ~<br/>Trace events (schema v1)"]
@@ -55,21 +55,10 @@ flowchart LR
     F1_2 --> F1_3
     F1_2 --> F1_4
     F1_2 --> F1_5
-    F1_1 --> F2_1
     F1_2 --> F2_1
-    F1_3 --> F2_1
-    F1_4 --> F2_1
-    F1_5 --> F2_1
-    F1_1 --> F2_2
-    F1_2 --> F2_2
-    F1_3 --> F2_2
-    F1_4 --> F2_2
-    F1_5 --> F2_2
-    F1_1 --> F2_3
-    F1_2 --> F2_3
-    F1_3 --> F2_3
-    F1_4 --> F2_3
-    F1_5 --> F2_3
+    F2_1 --> F2_2
+    F2_1 --> F2_3
+    F2_2 --> F2_3
     F2_1 --> F3_1
     F2_2 --> F3_1
     F2_3 --> F3_1
