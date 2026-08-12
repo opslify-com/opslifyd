@@ -47,6 +47,25 @@ type Config struct {
 	ToolchainDigest string `yaml:"toolchain_digest,omitempty"`
 	// FlakeLockHash records the reproducibility hash of the composed environment.
 	FlakeLockHash string `yaml:"flake_lock_hash,omitempty"`
+	// Redaction configures the F3.3 trace-payload secret scrubber. Omitted from a
+	// config => zero value, which buildRedactor fills with fail-safe defaults
+	// (redaction ON, all patterns enabled) — an unset config never fails open.
+	Redaction RedactionConfig `yaml:"redaction,omitempty"`
+}
+
+// RedactionConfig is the operator-facing F3.3 knob set. Fields left unset take
+// the code defaults (see trace.RedactorConfig); the pattern set is opt-OUT via
+// DisabledPatterns so an empty/absent section keeps every pattern enabled.
+type RedactionConfig struct {
+	// EntropyThreshold is the min per-char Shannon entropy (bits) for the generic
+	// high-entropy catch-all. <= 0 => trace.DefaultEntropyThreshold.
+	EntropyThreshold float64 `yaml:"entropy_threshold,omitempty"`
+	// EntropyLengthFloor is the min token length the entropy heuristic considers.
+	// <= 0 => trace.DefaultEntropyLengthFloor.
+	EntropyLengthFloor int `yaml:"entropy_length_floor,omitempty"`
+	// DisabledPatterns names redaction buckets to turn OFF (e.g. "entropy"). Empty
+	// => all patterns enabled.
+	DisabledPatterns []string `yaml:"disabled_patterns,omitempty"`
 }
 
 // DefaultConfig returns a Config populated with the spec defaults.

@@ -173,7 +173,19 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 		Egress:   egressCtl,
 		Logger:   log,
 		Trace:    traceSink,
-		Redactor: trace.NoopRedactor{}, // F3.3 replaces this with the real scrubber
+		Redactor: buildRedactor(cfg), // F3.3: config-driven secret scrubber
+	})
+}
+
+// buildRedactor wires the F3.3 secret scrubber from config into the emit seam
+// (Recorder runs it BEFORE the sink hashes, so the chain commits to redacted
+// bytes). It fails SAFE: an absent/zero redaction section yields the code
+// defaults with every pattern enabled — redaction is never off by omission.
+func buildRedactor(cfg install.Config) trace.Redactor {
+	return trace.NewPatternRedactor(trace.RedactorConfig{
+		EntropyThreshold:   cfg.Redaction.EntropyThreshold,
+		EntropyLengthFloor: cfg.Redaction.EntropyLengthFloor,
+		DisabledPatterns:   cfg.Redaction.DisabledPatterns,
 	})
 }
 
