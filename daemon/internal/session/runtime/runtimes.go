@@ -29,7 +29,7 @@ func newRuncRuntime(runner commandRunner) *RuncRuntime {
 		runtimeFlag:    "runc",
 		runtimeBinary:  "", // runc ships with podman; no extra probe needed
 		tier:           TierLocalDocker,
-		seccompProfile: DefaultSeccompProfile,
+		seccompProfile: seccompProfilePath(),
 		runner:         runner,
 	}}
 }
@@ -51,7 +51,7 @@ func newGvisorRuntime(runner commandRunner) *GvisorRuntime {
 		runtimeFlag:    "runsc",
 		runtimeBinary:  "runsc", // Available() probes gVisor is installed
 		tier:           TierLocalHardened,
-		seccompProfile: DefaultSeccompProfile,
+		seccompProfile: seccompProfilePath(),
 		runner:         runner,
 	}}
 }

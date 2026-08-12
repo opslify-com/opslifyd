@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -18,6 +19,35 @@ import (
 // operator provisions the profile at this path; F1.2's escape suite asserts it
 // is enforced at runtime.
 const DefaultSeccompProfile = "/etc/opslify/seccomp.json"
+
+// workspaceMountRemap returns the podman volume option that makes the writable
+// /workspace bind mount owner-correct under the sandbox user namespace. Under
+// `--userns=auto` + `--user=1000:1000` the sandbox process is a remapped subuid
+// that does not own the host dir, so a plain rw bind mount is read-only-by-
+// accident. `U` chowns the source into the CURRENT container's mapping at each
+// start — re-applied every run, so it stays correct even though `--userns=auto`
+// may pick a different range each time. (`idmap` was tried but maps without
+// chowning, leaving the dir owned by in-container root and thus unwritable by
+// the --user 1000 process; it also needs privilege rootless runc lacks.)
+// OPSLIFY_WORKSPACE_REMAP overrides the value for experimentation.
+func workspaceMountRemap() string {
+	if v := os.Getenv("OPSLIFY_WORKSPACE_REMAP"); v == "idmap" || v == "U" {
+		return v
+	}
+	return "U"
+}
+
+// seccompProfilePath returns the seccomp profile to emit. It defaults to
+// DefaultSeccompProfile but can be overridden by OPSLIFY_SECCOMP_PROFILE so an
+// operator (or a rootless dev box that can't write /etc/opslify) can point at a
+// profile elsewhere — e.g. podman's shipped /usr/share/containers/seccomp.json.
+// The profile is still emitted unconditionally; only its path is configurable.
+func seccompProfilePath() string {
+	if p := os.Getenv("OPSLIFY_SECCOMP_PROFILE"); p != "" {
+		return p
+	}
+	return DefaultSeccompProfile
+}
 
 // SandboxUser is the non-root uid:gid the sandbox process runs as. Combined
 // with --userns=auto (host uid remap) the in-container root is never host root.
@@ -219,8 +249,12 @@ func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,rw=false")
 	}
 	if spec.Workspace != "" {
-		// The one writable persistent path.
-		args = append(args, "--volume", spec.Workspace+":/workspace:rw")
+		// The one writable persistent path. See workspaceMountRemap: `U` chowns the
+		// host source into the sandbox user-namespace mapping at each start, so the
+		// --user 1000 process can write even though --userns=auto remapped it to a
+		// subuid. Re-applied every run, so it stays correct across the different
+		// ranges auto may pick.
+		args = append(args, "--volume", spec.Workspace+":/workspace:rw,"+workspaceMountRemap())
 	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Entrypoint...)

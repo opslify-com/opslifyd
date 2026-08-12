@@ -341,21 +341,19 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		}
 	}
 
-	// Resume base image: for a workspace with a prior snapshot, boot from the
-	// latest committed rootfs image; otherwise the signed base. (Under read-only
-	// rootfs the rootfs snapshot captures little, but resuming from it is correct
-	// and future-proofs a writable-rootfs tier; the /workspace host dir above is
-	// what actually carries agent state.)
+	// Resume base image: ALWAYS the configured base image. Workspace state lives
+	// entirely in the per-name /workspace host dir mounted above — that is what
+	// carries installed deps / clones across sessions and daemon restarts. The
+	// rootfs snapshot (opslify/ws-<name>:<n>) is still committed on end as retained
+	// history and to future-proof a writable-rootfs tier, but it is NOT booted as
+	// the resume base: under the always-read-only rootfs it captures nothing
+	// useful, and booting a committed userns image is fragile — podman stores its
+	// layers under the run's subuid range, so a later `--userns=auto` run that
+	// draws a different range fails to map it ("user namespace with size N bigger
+	// than the maximum allowed with userns=auto"). Booting the base image + host
+	// dir sidesteps that entire failure class while preserving the feature's
+	// contract (deps persist across sessions).
 	baseImage := m.cfg.Image
-	if mode == ModeWorkspace {
-		if rec, ok, err := m.store.LoadWorkspace(name); err != nil {
-			return nil, fmt.Errorf("session: load workspace %q: %w", name, err)
-		} else if ok {
-			if latest, has := rec.latest(); has {
-				baseImage = latest
-			}
-		}
-	}
 
 	spec := runtime.SessionSpec{
 		Tier:            tier,

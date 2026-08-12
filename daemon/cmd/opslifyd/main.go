@@ -51,12 +51,15 @@ func run() error {
 		envBaseDir       = flag.String("env-dir", env.DefaultBaseDir, "toolchain attestation/artifact root (F0.2)")
 		insecureNoEgress = flag.Bool("insecure-no-egress", false,
 			"DEV/INSECURE: run with UNENFORCED egress (no default-deny) when nftables is unavailable. Never use in production.")
+		devSkipVerify = flag.Bool("dev-skip-verify", false,
+			"DEV/INSECURE: skip verify-before-serve (serve without a signed toolchain digest) for local testing without nix/cosign. Never use in production.")
 	)
 	flag.Parse()
 
 	// Env override for the insecure opt-out (e.g. container/CI dev), so the choice
 	// can be set without editing the unit file; the CLI flag remains primary.
 	insecure := *insecureNoEgress || os.Getenv("OPSLIFY_INSECURE_NO_EGRESS") == "1"
+	skipVerify := *devSkipVerify || os.Getenv("OPSLIFY_DEV_SKIP_VERIFY") == "1"
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
@@ -66,7 +69,7 @@ func run() error {
 		return err
 	}
 
-	verifier, err := buildVerifier(cfg, *envBaseDir)
+	verifier, err := buildVerifier(cfg, *envBaseDir, skipVerify)
 	if err != nil {
 		return err
 	}
@@ -212,7 +215,11 @@ func orDefault(v, def string) string {
 // daemon must never serve an unverified toolchain. Otherwise it resolves the
 // digest to its attestation and verifies via cosign (env.NewDefault) — which
 // requires cosign on PATH, keeping the signed toolchain non-optional.
-func buildVerifier(cfg install.Config, envBaseDir string) (daemon.ToolchainVerifier, error) {
+func buildVerifier(cfg install.Config, envBaseDir string, skipVerify bool) (daemon.ToolchainVerifier, error) {
+	if skipVerify {
+		slog.Warn("DEV/INSECURE: verify-before-serve DISABLED via --dev-skip-verify; serving an UNVERIFIED toolchain. Never use this in production.")
+		return daemon.VerifierFunc(func(context.Context) error { return nil }), nil
+	}
 	if cfg.ToolchainDigest == "" {
 		return daemon.DenyVerifier("no signed toolchain digest in config (run `opslify init` to bake one)"), nil
 	}

@@ -74,7 +74,8 @@ func TestWorkspaceMode_PersistResumeRestart(t *testing.T) {
 		t.Fatalf("workspace dir must persist after end: %v", err)
 	}
 
-	// Resume: base image = latest snapshot; same host dir → deps still present.
+	// Resume: base image = the configured base (NOT the snapshot — the host dir is
+	// the state carrier); same host dir → deps still present.
 	s2, err := m.Create(ctx, CreateRequest{Mode: ModeWorkspace, Name: "proj"})
 	if err != nil {
 		t.Fatalf("create2: %v", err)
@@ -82,8 +83,8 @@ func TestWorkspaceMode_PersistResumeRestart(t *testing.T) {
 	if s2.WorkspaceDir != wsDir {
 		t.Fatalf("resume dir = %q, want %q", s2.WorkspaceDir, wsDir)
 	}
-	if got := rt.specs[len(rt.specs)-1].Image; got != "opslify/ws-proj:1" {
-		t.Fatalf("resume base = %q, want latest snapshot opslify/ws-proj:1", got)
+	if got := rt.specs[len(rt.specs)-1].Image; got != "base@sha256:deadbeef" {
+		t.Fatalf("resume base = %q, want configured base image (host dir carries state)", got)
 	}
 	if b, _ := os.ReadFile(filepath.Join(wsDir, "deps.txt")); string(b) != "installed" {
 		t.Fatalf("deps lost on resume: %q", b)
@@ -92,14 +93,15 @@ func TestWorkspaceMode_PersistResumeRestart(t *testing.T) {
 		t.Fatalf("destroy2: %v", err)
 	}
 
-	// Restart: a NEW manager over the SAME store + root resumes from :2 with deps.
+	// Restart: a NEW manager over the SAME store + root resumes with deps intact,
+	// again from the base image (state comes from the persisted host dir).
 	m2 := newWSManager(t, rt, clk, st, root)
 	s3, err := m2.Create(ctx, CreateRequest{Mode: ModeWorkspace, Name: "proj"})
 	if err != nil {
 		t.Fatalf("create after restart: %v", err)
 	}
-	if got := rt.specs[len(rt.specs)-1].Image; got != "opslify/ws-proj:2" {
-		t.Fatalf("post-restart resume base = %q, want opslify/ws-proj:2", got)
+	if got := rt.specs[len(rt.specs)-1].Image; got != "base@sha256:deadbeef" {
+		t.Fatalf("post-restart resume base = %q, want configured base image", got)
 	}
 	if b, _ := os.ReadFile(filepath.Join(wsDir, "deps.txt")); string(b) != "installed" {
 		t.Fatalf("deps lost after restart: %q", b)
@@ -157,8 +159,8 @@ func TestWorkspaceMode_ResumePreservesHardening(t *testing.T) {
 			t.Errorf("resumed workspace spec missing hardening flag %q: %v", w, args)
 		}
 	}
-	if rt.spec().Image != "opslify/ws-h:1" {
-		t.Errorf("resume base = %q, want the snapshot", rt.spec().Image)
+	if rt.spec().Image != "base@sha256:deadbeef" {
+		t.Errorf("resume base = %q, want the configured base image (host dir carries state)", rt.spec().Image)
 	}
 }
 
