@@ -20,27 +20,28 @@ import (
 // is enforced at runtime.
 const DefaultSeccompProfile = "/etc/opslify/seccomp.json"
 
+// workspaceMountRemap returns the podman volume option that makes the writable
+// /workspace bind mount owner-correct under the sandbox user namespace. Under
+// `--userns=auto` + `--user=1000:1000` the sandbox process is a remapped subuid
+// that does not own the host dir, so a plain rw bind mount is read-only-by-
+// accident. `U` chowns the source into the CURRENT container's mapping at each
+// start — re-applied every run, so it stays correct even though `--userns=auto`
+// may pick a different range each time. (`idmap` was tried but maps without
+// chowning, leaving the dir owned by in-container root and thus unwritable by
+// the --user 1000 process; it also needs privilege rootless runc lacks.)
+// OPSLIFY_WORKSPACE_REMAP overrides the value for experimentation.
+func workspaceMountRemap() string {
+	if v := os.Getenv("OPSLIFY_WORKSPACE_REMAP"); v == "idmap" || v == "U" {
+		return v
+	}
+	return "U"
+}
+
 // seccompProfilePath returns the seccomp profile to emit. It defaults to
 // DefaultSeccompProfile but can be overridden by OPSLIFY_SECCOMP_PROFILE so an
 // operator (or a rootless dev box that can't write /etc/opslify) can point at a
 // profile elsewhere — e.g. podman's shipped /usr/share/containers/seccomp.json.
 // The profile is still emitted unconditionally; only its path is configurable.
-// workspaceMountRemap returns the podman volume option that makes the writable
-// /workspace bind mount owner-correct under the sandbox user namespace. A root
-// daemon uses `idmap` (kernel idmapped mount, no chown, stable across the ranges
-// `--userns=auto` may pick); a rootless daemon falls back to `U` (persistent
-// chown), which idmap can't replace without privilege. OPSLIFY_WORKSPACE_REMAP
-// overrides the choice for testing (values: "idmap" or "U").
-func workspaceMountRemap() string {
-	if v := os.Getenv("OPSLIFY_WORKSPACE_REMAP"); v == "idmap" || v == "U" {
-		return v
-	}
-	if os.Geteuid() == 0 {
-		return "idmap"
-	}
-	return "U"
-}
-
 func seccompProfilePath() string {
 	if p := os.Getenv("OPSLIFY_SECCOMP_PROFILE"); p != "" {
 		return p
@@ -248,20 +249,11 @@ func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 			"type=image,source="+spec.ToolchainDigest+",destination=/opt/toolchain,rw=false")
 	}
 	if spec.Workspace != "" {
-		// The one writable persistent path. Under `--userns=auto` + `--user`, the
-		// sandbox process runs as a remapped subuid that does not own the host dir,
-		// so a plain rw bind mount is read-only-by-accident (writes EACCES). We fix
-		// this differently depending on privilege:
-		//   - root daemon (production): `idmap` — a kernel idmapped mount that maps
-		//     the host ownership into WHATEVER range `--userns=auto` picks, at mount
-		//     time, with NO persistent chown. Stable across runs (auto may pick a
-		//     different range each time) and cleanup-safe (host files keep their
-		//     original owner). Requires CAP_SYS_ADMIN, which a root daemon has.
-		//   - rootless daemon (dev): `U` — chown the source into the mapping. idmap
-		//     is unavailable rootless (no privilege for MOUNT_ATTR_IDMAP). This is
-		//     safe rootless because a dev box has a single subuid range, so `auto`
-		//     is deterministic; it is NOT safe under a root daemon with multiple
-		//     ranges, which is exactly why root uses idmap instead.
+		// The one writable persistent path. See workspaceMountRemap: `U` chowns the
+		// host source into the sandbox user-namespace mapping at each start, so the
+		// --user 1000 process can write even though --userns=auto remapped it to a
+		// subuid. Re-applied every run, so it stays correct across the different
+		// ranges auto may pick.
 		args = append(args, "--volume", spec.Workspace+":/workspace:rw,"+workspaceMountRemap())
 	}
 	args = append(args, spec.Image)
