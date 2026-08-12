@@ -54,6 +54,9 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(runCmd())
 	root.AddCommand(sessionCmd())
 	root.AddCommand(wsCmd())
+	root.AddCommand(verifyCmd())
+	root.AddCommand(uiCmd())
+	root.AddCommand(topCmd())
 	return root
 }
 

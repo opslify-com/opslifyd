@@ -17,6 +17,7 @@ import (
 
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
+	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
 // namePrefix labels every sandbox the daemon creates. It makes containers
@@ -134,6 +135,13 @@ type Manager struct {
 	sandboxIP func(runtime.ContainerHandle) string
 	log       *slog.Logger
 
+	// trace is the F3.1 tamper-evident event sink (session.start/end, exec.*,
+	// file.write). nil disables tracing (existing lifecycle behavior unchanged);
+	// the daemon wires an in-memory sink signed by the daemon identity. redactor
+	// (F3.3 seam) scrubs payloads before they are hashed; nil => no redaction.
+	trace    trace.TraceSink
+	redactor trace.Redactor
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 
@@ -172,6 +180,12 @@ type Options struct {
 	// egress rules; nil => bridge-scoped rules (see Manager.sandboxIP).
 	SandboxIP func(runtime.ContainerHandle) string
 	Logger    *slog.Logger
+	// Trace is the F3.1 event sink. nil disables tracing. The daemon wires an
+	// in-memory sink whose Seal is signed by the F1.1 daemon identity.
+	Trace trace.TraceSink
+	// Redactor is the F3.3 payload-scrub seam, applied before events are hashed.
+	// nil => trace.NoopRedactor (no redaction in F3.1).
+	Redactor trace.Redactor
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -197,7 +211,12 @@ func NewManager(opts Options) (*Manager, error) {
 		egress:    opts.Egress,
 		sandboxIP: opts.SandboxIP,
 		log:       opts.Logger,
+		trace:     opts.Trace,
+		redactor:  opts.Redactor,
 		sessions:  make(map[string]*Session),
+	}
+	if m.redactor == nil {
+		m.redactor = trace.NoopRedactor{}
 	}
 	if m.resolve == nil {
 		m.resolve = runtime.ResolveRuntime
@@ -434,6 +453,24 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 // registerReady adds a ready session to the live map. origin is "created" (fresh
 // on-demand) or "claimed" (from the warm pool) for the audit log.
 func (m *Manager) registerReady(s *Session, origin string) {
+	// Open the trace chain and emit session.start BEFORE the session is visible in
+	// the live map — so no concurrent exec can win seq 0. seq 0 is therefore always
+	// session.start, and its payload carries the session-binding fields the chain
+	// root commits to (image_digest + toolchain_lock_hash + policy_hash slot).
+	if m.trace != nil {
+		s.rec = trace.NewRecorder(m.trace, s.ID, m.redactor, m.clock.Now)
+		if err := s.rec.Emit(context.Background(), trace.TypeSessionStart, map[string]any{
+			"schema_version":      trace.SchemaVersion,
+			"tier":                string(s.Tier),
+			"mode":                string(s.Mode),
+			"agent":               "",
+			"image_digest":        m.cfg.Image,
+			"toolchain_lock_hash": m.toolchainDigest(),
+			"policy_hash":         "", // populated in P4
+		}); err != nil {
+			m.log.Warn("trace session.start emit failed", "session", s.ID, "err", err)
+		}
+	}
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -509,6 +546,7 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 	}
 	s.State = StateExecing
 	handle := s.Handle
+	rec := s.rec
 	m.mu.Unlock()
 
 	// Always return the session to ready (or leave ended if reaped meanwhile).
@@ -521,6 +559,19 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 		m.mu.Unlock()
 	}()
 
+	// Trace the exec: exec.start (argv/cwd) before, exec.output per streamed chunk
+	// (via the wrapping sink), exec.end (exit_code/duration_ms) after. The wrapper
+	// forwards every frame to the real sink unchanged, so tracing never alters what
+	// the caller sees. duration is measured on the injected clock (deterministic in
+	// tests).
+	start := m.clock.Now()
+	if rec != nil {
+		_ = rec.Emit(ctx, trace.TypeExecStart, map[string]any{
+			"argv": opts.Argv,
+			"cwd":  opts.Cwd,
+		})
+	}
+
 	req := runtime.ExecRequest{
 		Argv:    opts.Argv,
 		Env:     opts.Env,
@@ -528,9 +579,26 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 	}
 	es, err := rt.Exec(ctx, handle, req)
 	if err != nil {
+		if rec != nil {
+			_ = rec.Emit(ctx, trace.TypeExecEnd, map[string]any{
+				"exit_code":   -1,
+				"duration_ms": m.clock.Now().Sub(start).Milliseconds(),
+				"error":       err.Error(),
+			})
+		}
 		return fmt.Errorf("session: exec in %s: %w", id, err)
 	}
-	return streamExec(ctx, sink, es, m.cfg.ChunkSize, m.cfg.OutputCap)
+
+	if rec == nil {
+		return streamExec(ctx, sink, es, m.cfg.ChunkSize, m.cfg.OutputCap)
+	}
+	tsink := newTraceExecSink(ctx, rec, sink)
+	serr := streamExec(ctx, tsink, es, m.cfg.ChunkSize, m.cfg.OutputCap)
+	_ = rec.Emit(ctx, trace.TypeExecEnd, map[string]any{
+		"exit_code":   tsink.exitCode(),
+		"duration_ms": m.clock.Now().Sub(start).Milliseconds(),
+	})
+	return serr
 }
 
 // Destroy tears down a session: destroy the container, drop the record, and
@@ -546,7 +614,7 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 	delete(m.sessions, id)
 	s.State = StateEnded
 	m.mu.Unlock()
-	return m.teardown(ctx, s, true)
+	return m.teardown(ctx, s, true, "destroyed")
 }
 
 // teardown destroys the container + workspace + record for an already-detached
@@ -560,7 +628,19 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 // the last graceful snapshot, and the /workspace host dir carries the real
 // state regardless — re-snapshotting a stale container on every restart would
 // only churn the retention window with near-empty rootfs commits).
-func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool) error {
+func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reason string) error {
+	// Close the trace chain: emit the terminal session.end, then seal (sign the
+	// final hash with the daemon identity). A nil recorder (tracing unwired, or an
+	// orphan reconstructed on restart with no in-memory chain) makes this a no-op.
+	if s.rec != nil {
+		if err := s.rec.Emit(ctx, trace.TypeSessionEnd, map[string]any{"reason": reason}); err != nil {
+			m.log.Warn("trace session.end emit failed", "session", s.ID, "err", err)
+		}
+		if _, err := s.rec.Seal(ctx); err != nil {
+			m.log.Warn("trace seal failed", "session", s.ID, "err", err)
+		}
+	}
+
 	var errs []error
 	rt, rErr := m.resolve(s.Tier, s.Location)
 	if rErr != nil {
@@ -749,7 +829,7 @@ func (m *Manager) ReapExpired(ctx context.Context, now time.Time) []string {
 
 	var reaped []string
 	for _, s := range due {
-		if err := m.teardown(ctx, s, true); err != nil {
+		if err := m.teardown(ctx, s, true, "ttl"); err != nil {
 			m.log.Warn("reaper teardown error", "session", s.ID, "err", err)
 		}
 		m.log.Info("session reaped (ttl)", "session", s.ID)
@@ -770,7 +850,7 @@ func (m *Manager) Reconcile(ctx context.Context) ([]string, error) {
 	var reaped []string
 	for _, r := range records {
 		s := sessionOf(r)
-		if err := m.teardown(ctx, s, false); err != nil {
+		if err := m.teardown(ctx, s, false, "reconcile"); err != nil {
 			// Log and continue: one un-reapable orphan must not block startup or
 			// stop us reaping the rest. The record is left so a later sweep retries.
 			m.log.Warn("orphan reconcile teardown error", "session", r.ID, "err", err)
@@ -835,7 +915,7 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	}
 	m.mu.Unlock()
 	for _, s := range all {
-		if err := m.teardown(ctx, s, true); err != nil {
+		if err := m.teardown(ctx, s, true, "shutdown"); err != nil {
 			m.log.Warn("shutdown teardown error", "session", s.ID, "err", err)
 		}
 	}

@@ -81,6 +81,65 @@ func GenerateIdentity(keyPath string) (Identity, error) {
 	}, nil
 }
 
+// LoadSigningKey loads the daemon Ed25519 PRIVATE key for signing (F3.1 trace
+// seals), applying the same fail-fast gate as LoadIdentity: the key must exist
+// and be exactly 0600. Unlike LoadIdentity it returns the private key material so
+// the caller can sign — the key stays in-process, is never logged, and never
+// enters a trace event. The fingerprint (public, safe to log) is returned too so
+// a seal is attributable to the daemon identity.
+func LoadSigningKey(keyPath string) (ed25519.PrivateKey, string, error) {
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("install: identity key not found at %s: %w", keyPath, err)
+	}
+	if perm := info.Mode().Perm(); perm != RequiredKeyPerm {
+		return nil, "", fmt.Errorf("%w: %s has %#o", ErrIdentityKeyPerms, keyPath, perm)
+	}
+	pemBytes, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("install: read identity key %s: %w", keyPath, err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, "", fmt.Errorf("install: identity key %s is not valid PEM", keyPath)
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, "", fmt.Errorf("install: parse identity key %s: %w", keyPath, err)
+	}
+	priv, ok := key.(ed25519.PrivateKey)
+	if !ok {
+		return nil, "", fmt.Errorf("install: identity key %s is not Ed25519 (got %T)", keyPath, key)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	return priv, hex.EncodeToString(pub)[:16], nil
+}
+
+// LoadPublicKey loads a daemon Ed25519 PUBLIC key from a PKIX/PEM file (the
+// `.pub` written next to the private key by GenerateIdentity, 0644). It is the
+// out-of-band trust anchor `opslify verify` pins a trace seal to. It returns the
+// public key and its fingerprint (first 16 hex chars — the same derivation as
+// Identity.Fingerprint). No permission gate: a public key is safe to be readable.
+func LoadPublicKey(pubPath string) (ed25519.PublicKey, string, error) {
+	pemBytes, err := os.ReadFile(pubPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("install: read public key %s: %w", pubPath, err)
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, "", fmt.Errorf("install: public key %s is not valid PEM", pubPath)
+	}
+	key, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, "", fmt.Errorf("install: parse public key %s: %w", pubPath, err)
+	}
+	pub, ok := key.(ed25519.PublicKey)
+	if !ok {
+		return nil, "", fmt.Errorf("install: public key %s is not Ed25519 (got %T)", pubPath, key)
+	}
+	return pub, hex.EncodeToString(pub)[:16], nil
+}
+
 // RequiredKeyPerm is the exact permission the daemon identity private key must
 // carry: owner read/write only. Anything looser is a fail-fast condition.
 const RequiredKeyPerm os.FileMode = 0o600

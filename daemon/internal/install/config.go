@@ -23,6 +23,11 @@ const (
 // DefaultWorkspaceDir is the per-session writable workspace root.
 const DefaultWorkspaceDir = "/var/lib/opslify/workspaces"
 
+// DefaultTraceDir is the append-only trace log root (F3.2). It is deliberately
+// OUTSIDE the workspace mount, 0700, owned by the daemon user: the sandbox has no
+// path to the integrity evidence it produces.
+const DefaultTraceDir = "/var/lib/opslify/traces"
+
 // Config is the daemon config written to config.yaml. It contains no secrets:
 // the identity key lives in a separate 0600 file, referenced by path only.
 type Config struct {
@@ -47,6 +52,43 @@ type Config struct {
 	ToolchainDigest string `yaml:"toolchain_digest,omitempty"`
 	// FlakeLockHash records the reproducibility hash of the composed environment.
 	FlakeLockHash string `yaml:"flake_lock_hash,omitempty"`
+	// Redaction configures the F3.3 trace-payload secret scrubber. Omitted from a
+	// config => zero value, which buildRedactor fills with fail-safe defaults
+	// (redaction ON, all patterns enabled) — an unset config never fails open.
+	Redaction RedactionConfig `yaml:"redaction,omitempty"`
+	// Trace configures the F3.2 durable transport (append-only log + SSE + optional
+	// cloud push). An absent section takes fail-safe defaults: local persistence ON
+	// at DefaultTraceDir, batch fsync, no cloud backend.
+	Trace TraceConfig `yaml:"trace,omitempty"`
+}
+
+// TraceConfig is the operator-facing F3.2 knob set for durable trace transport.
+type TraceConfig struct {
+	// Dir is the append-only trace directory; empty => DefaultTraceDir.
+	Dir string `yaml:"dir,omitempty"`
+	// Fsync is "batch" (default: fsync on exec.end/session.end + seal) or "always".
+	Fsync string `yaml:"fsync,omitempty"`
+	// RingBufferSize bounds the per-session in-memory SSE catch-up tail. <= 0 =>
+	// trace.DefaultRingBufferSize. SSE backfill reads the log when the tail is short.
+	RingBufferSize int `yaml:"ring_buffer_size,omitempty"`
+	// CloudURL, if set, enables the resumable cloud uploader (F3.4 receiver). Empty
+	// => the uploader is a clean no-op; local persistence + SSE are unaffected.
+	CloudURL string `yaml:"cloud_url,omitempty"`
+}
+
+// RedactionConfig is the operator-facing F3.3 knob set. Fields left unset take
+// the code defaults (see trace.RedactorConfig); the pattern set is opt-OUT via
+// DisabledPatterns so an empty/absent section keeps every pattern enabled.
+type RedactionConfig struct {
+	// EntropyThreshold is the min per-char Shannon entropy (bits) for the generic
+	// high-entropy catch-all. <= 0 => trace.DefaultEntropyThreshold.
+	EntropyThreshold float64 `yaml:"entropy_threshold,omitempty"`
+	// EntropyLengthFloor is the min token length the entropy heuristic considers.
+	// <= 0 => trace.DefaultEntropyLengthFloor.
+	EntropyLengthFloor int `yaml:"entropy_length_floor,omitempty"`
+	// DisabledPatterns names redaction buckets to turn OFF (e.g. "entropy"). Empty
+	// => all patterns enabled.
+	DisabledPatterns []string `yaml:"disabled_patterns,omitempty"`
 }
 
 // DefaultConfig returns a Config populated with the spec defaults.

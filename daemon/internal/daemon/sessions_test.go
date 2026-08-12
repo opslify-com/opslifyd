@@ -11,6 +11,7 @@ import (
 
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
+	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
 // twoStreamRuntime is a minimal real runtime.Runtime whose Exec returns an
@@ -52,6 +53,37 @@ type fakeManager struct {
 	workspaces  []session.WorkspaceView
 	wsRemoved   []string
 	wsRemoveErr error
+	traceEvents []trace.Event
+	traceSeal   *trace.Signature
+	traceErr    error
+	streamLive  <-chan trace.Event
+	streamErr   error
+}
+
+func (f *fakeManager) TraceExport(_ context.Context, _ string) ([]trace.Event, *trace.Signature, error) {
+	if f.traceErr != nil {
+		return nil, nil, f.traceErr
+	}
+	return f.traceEvents, f.traceSeal, nil
+}
+
+func (f *fakeManager) TraceStream(_ string, fromSeq uint64) ([]trace.Event, <-chan trace.Event, func(), error) {
+	if f.streamErr != nil {
+		return nil, nil, nil, f.streamErr
+	}
+	var backfill []trace.Event
+	for _, ev := range f.traceEvents {
+		if ev.Seq >= fromSeq {
+			backfill = append(backfill, ev)
+		}
+	}
+	live := f.streamLive
+	if live == nil {
+		ch := make(chan trace.Event)
+		close(ch)
+		live = ch
+	}
+	return backfill, live, func() {}, nil
 }
 
 func (f *fakeManager) ListWorkspaces() ([]session.WorkspaceView, error) {
@@ -355,6 +387,96 @@ func TestHTTPListSessions(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&views)
 	if len(views) != 1 || views[0].ID != "s1" {
 		t.Fatalf("views = %+v", views)
+	}
+}
+
+// F3.1: the trace endpoint transports the event chain + seal, and maps an absent
+// trace to 404 so `opslify verify` fails legibly on an unknown session.
+func TestHTTPSessionTrace(t *testing.T) {
+	events := []trace.Event{{SessionID: "s1", Seq: 0, Type: trace.TypeSessionStart, Hash: "abc"}}
+	seal := &trace.Signature{FinalHash: "abc", PubKeyFingerprint: "ffff"}
+	mgr := &fakeManager{traceEvents: events, traceSeal: seal}
+	d := newTestDaemon(t, mgr)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+
+	resp := mustGet(t, srv.URL+"/v1/sessions/s1/trace")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body traceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != 1 || body.Events[0].Type != trace.TypeSessionStart || body.Seal == nil {
+		t.Fatalf("trace body = %+v", body)
+	}
+
+	// Unknown session → 404 (ErrNotFound mapping).
+	mgr.traceErr = session.ErrNotFound
+	nf := mustGet(t, srv.URL+"/v1/sessions/nope/trace")
+	defer nf.Body.Close()
+	if nf.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown trace status = %d, want 404", nf.StatusCode)
+	}
+}
+
+// F3.2: the same trace endpoint, hit with Accept: text/event-stream, opens the
+// local SSE tail — it backfills from ?from_seq=N then streams live appends, framed
+// as `data: <event-json>\n\n`, with no gap or dupe at the backfill→live seam.
+func TestHTTPSessionTraceSSE(t *testing.T) {
+	events := []trace.Event{
+		{SessionID: "s1", Seq: 0, Type: trace.TypeSessionStart, Hash: "h0"},
+		{SessionID: "s1", Seq: 1, Type: trace.TypeExecStart, Hash: "h1"},
+		{SessionID: "s1", Seq: 2, Type: trace.TypeExecOutput, Hash: "h2"},
+	}
+	live := make(chan trace.Event, 1)
+	mgr := &fakeManager{traceEvents: events, streamLive: live}
+	d := newTestDaemon(t, mgr)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/sessions/s1/trace?from_seq=1", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	// Read `data: ` frames. Backfill: seq 1,2 (from_seq=1 skips seq 0).
+	sc := bufio.NewScanner(resp.Body)
+	readSeq := func() uint64 {
+		for sc.Scan() {
+			line := sc.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue // blank frame terminator
+			}
+			var ev trace.Event
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
+				t.Fatalf("bad SSE data frame %q: %v", line, err)
+			}
+			return ev.Seq
+		}
+		t.Fatal("stream ended before expected frame")
+		return 0
+	}
+	if s := readSeq(); s != 1 {
+		t.Fatalf("first backfill seq = %d, want 1", s)
+	}
+	if s := readSeq(); s != 2 {
+		t.Fatalf("second backfill seq = %d, want 2", s)
+	}
+	// Live append: seq 3 arrives with no gap after the backfill.
+	live <- trace.Event{SessionID: "s1", Seq: 3, Type: trace.TypeSessionEnd, Hash: "h3"}
+	if s := readSeq(); s != 3 {
+		t.Fatalf("live seq = %d, want 3", s)
 	}
 }
 

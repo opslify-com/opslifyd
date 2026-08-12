@@ -274,7 +274,7 @@ func (p *warmPool) pauser(s *Session) runtime.Pauser {
 // (container + record + workspace), so warm cleanup is as deterministic as
 // session cleanup — no leaked containers, records, or scratch dirs.
 func (p *warmPool) destroy(ctx context.Context, s *Session) {
-	if err := p.m.teardown(ctx, s, false); err != nil {
+	if err := p.m.teardown(ctx, s, false, "warm-drain"); err != nil {
 		p.m.log.Warn("warm pool: teardown error", "session", s.ID, "err", err)
 	}
 }

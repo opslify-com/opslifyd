@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
+	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
 // SessionService is the subset of *session.Manager the REST layer drives. It is
@@ -28,6 +31,21 @@ type SessionService interface {
 	// ListWorkspaces / RemoveWorkspace back the F2.2 `opslify ws ls|rm` surface.
 	ListWorkspaces() ([]session.WorkspaceView, error)
 	RemoveWorkspace(ctx context.Context, name string) error
+	// TraceExport returns a session's F3.1 trace events (chain order) + seal for
+	// `opslify verify`. Absent trace => session.ErrNotFound.
+	TraceExport(ctx context.Context, id string) ([]trace.Event, *trace.Signature, error)
+	// TraceStream opens a live SSE tail (F3.2): backfill from fromSeq + a channel
+	// of subsequently-appended events + a cancel func. Requires a streamable
+	// (durable) sink; otherwise session.ErrNotFound.
+	TraceStream(id string, fromSeq uint64) ([]trace.Event, <-chan trace.Event, func(), error)
+}
+
+// traceResponse is the GET /v1/sessions/{id}/trace body: the event chain plus the
+// seal (null until the session is sealed on close). The CLI recomputes the chain
+// and checks the seal client-side, so verification never trusts the daemon's word.
+type traceResponse struct {
+	Events []trace.Event    `json:"events"`
+	Seal   *trace.Signature `json:"seal"`
 }
 
 // createRequest is the POST /v1/sessions body.
@@ -72,6 +90,8 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /"+APIVersion+"/sessions", d.handleSessionList)
 	mux.HandleFunc("POST /"+APIVersion+"/sessions/{id}/exec", d.handleSessionExec)
 	mux.HandleFunc("DELETE /"+APIVersion+"/sessions/{id}", d.handleSessionDelete)
+	// F3.1 tamper-evident trace: the event chain + seal for `opslify verify`.
+	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/trace", d.handleSessionTrace)
 	// F2.1 mediated file transfer, confined to the session's /workspace.
 	mux.HandleFunc("PUT /"+APIVersion+"/sessions/{id}/files", d.handleFileUpload)
 	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/files", d.handleFileDownload)
@@ -129,6 +149,98 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, createResponse{SessionID: s.ID, State: string(s.State)})
+}
+
+// handleSessionTrace serves the session's trace two ways over one endpoint. With
+// `Accept: text/event-stream` it opens the F3.2 LIVE SSE tail (backfill from
+// ?from_seq=N, then events as they append); otherwise it returns the full chain +
+// seal as JSON (what `opslify verify` consumes). The caller verifies client-side
+// (trace.Verify), so this endpoint only transports evidence.
+func (d *Daemon) handleSessionTrace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		d.streamSessionTrace(w, r, id)
+		return
+	}
+	events, seal, err := d.sessions.TraceExport(r.Context(), id)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	if events == nil {
+		events = []trace.Event{}
+	}
+	writeJSON(w, http.StatusOK, traceResponse{Events: events, Seal: seal})
+}
+
+// streamSessionTrace serves the local SSE tail. It backfills from ?from_seq=N
+// (default 0) out of the durable log, then streams every subsequently-appended
+// event as an SSE `data:` frame — the same event JSON the JSON path returns, so a
+// live consumer and `opslify verify` see identical bytes. It ends when the client
+// disconnects (request context cancelled).
+func (d *Daemon) streamSessionTrace(w http.ResponseWriter, r *http.Request, id string) {
+	var fromSeq uint64
+	if v := r.URL.Query().Get("from_seq"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "input", "invalid from_seq: "+err.Error())
+			return
+		}
+		fromSeq = n
+	}
+	backfill, live, cancel, err := d.sessions.TraceStream(id, fromSeq)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	defer cancel()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeAPIError(w, http.StatusInternalServerError, "sandbox", "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	enc := json.NewEncoder(w)
+	writeEvent := func(ev trace.Event) bool {
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if err := enc.Encode(ev); err != nil { // Encode writes the trailing \n
+			return false
+		}
+		if _, err := w.Write([]byte("\n")); err != nil { // blank line terminates the SSE frame
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	for _, ev := range backfill {
+		if !writeEvent(ev) {
+			return
+		}
+	}
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-live:
+			if !ok {
+				return // subscription dropped (consumer fell behind) or session gone
+			}
+			if !writeEvent(ev) {
+				return
+			}
+		}
+	}
 }
 
 func (d *Daemon) handleSessionList(w http.ResponseWriter, r *http.Request) {

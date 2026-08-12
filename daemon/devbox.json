@@ -1,0 +1,9 @@
+{
+  "packages": [
+    "curl@latest",
+    "git@latest",
+    "go@latest",
+    "jq@latest",
+    "kubectl@latest"
+  ]
+}
