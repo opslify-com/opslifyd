@@ -331,7 +331,7 @@
       "id": "F3.3",
       "phase": "P3",
       "title": "Redaction v1",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F3.1"
