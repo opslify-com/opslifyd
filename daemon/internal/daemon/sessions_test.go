@@ -11,6 +11,7 @@ import (
 
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
+	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
 // twoStreamRuntime is a minimal real runtime.Runtime whose Exec returns an
@@ -52,6 +53,16 @@ type fakeManager struct {
 	workspaces  []session.WorkspaceView
 	wsRemoved   []string
 	wsRemoveErr error
+	traceEvents []trace.Event
+	traceSeal   *trace.Signature
+	traceErr    error
+}
+
+func (f *fakeManager) TraceExport(_ context.Context, _ string) ([]trace.Event, *trace.Signature, error) {
+	if f.traceErr != nil {
+		return nil, nil, f.traceErr
+	}
+	return f.traceEvents, f.traceSeal, nil
 }
 
 func (f *fakeManager) ListWorkspaces() ([]session.WorkspaceView, error) {
@@ -355,6 +366,38 @@ func TestHTTPListSessions(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&views)
 	if len(views) != 1 || views[0].ID != "s1" {
 		t.Fatalf("views = %+v", views)
+	}
+}
+
+// F3.1: the trace endpoint transports the event chain + seal, and maps an absent
+// trace to 404 so `opslify verify` fails legibly on an unknown session.
+func TestHTTPSessionTrace(t *testing.T) {
+	events := []trace.Event{{SessionID: "s1", Seq: 0, Type: trace.TypeSessionStart, Hash: "abc"}}
+	seal := &trace.Signature{FinalHash: "abc", PubKeyFingerprint: "ffff"}
+	mgr := &fakeManager{traceEvents: events, traceSeal: seal}
+	d := newTestDaemon(t, mgr)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+
+	resp := mustGet(t, srv.URL+"/v1/sessions/s1/trace")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body traceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Events) != 1 || body.Events[0].Type != trace.TypeSessionStart || body.Seal == nil {
+		t.Fatalf("trace body = %+v", body)
+	}
+
+	// Unknown session → 404 (ErrNotFound mapping).
+	mgr.traceErr = session.ErrNotFound
+	nf := mustGet(t, srv.URL+"/v1/sessions/nope/trace")
+	defer nf.Body.Close()
+	if nf.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown trace status = %d, want 404", nf.StatusCode)
 	}
 }
 

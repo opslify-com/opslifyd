@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
 // workspaceMount is the in-container path the per-session host workspace is
@@ -42,6 +44,26 @@ func (m *Manager) WriteFile(ctx context.Context, id, path string, content []byte
 	}
 	if err := os.WriteFile(host, content, 0o600); err != nil {
 		return fmt.Errorf("session: upload %s: %w", id, err)
+	}
+	// Trace the mediated write (F3.1 file.write). Only mediated writes through this
+	// surface are cheaply observable; writes the agent makes INSIDE the sandbox via
+	// exec are not emitted here (they would need an inotify watch on the bind
+	// mount, gated on a real engine — deferred rather than fabricated).
+	m.mu.Lock()
+	rec := m.sessionRec(id)
+	m.mu.Unlock()
+	_ = rec.Emit(ctx, trace.TypeFileWrite, map[string]any{
+		"path": path,
+		"size": len(content),
+	})
+	return nil
+}
+
+// sessionRec returns a live session's trace recorder (nil if unknown or tracing
+// unwired). Caller holds m.mu.
+func (m *Manager) sessionRec(id string) *trace.Recorder {
+	if s, ok := m.sessions[id]; ok {
+		return s.rec
 	}
 	return nil
 }

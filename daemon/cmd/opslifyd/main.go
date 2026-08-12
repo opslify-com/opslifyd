@@ -21,6 +21,7 @@ import (
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
+	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
 // version is overridable at build time via -ldflags "-X main.version=...".
@@ -84,7 +85,16 @@ func run() error {
 	}
 	defer egressStop()
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl)
+	// Wire the F3.1 trace sink, signed by the daemon Ed25519 identity (F1.1). The
+	// private key stays in-process; only the signature + fingerprint are recorded.
+	// A signing-key load failure is fatal — a daemon that cannot seal its audit
+	// trail must not serve (the trace is the evidentiary spine of P3).
+	traceSink, err := buildTraceSink(cfg)
+	if err != nil {
+		return err
+	}
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink)
 	if err != nil {
 		return err
 	}
@@ -125,7 +135,24 @@ func run() error {
 // hard-spec resource caps (pids 256, mem 2G, cpu 2) so no session is unbounded,
 // derives the state dir alongside the workspace root (durable across restarts
 // for orphan reconciliation), and parses the configured idle TTL.
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller) (*session.Manager, error) {
+// buildTraceSink wires the F3.1 in-memory trace sink, sealed with the daemon
+// Ed25519 identity (F1.1). It loads the same private key the daemon verifies at
+// startup (fail-fast: absent / not-0600 refuses), so a seal is attributable to
+// the daemon identity. The key never leaves the process and never enters an event.
+func buildTraceSink(cfg install.Config) (*trace.MemSink, error) {
+	keyPath := cfg.IdentityKey
+	if keyPath == "" {
+		keyPath = install.DefaultIdentityKeyPath
+	}
+	priv, fp, err := install.LoadSigningKey(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: load trace signing identity: %w", err)
+	}
+	slog.Info("trace signing identity loaded", "fingerprint", fp)
+	return trace.NewMemSink(trace.NewEd25519Signer(priv)), nil
+}
+
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -143,8 +170,10 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			WarmPoolSize:        cfg.WarmPoolSize,
 			WarmPoolConcurrency: cfg.WarmPoolConcurrency,
 		},
-		Egress: egressCtl,
-		Logger: log,
+		Egress:   egressCtl,
+		Logger:   log,
+		Trace:    traceSink,
+		Redactor: trace.NoopRedactor{}, // F3.3 replaces this with the real scrubber
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
+	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
 // State is a point on the session lifecycle state machine
@@ -68,6 +69,14 @@ type Session struct {
 	LastActivity time.Time
 	// TTL is the idle lifetime after which the reaper destroys the session.
 	TTL time.Duration
+
+	// rec is the per-session trace recorder (F3.1). It is created (with the
+	// session's chain rooted at session.start) when the session is registered
+	// ready, and is nil for orphan sessions reconstructed on restart (which have
+	// no in-memory chain) and when tracing is unwired. A nil *trace.Recorder is a
+	// valid no-op, so emit sites need no nil check. Set/read under the Manager
+	// mutex or after the session is solely owned (teardown).
+	rec *trace.Recorder
 }
 
 // deadline is the instant after which an idle session is reaped.
