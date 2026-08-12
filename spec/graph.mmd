@@ -17,11 +17,11 @@ flowchart LR
         F2_3["F2.3<br/>Claude Code quickstart"]
     end
     subgraph P3
-        F3_1["F3.1 ~<br/>Trace events (schema v1)"]
-        F3_2["F3.2 ~<br/>Transport"]
-        F3_3["F3.3 ~<br/>Redaction v1"]
-        F3_4["F3.4 ~<br/>Cloud dashboard"]
-        F3_5["F3.5 ~<br/>Local UI (daemon-served, no cloud) ⭐"]
+        F3_1["F3.1<br/>Trace events (schema v1)"]
+        F3_2["F3.2<br/>Transport (local append-only + SSE)"]
+        F3_3["F3.3<br/>Redaction v1"]
+        F3_4["F3.4<br/>Cloud dashboard"]
+        F3_5["F3.5<br/>Local UI (daemon-served, no cloud)"]
     end
     subgraph P4
         F4_1["F4.1 ~<br/>`opslify.policy.yaml`"]
@@ -59,21 +59,13 @@ flowchart LR
     F2_1 --> F2_2
     F2_1 --> F2_3
     F2_2 --> F2_3
-    F2_1 --> F3_1
-    F2_2 --> F3_1
-    F2_3 --> F3_1
-    F2_1 --> F3_2
-    F2_2 --> F3_2
-    F2_3 --> F3_2
-    F2_1 --> F3_3
-    F2_2 --> F3_3
-    F2_3 --> F3_3
-    F2_1 --> F3_4
-    F2_2 --> F3_4
-    F2_3 --> F3_4
-    F2_1 --> F3_5
-    F2_2 --> F3_5
-    F2_3 --> F3_5
+    F1_2 --> F3_1
+    F3_1 --> F3_2
+    F3_3 --> F3_2
+    F3_1 --> F3_3
+    F3_2 --> F3_4
+    F3_3 --> F3_4
+    F3_2 --> F3_5
     F3_1 --> F4_1
     F3_2 --> F4_1
     F3_3 --> F4_1
