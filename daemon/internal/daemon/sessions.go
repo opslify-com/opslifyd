@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,10 @@ type SessionService interface {
 	// TraceExport returns a session's F3.1 trace events (chain order) + seal for
 	// `opslify verify`. Absent trace => session.ErrNotFound.
 	TraceExport(ctx context.Context, id string) ([]trace.Event, *trace.Signature, error)
+	// TraceStream opens a live SSE tail (F3.2): backfill from fromSeq + a channel
+	// of subsequently-appended events + a cancel func. Requires a streamable
+	// (durable) sink; otherwise session.ErrNotFound.
+	TraceStream(id string, fromSeq uint64) ([]trace.Event, <-chan trace.Event, func(), error)
 }
 
 // traceResponse is the GET /v1/sessions/{id}/trace body: the event chain plus the
@@ -145,10 +151,17 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, createResponse{SessionID: s.ID, State: string(s.State)})
 }
 
-// handleSessionTrace returns the session's trace chain + seal. The caller
-// verifies client-side (trace.Verify), so this endpoint only transports evidence.
+// handleSessionTrace serves the session's trace two ways over one endpoint. With
+// `Accept: text/event-stream` it opens the F3.2 LIVE SSE tail (backfill from
+// ?from_seq=N, then events as they append); otherwise it returns the full chain +
+// seal as JSON (what `opslify verify` consumes). The caller verifies client-side
+// (trace.Verify), so this endpoint only transports evidence.
 func (d *Daemon) handleSessionTrace(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+		d.streamSessionTrace(w, r, id)
+		return
+	}
 	events, seal, err := d.sessions.TraceExport(r.Context(), id)
 	if err != nil {
 		writeSessionError(w, err)
@@ -158,6 +171,76 @@ func (d *Daemon) handleSessionTrace(w http.ResponseWriter, r *http.Request) {
 		events = []trace.Event{}
 	}
 	writeJSON(w, http.StatusOK, traceResponse{Events: events, Seal: seal})
+}
+
+// streamSessionTrace serves the local SSE tail. It backfills from ?from_seq=N
+// (default 0) out of the durable log, then streams every subsequently-appended
+// event as an SSE `data:` frame — the same event JSON the JSON path returns, so a
+// live consumer and `opslify verify` see identical bytes. It ends when the client
+// disconnects (request context cancelled).
+func (d *Daemon) streamSessionTrace(w http.ResponseWriter, r *http.Request, id string) {
+	var fromSeq uint64
+	if v := r.URL.Query().Get("from_seq"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "input", "invalid from_seq: "+err.Error())
+			return
+		}
+		fromSeq = n
+	}
+	backfill, live, cancel, err := d.sessions.TraceStream(id, fromSeq)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	defer cancel()
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeAPIError(w, http.StatusInternalServerError, "sandbox", "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	enc := json.NewEncoder(w)
+	writeEvent := func(ev trace.Event) bool {
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if err := enc.Encode(ev); err != nil { // Encode writes the trailing \n
+			return false
+		}
+		if _, err := w.Write([]byte("\n")); err != nil { // blank line terminates the SSE frame
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	for _, ev := range backfill {
+		if !writeEvent(ev) {
+			return
+		}
+	}
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-live:
+			if !ok {
+				return // subscription dropped (consumer fell behind) or session gone
+			}
+			if !writeEvent(ev) {
+				return
+			}
+		}
+	}
 }
 
 func (d *Daemon) handleSessionList(w http.ResponseWriter, r *http.Request) {

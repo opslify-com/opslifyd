@@ -90,3 +90,23 @@ func (m *Manager) TraceExport(_ context.Context, id string) ([]trace.Event, *tra
 	}
 	return events, seal, nil
 }
+
+// TraceStream opens a live tail of a session's trace for the F3.2 local SSE
+// endpoint: it returns the backfill (events with seq >= fromSeq) plus a channel of
+// subsequently-appended events and a cancel func the caller MUST invoke. It
+// requires a durable sink that implements trace.Streamer (the in-memory F3.1 sink
+// does not); an unstreamable sink is a legible ErrNotFound.
+func (m *Manager) TraceStream(id string, fromSeq uint64) ([]trace.Event, <-chan trace.Event, func(), error) {
+	if m.trace == nil {
+		return nil, nil, nil, fmt.Errorf("%w: tracing is not enabled on this daemon", ErrNotFound)
+	}
+	st, ok := m.trace.(trace.Streamer)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("%w: trace sink does not support live streaming", ErrNotFound)
+	}
+	backfill, live, cancel, err := st.Subscribe(id, fromSeq)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return backfill, live, cancel, nil
+}

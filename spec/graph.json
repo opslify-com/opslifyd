@@ -308,7 +308,7 @@
       "id": "F3.2",
       "phase": "P3",
       "title": "Transport (local append-only + SSE)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F3.1",

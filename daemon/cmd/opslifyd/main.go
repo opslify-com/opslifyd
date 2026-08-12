@@ -89,10 +89,11 @@ func run() error {
 	// private key stays in-process; only the signature + fingerprint are recorded.
 	// A signing-key load failure is fatal — a daemon that cannot seal its audit
 	// trail must not serve (the trace is the evidentiary spine of P3).
-	traceSink, err := buildTraceSink(cfg)
+	traceSink, traceStop, err := buildTraceSink(cfg, log)
 	if err != nil {
 		return err
 	}
+	defer traceStop()
 
 	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink)
 	if err != nil {
@@ -135,21 +136,55 @@ func run() error {
 // hard-spec resource caps (pids 256, mem 2G, cpu 2) so no session is unbounded,
 // derives the state dir alongside the workspace root (durable across restarts
 // for orphan reconciliation), and parses the configured idle TTL.
-// buildTraceSink wires the F3.1 in-memory trace sink, sealed with the daemon
-// Ed25519 identity (F1.1). It loads the same private key the daemon verifies at
-// startup (fail-fast: absent / not-0600 refuses), so a seal is attributable to
-// the daemon identity. The key never leaves the process and never enters an event.
-func buildTraceSink(cfg install.Config) (*trace.MemSink, error) {
+// buildTraceSink wires the F3.2 DURABLE trace sink: an append-only per-session log
+// (the local source of truth, replayable across a daemon restart) plus the
+// optional resumable cloud uploader. It seals with the daemon Ed25519 identity
+// (F1.1); the private key stays in-process (fail-fast: absent / not-0600 refuses),
+// so a seal is attributable to the daemon identity. It returns a stop func that
+// halts the uploader and closes the log files on shutdown.
+func buildTraceSink(cfg install.Config, log *slog.Logger) (trace.TraceSink, func(), error) {
 	keyPath := cfg.IdentityKey
 	if keyPath == "" {
 		keyPath = install.DefaultIdentityKeyPath
 	}
 	priv, fp, err := install.LoadSigningKey(keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("opslifyd: load trace signing identity: %w", err)
+		return nil, func() {}, fmt.Errorf("opslifyd: load trace signing identity: %w", err)
 	}
 	slog.Info("trace signing identity loaded", "fingerprint", fp)
-	return trace.NewMemSink(trace.NewEd25519Signer(priv)), nil
+
+	traceDir := cfg.Trace.Dir
+	if traceDir == "" {
+		traceDir = install.DefaultTraceDir
+	}
+	sink, err := trace.NewFileSink(trace.FileSinkConfig{
+		Dir:            traceDir,
+		Fsync:          trace.FsyncPolicy(cfg.Trace.Fsync),
+		RingBufferSize: cfg.Trace.RingBufferSize,
+	}, trace.NewEd25519Signer(priv))
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("opslifyd: build durable trace sink: %w", err)
+	}
+	log.Info("durable trace sink active", "dir", traceDir, "fsync", orDefault(cfg.Trace.Fsync, string(trace.FsyncBatch)))
+
+	// Optional cloud push. With no URL configured NewUploader returns nil and
+	// Start/Stop are no-ops — local persistence + SSE are entirely unaffected.
+	up := trace.NewUploader(sink, trace.UploaderConfig{
+		BackendURL: cfg.Trace.CloudURL,
+		Dir:        traceDir,
+		Logger:     log,
+	})
+	if up != nil {
+		up.Start(context.Background())
+		log.Info("trace cloud uploader active", "backend", cfg.Trace.CloudURL)
+	}
+	stop := func() {
+		up.Stop()
+		if err := sink.Close(); err != nil {
+			log.Warn("trace sink close", "err", err)
+		}
+	}
+	return sink, stop, nil
 }
 
 func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink) (*session.Manager, error) {

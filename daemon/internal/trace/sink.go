@@ -38,6 +38,17 @@ type Exporter interface {
 	Export(sessionID string) (events []Event, seal *Signature, ok bool)
 }
 
+// Streamer is the live-tail seam the local SSE endpoint (F3.2) drives. Subscribe
+// returns the on-disk backfill (events with seq >= fromSeq known at call time), a
+// channel delivering every subsequently-appended event, and a cancel func the
+// consumer MUST call to release the subscription. Registration and snapshot happen
+// under the per-session lock, so no event between the backfill and the first live
+// delivery is lost or duplicated. MemSink does not implement this (no durable log);
+// FileSink does.
+type Streamer interface {
+	Subscribe(sessionID string, fromSeq uint64) (backfill []Event, live <-chan Event, cancel func(), err error)
+}
+
 // Signature is the recorded seal of a session's chain: the final hash, the
 // Ed25519 signature over it, and the signer's public key + fingerprint. The
 // public key is recorded so verification is fully offline. It contains NO private
@@ -77,6 +88,54 @@ func (s *Ed25519Signer) Sign(msg []byte) []byte    { return ed25519.Sign(s.priv,
 func (s *Ed25519Signer) Public() ed25519.PublicKey { return s.priv.Public().(ed25519.PublicKey) }
 func (s *Ed25519Signer) Fingerprint() string       { return s.fp }
 
+// chainState is the SHARED chain core: the running position (next seq + last
+// hash) of a single session's SHA-256 hash chain. Both MemSink (F3.1) and FileSink
+// (F3.2) drive their chain through assign/sealHash so the two sinks compute
+// IDENTICAL seq/prev_hash/hash/seal for the same event sequence — there is exactly
+// one implementation of the chain rule, never a fork. chainState is NOT
+// goroutine-safe on its own; the owning sink serializes it under a per-session lock.
+type chainState struct {
+	seq  uint64
+	last string // hash of the most recent event
+}
+
+// assign stamps seq/prev_hash/hash onto ev and advances the chain. Seq 0's
+// prev_hash is the binding root derived from the (session.start) payload; every
+// later event chains to its predecessor's hash. This is the ONE place the chain
+// rule lives.
+func (c *chainState) assign(ev *Event) error {
+	ev.Seq = c.seq
+	if c.seq == 0 {
+		ev.PrevHash = bindingFromPayload(ev.Payload).Root()
+	} else {
+		ev.PrevHash = c.last
+	}
+	h, err := computeHash(*ev)
+	if err != nil {
+		return err
+	}
+	ev.Hash = h
+	c.last = h
+	c.seq++
+	return nil
+}
+
+// sealHash signs finalHash with signer, producing the recorded Signature. It is
+// shared so MemSink and FileSink seal identically. signer must be non-nil.
+func sealHash(signer Signer, now func() time.Time, finalHash string) (Signature, error) {
+	if signer == nil {
+		return Signature{}, errors.New("trace: no signer configured; cannot seal")
+	}
+	sig := signer.Sign([]byte(finalHash))
+	return Signature{
+		FinalHash:         finalHash,
+		Signature:         hex.EncodeToString(sig),
+		PubKeyFingerprint: signer.Fingerprint(),
+		PublicKey:         hex.EncodeToString(signer.Public()),
+		SealedAt:          now(),
+	}, nil
+}
+
 // MemSink is the in-memory TraceSink: it assembles each session's hash chain
 // under a per-session lock and seals with the injected Signer. It retains events
 // (and the seal) for the daemon's lifetime so `opslify verify` can read them
@@ -91,11 +150,11 @@ type MemSink struct {
 
 // chain is one session's chain state. Its own mutex serializes seq/prev_hash/hash
 // assignment so concurrent Appends (stdout + stderr chunks, or an exec racing a
-// file.write) can never interleave the chain.
+// file.write) can never interleave the chain. It embeds the shared chainState so
+// the assignment rule is not duplicated.
 type chain struct {
 	mu     sync.Mutex
-	seq    uint64
-	last   string // hash of the most recent event
+	state  chainState
 	events []Event
 	seal   *Signature
 }
@@ -127,20 +186,10 @@ func (s *MemSink) Append(_ context.Context, ev Event) error {
 	if c.seal != nil {
 		return fmt.Errorf("trace: session %s already sealed; refusing append", ev.SessionID)
 	}
-	ev.Seq = c.seq
-	if c.seq == 0 {
-		ev.PrevHash = bindingFromPayload(ev.Payload).Root()
-	} else {
-		ev.PrevHash = c.last
-	}
-	h, err := computeHash(ev)
-	if err != nil {
+	if err := c.state.assign(&ev); err != nil {
 		return err
 	}
-	ev.Hash = h
 	c.events = append(c.events, ev)
-	c.last = h
-	c.seq++
 	return nil
 }
 
@@ -155,17 +204,9 @@ func (s *MemSink) Seal(_ context.Context, sessionID string) (Signature, error) {
 	if len(c.events) == 0 {
 		return Signature{}, fmt.Errorf("trace: no events for session %s", sessionID)
 	}
-	if s.signer == nil {
-		return Signature{}, errors.New("trace: no signer configured; cannot seal")
-	}
-	final := c.last
-	sig := s.signer.Sign([]byte(final))
-	sg := Signature{
-		FinalHash:         final,
-		Signature:         hex.EncodeToString(sig),
-		PubKeyFingerprint: s.signer.Fingerprint(),
-		PublicKey:         hex.EncodeToString(s.signer.Public()),
-		SealedAt:          s.now(),
+	sg, err := sealHash(s.signer, s.now, c.state.last)
+	if err != nil {
+		return Signature{}, err
 	}
 	c.seal = &sg
 	return sg, nil
