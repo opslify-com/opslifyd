@@ -38,6 +38,24 @@ tier additionally needs **gVisor/runsc** registered as a podman runtime; the
 `local-docker` tier (runc) skips that if you just want to try things out. See the tier
 caveats in [`spec/manual-tests/F2.2-session-modes.md`](spec/manual-tests/F2.2-session-modes.md).
 
+#### Host prerequisites (until the installer script lands)
+
+The daemon expects a few pieces of host setup a package installer would normally provide.
+On Debian/Ubuntu:
+
+```bash
+sudo apt update && sudo apt install -y podman            # container engine (required)
+# A seccomp profile at the path the hardened spec points to (podman ships one):
+sudo install -D /usr/share/containers/seccomp.json /etc/opslify/seccomp.json
+#   (or point elsewhere without root: export OPSLIFY_SECCOMP_PROFILE=/usr/share/containers/seccomp.json)
+# A subuid/subgid range for rootful podman's --userns=auto (if root has none):
+echo "containers:200000:65536" | sudo tee -a /etc/subuid /etc/subgid
+```
+
+`local-hardened` (gVisor) also needs `runsc` installed and registered as a podman runtime;
+`local-docker` (runc) avoids that. A one-line install script that automates all of this
+(prereq detection + podman/runsc + the two binaries) is planned.
+
 ### 2. `opslify init` — pick tools & bake the signed toolchain
 
 ```bash
@@ -81,11 +99,15 @@ The daemon **verifies the signed toolchain before serving** and **fails closed o
 egress**: if it can't program nftables default-deny it refuses to start rather than run
 sandboxes with unconstrained network.
 
-> **Dev-only escape hatch.** On a box without nftables you can start with
-> `--insecure-no-egress` (or `OPSLIFY_INSECURE_NO_EGRESS=1`), which runs the sandbox with
-> **UNENFORCED** egress and logs loudly. **Never use this in production** — it removes the
-> network containment. Likewise, if the toolchain gate blocks a pure sandbox test, run
-> `opslify init` first to bake a digest.
+> **Dev-only escape hatches** (both log loudly; **never use in production**):
+> - `--insecure-no-egress` (or `OPSLIFY_INSECURE_NO_EGRESS=1`) — run with **UNENFORCED**
+>   egress when nftables is unavailable; removes network containment.
+> - `--dev-skip-verify` (or `OPSLIFY_DEV_SKIP_VERIFY=1`) — skip verify-before-serve so a
+>   box **without nix/cosign** can serve an unsigned toolchain for local testing.
+>
+> For a real setup, run `opslify init` (with nix + cosign) to bake a signed digest instead.
+> If the CLI can't reach the socket as your user, add `--socket-group <your-group>` to the
+> daemon (the socket is `0660`), or run the CLI with `sudo`.
 
 ### 4. Register the MCP server with Claude Code
 
