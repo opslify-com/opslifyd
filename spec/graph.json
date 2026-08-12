@@ -352,7 +352,7 @@
       "id": "F3.4",
       "phase": "P3",
       "title": "Cloud dashboard",
-      "status": "todo",
+      "status": "deferred",
       "owner": "Builder (Go daemon side) + existing web stack",
       "depends_on": [
         "F3.2",
