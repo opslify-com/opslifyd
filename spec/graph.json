@@ -372,7 +372,7 @@
       "id": "F3.5",
       "phase": "P3",
       "title": "Local UI (daemon-served, no cloud)",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F3.2"
