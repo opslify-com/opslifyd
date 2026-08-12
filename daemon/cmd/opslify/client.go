@@ -268,6 +268,47 @@ func (c *client) fetchTrace(ctx context.Context, id string) (traceResp, error) {
 	return out, nil
 }
 
+// streamTrace opens the F3.2 live SSE trace tail for a session over the Unix
+// socket (backfill from fromSeq, then live events) and invokes onEvent for each
+// event until the context is cancelled or the stream ends. It reuses the same
+// endpoint the browser UI proxies to, so `opslify top` and `opslify ui` render
+// identical data. Only the already-redacted stream is transported.
+func (c *client) streamTrace(ctx context.Context, id string, fromSeq uint64, onEvent func(trace.Event)) error {
+	u := fmt.Sprintf("%s/v1/sessions/%s/trace?from_seq=%d", c.baseURL, id, fromSeq)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Accept", "text/event-stream")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.decodeError(resp)
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue // blank frame terminators / comments
+		}
+		payload := bytes.TrimSpace(line[len("data:"):])
+		var ev trace.Event
+		if err := json.Unmarshal(payload, &ev); err != nil {
+			continue // skip a malformed frame rather than aborting the tail
+		}
+		onEvent(ev)
+	}
+	if err := sc.Err(); err != nil {
+		return c.wireError(err)
+	}
+	return nil
+}
+
 // execFrame is one NDJSON frame from the exec stream.
 type execFrame struct {
 	Stream    string `json:"stream"`

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opslify — local session UI</title>
+<!--
+  Fully self-contained: no external CDN, font, image, script, or analytics.
+  Everything (CSS + JS) is inline or served from the daemon's embed.FS. Serving
+  this page with the network blocked works identically (F3.5 air-gap requirement).
+-->
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e2129; --border: #2a2f3a;
+    --fg: #d7dbe4; --muted: #8b93a3; --accent: #5aa0ff; --danger: #ff5a5a;
+    --ok: #4bd07f; --warn: #e6b800; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px; }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px; background: var(--panel); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .tag { color: var(--muted); font-size: 12px; }
+  header .airgap { margin-left: auto; color: var(--ok); font-size: 12px; }
+  main { display: grid; grid-template-columns: 340px 1fr; height: calc(100vh - 43px); }
+  .sidebar { border-right: 1px solid var(--border); overflow-y: auto; background: var(--panel); }
+  .content { display: flex; flex-direction: column; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 10px; font-size: 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  tr.session { cursor: pointer; }
+  tr.session:hover { background: var(--panel2); }
+  tr.session.sel { background: #223052; }
+  .state { font-family: var(--mono); }
+  .state.ready { color: var(--ok); } .state.creating, .state.paused { color: var(--warn); }
+  .state.destroyed, .state.error { color: var(--danger); }
+  .toolbar { display: flex; gap: 8px; align-items: center; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); background: var(--panel); }
+  .toolbar .sid { font-family: var(--mono); color: var(--accent); }
+  .toolbar .spacer { flex: 1; }
+  button { background: var(--panel2); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 5px; padding: 5px 11px; cursor: pointer; font-size: 12px; }
+  button:hover { border-color: var(--accent); }
+  button.danger { border-color: #5a2a2a; color: var(--danger); }
+  button.danger:hover { background: #3a1e1e; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 12px; color: var(--muted); }
+  .tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+  .view { flex: 1; overflow: auto; padding: 0; display: none; }
+  .view.active { display: block; }
+  #terminal { font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap;
+    word-break: break-word; margin: 0; padding: 12px; line-height: 1.45; }
+  .timeline { list-style: none; margin: 0; padding: 6px 0; }
+  .timeline li { display: flex; gap: 10px; padding: 5px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .timeline .ts { color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+  .timeline .ty { font-family: var(--mono); white-space: nowrap; min-width: 110px; }
+  .timeline .ty.exec { color: var(--accent); } .timeline .ty.file { color: var(--warn); }
+  .timeline .ty.session { color: var(--ok); } .timeline .ty.redact, .timeline .ty.policy { color: var(--danger); }
+  .timeline .detail { color: var(--fg); word-break: break-all; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  .approval { margin: 12px; padding: 12px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); }
+  .approval h3 { margin: 0 0 4px; font-size: 12px; color: var(--warn); }
+  .badge { font-size: 10px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>opslify</h1>
+  <span class="tag">local session UI · localhost-only · no cloud</span>
+  <span class="airgap" id="conn">● live</span>
+</header>
+<main>
+  <div class="sidebar">
+    <table>
+      <thead><tr><th>SESSION</th><th>STATE</th><th>TIER</th><th>AGE</th><th>TTL</th></tr></thead>
+      <tbody id="sessions"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="content">
+    <div class="toolbar">
+      <span>selected:</span> <span class="sid" id="sel-id">—</span>
+      <span class="spacer"></span>
+      <button id="btn-replay" disabled title="Re-stream this session from seq 0">Replay</button>
+      <button id="btn-kill" class="danger" disabled title="Terminate this session (DELETE /v1/sessions/{id})">Kill</button>
+    </div>
+    <div class="tabs">
+      <button data-tab="terminal" class="active">Terminal</button>
+      <button data-tab="timeline">Timeline</button>
+    </div>
+    <div class="view active" data-view="terminal"><pre id="terminal"></pre></div>
+    <div class="view" data-view="timeline"><ul class="timeline" id="timeline"></ul></div>
+    <!-- P4 seam: inert approval-prompt slot. No logic yet; wired when policy.decision lands. -->
+    <div class="approval">
+      <h3>APPROVAL PROMPTS <span class="badge">P4</span></h3>
+      Inert placeholder. When policy gating ships, pending <code>policy.decision</code> events
+      and approve/deny actions render here. Disabled in v1.
+    </div>
+  </div>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>
