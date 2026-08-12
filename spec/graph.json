@@ -287,7 +287,7 @@
       "id": "F3.1",
       "phase": "P3",
       "title": "Trace events (schema v1)",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F1.2"
