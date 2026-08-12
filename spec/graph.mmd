@@ -24,10 +24,10 @@ flowchart LR
         F3_5["F3.5<br/>Local UI (daemon-served, no cloud)"]
     end
     subgraph P4
-        F4_1["F4.1 ~<br/>`opslify.policy.yaml`"]
-        F4_2["F4.2 ~<br/>Enforcement points"]
-        F4_3["F4.3 ~<br/>Approval gates"]
-        F4_4["F4.4 ~<br/>Dry-run interception"]
+        F4_1["F4.1<br/>`opslify.policy.yaml` (declarative policy + schema)"]
+        F4_2["F4.2<br/>Enforcement points (session + exec interception)"]
+        F4_3["F4.3<br/>Approval gates (human-in-the-loop)"]
+        F4_4["F4.4<br/>Dry-run interception (preview destructive ops)"]
     end
     subgraph P5
         F5_1["F5.1 ~<br/>Executor-side credential injection (primary model)"]
@@ -67,25 +67,10 @@ flowchart LR
     F3_3 --> F3_4
     F3_2 --> F3_5
     F3_1 --> F4_1
-    F3_2 --> F4_1
-    F3_3 --> F4_1
-    F3_4 --> F4_1
-    F3_5 --> F4_1
-    F3_1 --> F4_2
-    F3_2 --> F4_2
-    F3_3 --> F4_2
-    F3_4 --> F4_2
-    F3_5 --> F4_2
-    F3_1 --> F4_3
+    F4_1 --> F4_2
     F3_2 --> F4_3
-    F3_3 --> F4_3
-    F3_4 --> F4_3
-    F3_5 --> F4_3
-    F3_1 --> F4_4
-    F3_2 --> F4_4
-    F3_3 --> F4_4
-    F3_4 --> F4_4
-    F3_5 --> F4_4
+    F4_2 --> F4_3
+    F4_3 --> F4_4
     F4_1 --> F5_1
     F4_2 --> F5_1
     F4_3 --> F5_1
