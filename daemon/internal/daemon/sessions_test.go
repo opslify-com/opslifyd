@@ -58,7 +58,31 @@ type fakeManager struct {
 	traceErr    error
 	streamLive  <-chan trace.Event
 	streamErr   error
+	// F4.3 approval control plane.
+	approvals   []session.ApprovalView
+	resolveView session.ApprovalView
+	resolveErr  error
+	getView     session.ApprovalView
+	getErr      error
+	lastResolve [3]string // sessionID, execID, decision
 }
+
+func (f *fakeManager) ResolveApproval(_ context.Context, sessionID, execID string, decision session.ApprovalDecision, comment string) (session.ApprovalView, error) {
+	f.lastResolve = [3]string{sessionID, execID, string(decision)}
+	if f.resolveErr != nil {
+		return session.ApprovalView{}, f.resolveErr
+	}
+	return f.resolveView, nil
+}
+
+func (f *fakeManager) GetApproval(_ context.Context, sessionID, execID string) (session.ApprovalView, error) {
+	if f.getErr != nil {
+		return session.ApprovalView{}, f.getErr
+	}
+	return f.getView, nil
+}
+
+func (f *fakeManager) ListApprovals() []session.ApprovalView { return f.approvals }
 
 func (f *fakeManager) TraceExport(_ context.Context, _ string) ([]trace.Event, *trace.Signature, error) {
 	if f.traceErr != nil {

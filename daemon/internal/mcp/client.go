@@ -124,6 +124,27 @@ type execFrame struct {
 	Truncated bool   `json:"truncated"`
 	Exit      *int   `json:"exit_code"`
 	Error     string `json:"error"`
+	// F4.3 approval-gate pause.
+	Status string `json:"status"`
+	ExecID string `json:"exec_id"`
+	Rule   string `json:"rule"`
+	Reason string `json:"reason"`
+}
+
+// approvalView mirrors session.ApprovalView — the poll/GET response shape.
+type approvalView struct {
+	SessionID   string `json:"session_id"`
+	ExecID      string `json:"exec_id"`
+	Status      string `json:"status"`
+	Rule        string `json:"rule"`
+	Reason      string `json:"reason"`
+	ArgvSummary string `json:"argv_summary"`
+	Comment     string `json:"comment"`
+	DenyReason  string `json:"deny_reason"`
+	Ran         bool   `json:"ran"`
+	Stdout      string `json:"stdout"`
+	Stderr      string `json:"stderr"`
+	ExitCode    *int   `json:"exit_code"`
 }
 
 type uploadReq struct {
@@ -181,6 +202,13 @@ type execResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+	// F4.3: when a command matches an approval gate it does NOT run — Status is
+	// "pending" and ExecID is the handle the agent polls. Empty Status => the
+	// command ran and Stdout/Stderr/ExitCode are its result.
+	Status string
+	ExecID string
+	Rule   string
+	Reason string
 }
 
 func (c *client) exec(ctx context.Context, id string, req execReq, cap int) (execResult, error) {
@@ -215,6 +243,14 @@ func (c *client) exec(ctx context.Context, id string, req execReq, cap int) (exe
 			return res, fmt.Errorf("malformed exec frame from daemon: %w", err)
 		}
 		switch {
+		case f.Status == "pending":
+			// F4.3: the command matched an approval gate and was NOT spawned. Return
+			// promptly with a structured pending status — never hang on a human.
+			res.Status = "pending"
+			res.ExecID = f.ExecID
+			res.Rule = f.Rule
+			res.Reason = f.Reason
+			return res, nil
 		case f.Error != "":
 			// Mid-stream failure frame — the daemon tags runtime faults here.
 			return res, &layerError{Layer: "runtime", Message: f.Error}
@@ -245,6 +281,30 @@ func (c *client) markDaemonTruncated(stdout, stderr *cappedBuffer, stream string
 	} else {
 		stdout.WriteString("\n[daemon output cap reached]")
 	}
+}
+
+// getApproval polls a pending gate's current state. It is READ-ONLY: there is no
+// client method to APPROVE a gate, so the agent cannot self-approve — resolution
+// is exclusively the human control plane (CLI/UI/cloud).
+func (c *client) getApproval(ctx context.Context, id, execID string) (approvalView, error) {
+	var out approvalView
+	u := c.baseURL + "/v1/sessions/" + url.PathEscape(id) + "/approvals/" + url.PathEscape(execID)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return out, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
 }
 
 func (c *client) uploadFile(ctx context.Context, id, path, contentB64 string) error {

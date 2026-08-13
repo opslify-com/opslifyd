@@ -25,6 +25,13 @@ const (
 	// StateExecing means a mediated exec is in flight. It is a sub-state of
 	// ready: the session returns to ready when the exec completes.
 	StateExecing State = "execing"
+	// StateAwaitingApproval means a mediated exec matched an approval gate (F4.3):
+	// the process is NOT spawned and the session is paused pending a human
+	// approve/deny (or a fail-closed timeout auto-deny). Like execing it is a
+	// sub-state of ready — the session returns to ready when the approval resolves.
+	// The reaper does not TTL-reap a session in this state; the approval's own TTL
+	// resolves the pause first.
+	StateAwaitingApproval State = "awaiting_approval"
 	// StateEnded is terminal: the sandbox has been destroyed (by DELETE, TTL
 	// reaper, or orphan reconciliation). An ended session accepts no execs.
 	StateEnded State = "ended"

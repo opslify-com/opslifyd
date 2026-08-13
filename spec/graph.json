@@ -430,7 +430,7 @@
       "id": "F4.3",
       "phase": "P4",
       "title": "Approval gates (human-in-the-loop)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F4.2",

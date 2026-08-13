@@ -38,6 +38,13 @@ type SessionService interface {
 	// of subsequently-appended events + a cancel func. Requires a streamable
 	// (durable) sink; otherwise session.ErrNotFound.
 	TraceStream(id string, fromSeq uint64) ([]trace.Event, <-chan trace.Event, func(), error)
+	// ResolveApproval / GetApproval / ListApprovals are the F4.3 human approval
+	// control plane. ResolveApproval approves (runs) or denies a paused exec;
+	// GetApproval is the poll the agent re-calls for its result; ListApprovals is
+	// the pending queue behind `opslify approvals`.
+	ResolveApproval(ctx context.Context, sessionID, execID string, decision session.ApprovalDecision, comment string) (session.ApprovalView, error)
+	GetApproval(ctx context.Context, sessionID, execID string) (session.ApprovalView, error)
+	ListApprovals() []session.ApprovalView
 }
 
 // traceResponse is the GET /v1/sessions/{id}/trace body: the event chain plus the
@@ -98,6 +105,57 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	// F2.2 workspace management.
 	mux.HandleFunc("GET /"+APIVersion+"/workspaces", d.handleWorkspaceList)
 	mux.HandleFunc("DELETE /"+APIVersion+"/workspaces/{name}", d.handleWorkspaceDelete)
+	// F4.3 human approval gates. The resolve route is a PRIVILEGED control action:
+	// it inherits the localhost/socket trust boundary (no auth in v1, like F3.5) and
+	// is deliberately NOT part of the agent-facing MCP tool surface — the agent
+	// cannot self-approve.
+	mux.HandleFunc("GET /"+APIVersion+"/approvals", d.handleApprovalList)
+	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/approvals/{exec_id}", d.handleApprovalGet)
+	mux.HandleFunc("POST /"+APIVersion+"/sessions/{id}/approvals/{exec_id}", d.handleApprovalResolve)
+}
+
+// resolveApprovalRequest is the POST /v1/sessions/{id}/approvals/{exec_id} body.
+type resolveApprovalRequest struct {
+	Decision string `json:"decision"` // "approve" | "deny"
+	Comment  string `json:"comment,omitempty"`
+}
+
+// handleApprovalList backs `opslify approvals` — the pending queue across sessions.
+func (d *Daemon) handleApprovalList(w http.ResponseWriter, r *http.Request) {
+	views := d.sessions.ListApprovals()
+	if views == nil {
+		views = []session.ApprovalView{}
+	}
+	writeJSON(w, http.StatusOK, views)
+}
+
+// handleApprovalGet is the poll path: the current state of one gate (pending, or
+// approved+output, or denied+reason). This is READ-ONLY — it can never approve.
+func (d *Daemon) handleApprovalGet(w http.ResponseWriter, r *http.Request) {
+	view, err := d.sessions.GetApproval(r.Context(), r.PathValue("id"), r.PathValue("exec_id"))
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleApprovalResolve is the human approve/deny action. approve runs the paused
+// command (its output is then pollable); deny returns a structured denial. Both
+// emit a chained+redacted policy.decision.
+func (d *Daemon) handleApprovalResolve(w http.ResponseWriter, r *http.Request) {
+	var body resolveApprovalRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
+		return
+	}
+	view, err := d.sessions.ResolveApproval(r.Context(), r.PathValue("id"), r.PathValue("exec_id"),
+		session.ApprovalDecision(body.Decision), body.Comment)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 // handleWorkspaceList backs `opslify ws ls`.
@@ -326,6 +384,15 @@ func (d *Daemon) handleSessionExec(w http.ResponseWriter, r *http.Request) {
 	sink := newHTTPSink(w)
 	err := d.sessions.Exec(r.Context(), id, opts, sink)
 	if err != nil {
+		// F4.3: a command matching an approval gate did NOT spawn — it paused. Surface
+		// a structured `pending` frame carrying the exec_id (200, no error) so the
+		// caller (CLI/MCP) never treats a pause as a failure and never hangs; the
+		// human resolves it out-of-band and the caller polls the approvals endpoint.
+		var ape *session.ApprovalPendingError
+		if errors.As(err, &ape) {
+			_ = sink.pendingFrame(ape.ExecID, ape.Rule, ape.Reason)
+			return
+		}
 		if !sink.wrote {
 			// Nothing streamed yet: a clean HTTP error with the right status.
 			writeSessionError(w, err)
@@ -368,6 +435,12 @@ type frame struct {
 	Truncated bool   `json:"truncated,omitempty"`
 	Exit      *int   `json:"exit_code,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// F4.3 approval-gate pause: Status="pending" carries the exec_id the caller
+	// polls (GET /v1/sessions/{id}/approvals/{exec_id}) and the rule that gated it.
+	Status string `json:"status,omitempty"`
+	ExecID string `json:"exec_id,omitempty"`
+	Rule   string `json:"rule,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func (s *httpSink) emit(f frame) error {
@@ -392,6 +465,9 @@ func (s *httpSink) Exit(code int) error {
 }
 func (s *httpSink) errorFrame(err error) error {
 	return s.emit(frame{Error: err.Error()})
+}
+func (s *httpSink) pendingFrame(execID, rule, reason string) error {
+	return s.emit(frame{Status: "pending", ExecID: execID, Rule: rule, Reason: reason})
 }
 
 // decodeJSON strictly decodes an optional JSON body (empty body => zero value),
@@ -419,6 +495,14 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusServiceUnavailable, "runtime", err.Error())
 	case errors.Is(err, session.ErrEgress):
 		writeAPIError(w, http.StatusServiceUnavailable, "egress", err.Error())
+	case errors.Is(err, session.ErrApprovalNotFound):
+		writeAPIError(w, http.StatusNotFound, "policy", err.Error())
+	case errors.Is(err, session.ErrApprovalResolved):
+		// A resolve/deny on an already-resolved gate (race, double-apply, or a late
+		// approval after timeout — the no-resurrection guard). 409 Conflict.
+		writeAPIError(w, http.StatusConflict, "policy", err.Error())
+	case errors.Is(err, session.ErrApprovalInvalidDecision):
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
 	case errors.Is(err, session.ErrPolicyDenied), errors.Is(err, session.ErrPolicyApproval):
 		// F4.2: a policy-layer refusal (exec classified deny/needs_approval, or a
 		// spin-up whose tier the policy forbids). 403 with layer "policy" so the CLI

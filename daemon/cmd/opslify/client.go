@@ -240,6 +240,72 @@ func (c *client) destroySession(ctx context.Context, id string) error {
 	return nil
 }
 
+// approvalView mirrors session.ApprovalView — the F4.3 approve/deny/list shape.
+type approvalView struct {
+	SessionID   string `json:"session_id"`
+	ExecID      string `json:"exec_id"`
+	Status      string `json:"status"`
+	Rule        string `json:"rule"`
+	Reason      string `json:"reason"`
+	ArgvSummary string `json:"argv_summary"`
+	Comment     string `json:"comment"`
+	DenyReason  string `json:"deny_reason"`
+	Ran         bool   `json:"ran"`
+	Stdout      string `json:"stdout"`
+	Stderr      string `json:"stderr"`
+	ExitCode    *int   `json:"exit_code"`
+}
+
+type resolveApprovalReq struct {
+	Decision string `json:"decision"`
+	Comment  string `json:"comment,omitempty"`
+}
+
+// listApprovals GETs /v1/approvals (the pending queue).
+func (c *client) listApprovals(ctx context.Context) ([]approvalView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/approvals", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []approvalView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// resolveApproval POSTs an approve|deny decision for a pending gate.
+func (c *client) resolveApproval(ctx context.Context, id, execID, decision, comment string) (approvalView, error) {
+	var out approvalView
+	body, _ := json.Marshal(resolveApprovalReq{Decision: decision, Comment: comment})
+	u := c.baseURL + "/v1/sessions/" + id + "/approvals/" + execID
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 // traceResp mirrors the daemon's GET /v1/sessions/{id}/trace body.
 type traceResp struct {
 	Events []trace.Event    `json:"events"`
@@ -316,6 +382,10 @@ type execFrame struct {
 	Truncated bool   `json:"truncated"`
 	Exit      *int   `json:"exit_code"`
 	Error     string `json:"error"`
+	// F4.3 approval-gate pause.
+	Status string `json:"status"`
+	ExecID string `json:"exec_id"`
+	Rule   string `json:"rule"`
 }
 
 // execResult is the outcome of a streamed exec.
@@ -323,6 +393,11 @@ type execResult struct {
 	// ExitCode is the command's exit status; nil if the stream ended without one
 	// (e.g. a mid-stream error frame).
 	ExitCode *int
+	// Pending is set (with ExecID) when the command matched an approval gate and did
+	// NOT run — the caller reports the gate rather than treating it as success.
+	Pending bool
+	ExecID  string
+	Rule    string
 }
 
 // execStream POSTs an exec, then consumes the NDJSON frame stream: stdout frames
@@ -362,6 +437,13 @@ func (c *client) execStream(ctx context.Context, id string, req execReq, stdout,
 			return res, fmt.Errorf("malformed exec frame from daemon: %w", err)
 		}
 		switch {
+		case f.Status == "pending":
+			// F4.3: the command matched an approval gate and did NOT run. Record the
+			// pending handle so the caller can report it and poll — no hang.
+			res.Pending = true
+			res.ExecID = f.ExecID
+			res.Rule = f.Rule
+			return res, nil
 		case f.Error != "":
 			// Mid-stream failure frame — status was already 200, so this is the
 			// legible failure. The daemon tags runtime faults here.

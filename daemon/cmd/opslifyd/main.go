@@ -193,6 +193,10 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
 	}
+	approvalTTL, err := time.ParseDuration(orDefault(cfg.ApprovalTTL, install.DefaultApprovalTTL))
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: invalid approval_ttl %q: %w", cfg.ApprovalTTL, err)
+	}
 	stateDir := filepath.Join(filepath.Dir(cfg.WorkspaceDir), "sessions")
 	// Load the daemon's trusted default policy (F4.1). Fail CLOSED: a configured
 	// but invalid policy aborts startup rather than serving with a permissive one.
@@ -212,6 +216,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			StateDir:            stateDir,
 			DefaultTier:         runtime.Tier(cfg.Tier),
 			DefaultTTL:          ttl,
+			ApprovalTTL:         approvalTTL,
 			Limits:              runtime.ResourceLimits{MemoryBytes: 2 << 30, CPUs: 2, PidsLimit: 256},
 			WarmPoolSize:        cfg.WarmPoolSize,
 			WarmPoolConcurrency: cfg.WarmPoolConcurrency,

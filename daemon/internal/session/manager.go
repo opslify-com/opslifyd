@@ -106,6 +106,10 @@ type ManagerConfig struct {
 	DefaultTier runtime.Tier
 	// DefaultTTL is the idle lifetime used when a create omits ttl.
 	DefaultTTL time.Duration
+	// ApprovalTTL is how long a pending human-approval gate (F4.3) waits before it
+	// is FAIL-CLOSED auto-denied with reason "timeout". Zero => DefaultApprovalTTL
+	// (10m). Measured on the injected clock, so tests advance it deterministically.
+	ApprovalTTL time.Duration
 	// Limits bounds every session's resources (a fork-bomb / OOM guard). The
 	// hard-spec defaults (pids 256, mem 2G, cpu 2) are applied by the wiring if
 	// left zero.
@@ -160,6 +164,13 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+
+	// apprMu guards the pending-approval registry (F4.3). It is a SEPARATE lock
+	// from mu so the exec hot path and the approve/deny/timeout control plane never
+	// contend on one mutex; the few places that touch both take mu inside apprMu,
+	// never the reverse, so there is a single, deadlock-free lock order.
+	apprMu    sync.Mutex
+	approvals map[string]*approval
 
 	// digestMu guards cfg.ToolchainDigest, which SetToolchainDigest mutates at
 	// runtime (a signed-toolchain rotation). realize reads it through
@@ -218,9 +229,13 @@ func NewManager(opts Options) (*Manager, error) {
 	if cfg.DefaultTier == "" {
 		cfg.DefaultTier = runtime.TierLocalHardened
 	}
+	if cfg.ApprovalTTL <= 0 {
+		cfg.ApprovalTTL = DefaultApprovalTTL
+	}
 
 	m := &Manager{
 		cfg:       cfg,
+		approvals: make(map[string]*approval),
 		resolve:   opts.Resolve,
 		clock:     opts.Clock,
 		store:     opts.Store,
@@ -618,18 +633,26 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 	case policy.VerdictDeny:
 		return fmt.Errorf("%w: %s [rule %s]", ErrPolicyDenied, decision.Reason, decision.Rule)
 	case policy.VerdictNeedsApproval:
-		// SEAM for F4.3: the human approval loop lands there. For F4.2 this is a
-		// distinct-reason refusal so nothing hangs — no pause, no spawn.
-		return fmt.Errorf("%w: %s [rule %s]", ErrPolicyApproval, decision.Reason, decision.Rule)
+		// F4.3 PAUSE. The process is NOT spawned. Register a pending approval, move
+		// the session to awaiting_approval, and emit approval.requested (which the
+		// F3.2 SSE stream pushes to the F3.5 UI live). The call returns PROMPTLY with
+		// a typed ApprovalPendingError carrying the exec_id — it NEVER blocks on a
+		// human, so the MCP agent is never hung. Resolution (approve/deny) and the
+		// fail-closed timeout arrive out-of-band through the human control plane.
+		return m.registerApproval(ctx, id, opts, rec, policyHash, decision)
 	case policy.VerdictAllow:
 		// fall through to spawn.
 	}
 
-	// Trace the exec: exec.start (argv/cwd) before, exec.output per streamed chunk
-	// (via the wrapping sink), exec.end (exit_code/duration_ms) after. The wrapper
-	// forwards every frame to the real sink unchanged, so tracing never alters what
-	// the caller sees. duration is measured on the injected clock (deterministic in
-	// tests).
+	return m.runExec(ctx, id, rt, handle, rec, opts, sink)
+}
+
+// runExec is the shared spawn+stream core used by the allow path (Exec) and the
+// approved path (ResolveApproval): it emits exec.start, runs the command via the
+// F0.3 Runtime, streams bounded output through the trace-wrapping sink, and emits
+// exec.end. duration is measured on the injected clock (deterministic in tests).
+// It performs NO policy classification — the caller has already decided to spawn.
+func (m *Manager) runExec(ctx context.Context, id string, rt runtime.Runtime, handle runtime.ContainerHandle, rec *trace.Recorder, opts ExecOptions, sink ExecSink) error {
 	start := m.clock.Now()
 	if rec != nil {
 		_ = rec.Emit(ctx, trace.TypeExecStart, map[string]any{
@@ -695,6 +718,13 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 // state regardless — re-snapshotting a stale container on every restart would
 // only churn the retention window with near-empty rootfs commits).
 func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reason string) error {
+	// FAIL-CLOSED: a session that ends (Destroy / TTL reap / graceful Shutdown /
+	// restart reconcile) while an approval is still pending auto-DENIES it — never
+	// auto-approves — and emits its policy.decision(denied, reason=session_end)
+	// into the chain BEFORE the terminal session.end below, so no pending state is
+	// leaked and the audit trail is complete.
+	m.cancelSessionApprovals(ctx, s, "session_end")
+
 	// Close the trace chain: emit the terminal session.end, then seal (sign the
 	// final hash with the daemon identity). A nil recorder (tracing unwired, or an
 	// orphan reconstructed on restart with no in-memory chain) makes this a no-op.
@@ -1008,7 +1038,7 @@ func (m *Manager) ReapExpired(ctx context.Context, now time.Time) []string {
 	m.mu.Lock()
 	var due []*Session
 	for _, s := range m.sessions {
-		if s.State != StateExecing && s.expired(now) {
+		if s.State != StateExecing && s.State != StateAwaitingApproval && s.expired(now) {
 			delete(m.sessions, s.ID)
 			s.State = StateEnded
 			due = append(due, s)
@@ -1069,7 +1099,9 @@ func (m *Manager) StartReaper(interval time.Duration) {
 			case <-m.reaperStop:
 				return
 			case <-t.C:
-				m.ReapExpired(context.Background(), m.clock.Now())
+				now := m.clock.Now()
+				m.ExpireApprovals(context.Background(), now)
+				m.ReapExpired(context.Background(), now)
 			}
 		}
 	}()

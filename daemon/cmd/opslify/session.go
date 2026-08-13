@@ -55,6 +55,9 @@ func runCmd() *cobra.Command {
 			if execErr != nil {
 				return execErr
 			}
+			if res.Pending {
+				reportPending(cmd.ErrOrStderr(), id, res)
+			}
 			return exitFromResult(res)
 		},
 	}
@@ -135,6 +138,9 @@ func sessionExecCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if res.Pending {
+				reportPending(cmd.ErrOrStderr(), id, res)
+			}
 			return exitFromResult(res)
 		},
 	}
@@ -142,6 +148,14 @@ func sessionExecCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cwd, "cwd", "", "working directory inside the sandbox")
 	cmd.Flags().SetInterspersed(false)
 	return cmd
+}
+
+// reportPending prints a legible notice when a command paused on an approval gate
+// (F4.3), telling the operator how to resolve it. It never hangs the CLI.
+func reportPending(w io.Writer, sessionID string, res execResult) {
+	fmt.Fprintf(w, "[opslify: command requires approval — rule %s]\n", res.Rule)
+	fmt.Fprintf(w, "[opslify: approve with `opslify approve %s %s` or deny with `opslify deny %s %s`]\n",
+		sessionID, res.ExecID, sessionID, res.ExecID)
 }
 
 // exitFromResult turns a non-zero sandboxed exit code into an exitCodeError so

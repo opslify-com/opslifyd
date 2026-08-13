@@ -52,7 +52,15 @@ const (
 
 	// TypePolicyDecision is RESERVED for P4 (F-policy). Known to v1 consumers but
 	// never emitted in P3, so a future daemon can add it without a schema bump.
+	// F4.2 emits it at classify time (allow/deny/needs_approval); F4.3 emits it
+	// again on an approval resolution (approved/denied, with the approver comment).
 	TypePolicyDecision EventType = "policy.decision"
+	// TypeApprovalRequested marks a command paused on a human approval gate (F4.3).
+	// Payload: {exec_id, argv_summary, rule, reason}. It is pushed over the F3.2 SSE
+	// stream so the local UI (F3.5) renders a live approval prompt. Like
+	// policy.decision it was a reserved, known-to-v1 type so adding it needs no
+	// schema bump.
+	TypeApprovalRequested EventType = "approval.requested"
 	// TypeCredResolve is RESERVED for P5 (broker). Known-but-unemitted in P3.
 	TypeCredResolve EventType = "cred.resolve"
 )

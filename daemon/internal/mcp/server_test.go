@@ -26,6 +26,8 @@ type fakeDaemon struct {
 	srv        *http.Server
 	files      map[string][]byte // path -> content, per-session flattened for the test
 	execFrames []string          // raw NDJSON lines the exec endpoint streams
+	// approval, when set, is the JSON body the GET approvals (poll) route returns.
+	approval map[string]any
 	// forceErr, when set for a route key, makes that route reply with a layered
 	// error envelope instead of the happy path.
 	forceErr map[string]layeredErr
@@ -53,6 +55,7 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	mux.HandleFunc("POST /v1/sessions/{id}/exec", f.exec)
 	mux.HandleFunc("PUT /v1/sessions/{id}/files", f.upload)
 	mux.HandleFunc("GET /v1/sessions/{id}/files", f.download)
+	mux.HandleFunc("GET /v1/sessions/{id}/approvals/{exec_id}", f.getApproval)
 
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -98,6 +101,15 @@ func (f *fakeDaemon) exec(w http.ResponseWriter, r *http.Request) {
 	for _, line := range f.execFrames {
 		io.WriteString(w, line+"\n")
 	}
+}
+
+func (f *fakeDaemon) getApproval(w http.ResponseWriter, r *http.Request) {
+	if e, ok := f.forceErr["approval"]; ok {
+		f.writeErr(w, e)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(f.approval)
 }
 
 func (f *fakeDaemon) upload(w http.ResponseWriter, r *http.Request) {

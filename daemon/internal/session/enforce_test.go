@@ -141,8 +141,9 @@ func TestExec_StrictExecDeny(t *testing.T) {
 	}
 }
 
-// AC: approval_required routes to a distinct-reason refusal (F4.3 seam) — no
-// spawn, no hang.
+// AC: approval_required PAUSES the exec (F4.3) — no spawn, no hang: the call
+// returns a typed ApprovalPendingError carrying the exec_id, the session moves to
+// awaiting_approval, and a policy.decision(needs_approval) is recorded.
 func TestExec_ApprovalRequiredRefused(t *testing.T) {
 	rt := newFakeRuntime()
 	clk := &advancingClock{now: time.Unix(1700000000, 0).UTC(), step: time.Second}
@@ -154,8 +155,12 @@ func TestExec_ApprovalRequiredRefused(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	err = execArgv(ctx, m, s.ID, "kubectl", "delete", "pod", "x")
-	if !errors.Is(err, ErrPolicyApproval) {
-		t.Fatalf("approval error = %v, want ErrPolicyApproval", err)
+	var ape *ApprovalPendingError
+	if !errors.As(err, &ape) {
+		t.Fatalf("approval error = %v, want *ApprovalPendingError", err)
+	}
+	if ape.ExecID == "" {
+		t.Fatalf("pending error must carry an exec_id")
 	}
 	if rt.execCalls() != 0 {
 		t.Fatalf("needs_approval must NOT spawn (execCalls=%d)", rt.execCalls())

@@ -16,6 +16,7 @@ const DefaultConfigPath = "/etc/opslify/config.yaml"
 // Default daemon config values (spec F0.1 §4).
 const (
 	DefaultSessionTTL          = "30m"
+	DefaultApprovalTTL         = "10m"
 	DefaultWarmPoolSize        = 1
 	DefaultWarmPoolConcurrency = 2
 )
@@ -35,6 +36,10 @@ type Config struct {
 	Image string `yaml:"image"`
 	// SessionTTL is the idle lifetime before the reaper destroys a session.
 	SessionTTL string `yaml:"session_ttl"`
+	// ApprovalTTL is how long a pending human-approval gate (F4.3) waits before it
+	// is FAIL-CLOSED auto-denied with reason "timeout". Empty => DefaultApprovalTTL
+	// (10m). A Go duration string, e.g. "10m".
+	ApprovalTTL string `yaml:"approval_ttl,omitempty"`
 	// WarmPoolSize is how many containers are kept warm for fast session start.
 	WarmPoolSize int `yaml:"warm_pool_size"`
 	// WarmPoolConcurrency caps how many warm containers are (re)built at once.
@@ -101,6 +106,7 @@ func DefaultConfig() Config {
 	return Config{
 		Image:               "",
 		SessionTTL:          DefaultSessionTTL,
+		ApprovalTTL:         DefaultApprovalTTL,
 		WarmPoolSize:        DefaultWarmPoolSize,
 		WarmPoolConcurrency: DefaultWarmPoolConcurrency,
 		EgressAllowlist:     []string{},
