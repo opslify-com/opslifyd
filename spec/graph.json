@@ -390,7 +390,7 @@
       "id": "F4.1",
       "phase": "P4",
       "title": "`opslify.policy.yaml` (declarative policy + schema)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F3.1"

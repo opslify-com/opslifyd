@@ -77,6 +77,13 @@ type Session struct {
 	// valid no-op, so emit sites need no nil check. Set/read under the Manager
 	// mutex or after the session is solely owned (teardown).
 	rec *trace.Recorder
+
+	// policyHash is the F4.1 policy_hash of the RESOLVED policy in force for this
+	// session (workspace policy narrowed over the daemon default). It is computed
+	// in realize (fail-closed: an invalid workspace policy aborts the create) and
+	// emitted into the session.start binding so the trace chains to the exact
+	// policy. Empty only when policy resolution is unwired.
+	policyHash string
 }
 
 // deadline is the instant after which an idle session is reaped.

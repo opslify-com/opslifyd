@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
@@ -112,6 +113,11 @@ type ManagerConfig struct {
 	// (older ones are pruned + their images removed on each commit). Zero =>
 	// DefaultSnapshotRetention.
 	SnapshotRetention int
+	// DefaultPolicy is the daemon's trusted baseline policy (F4.1). A per-session
+	// workspace policy at <workspace>/opslify.policy.yaml may only NARROW it. The
+	// zero value is policy.Default() (no grants; deny-by-default creds), whose
+	// resolved policy_hash is policy.DefaultHash.
+	DefaultPolicy policy.Policy
 }
 
 // resolveFunc maps a (tier, location) to a concrete Runtime. Production uses
@@ -374,6 +380,17 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	// contract (deps persist across sessions).
 	baseImage := m.cfg.Image
 
+	// Resolve the F4.1 policy for this session: the workspace policy (if any at
+	// the mounted /workspace root) narrowed over the daemon default. Fail CLOSED —
+	// an invalid workspace policy aborts the create (refuse to serve) rather than
+	// silently defaulting to permissive. The resolved policy_hash is bound into
+	// session.start below so the trace chains to the exact policy in force.
+	resolved, err := m.resolvePolicy(wsDir)
+	if err != nil {
+		m.cleanupWorkspace(wsDir)
+		return nil, err
+	}
+
 	spec := runtime.SessionSpec{
 		Tier:            tier,
 		Location:        loc,
@@ -423,6 +440,7 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		Created:      now,
 		LastActivity: now,
 		TTL:          ttl,
+		policyHash:   resolved.Hash,
 	}
 
 	if err := m.store.Save(recordOf(s)); err != nil {
@@ -466,7 +484,7 @@ func (m *Manager) registerReady(s *Session, origin string) {
 			"agent":               "",
 			"image_digest":        m.cfg.Image,
 			"toolchain_lock_hash": m.toolchainDigest(),
-			"policy_hash":         "", // populated in P4
+			"policy_hash":         s.policyHash, // F4.1: resolved policy_hash
 		}); err != nil {
 			m.log.Warn("trace session.start emit failed", "session", s.ID, "err", err)
 		}
@@ -680,6 +698,41 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	}
 	m.log.Info("session destroyed", "session", s.ID)
 	return nil
+}
+
+// resolvePolicy resolves the F4.1 policy for a session whose /workspace is
+// backed by host dir wsDir. It reads an optional workspace policy file at
+// <wsDir>/opslify.policy.yaml — untrusted, agent-controlled input — and NARROWS
+// it over the daemon default (policy.Resolve), which structurally forbids the
+// workspace from widening any grant. It fails CLOSED on three counts:
+//   - an unparseable/invalid workspace policy is a hard error (refuse to serve),
+//     never a silent fall-back to the permissive default;
+//   - a workspace grant beyond the daemon's is dropped/clamped by Resolve (each
+//     drop logged from resolved.Notes);
+//   - when no file is present, the daemon default alone is resolved (its hash is
+//     policy.DefaultHash for an empty default).
+//
+// An empty wsDir (WorkspaceRoot unset, e.g. many unit tests) yields the daemon
+// default with no file read.
+func (m *Manager) resolvePolicy(wsDir string) (policy.Resolved, error) {
+	if wsDir == "" {
+		return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+	}
+	path := filepath.Join(wsDir, policy.DefaultFileName)
+	ws, err := policy.Load(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+		}
+		// Invalid/unreadable workspace policy: refuse to serve (fail-closed). The
+		// error carries layer context; the caller aborts the create.
+		return policy.Resolved{}, fmt.Errorf("session: policy: %w", err)
+	}
+	resolved := policy.Resolve(m.cfg.DefaultPolicy, ws)
+	for _, note := range resolved.Notes {
+		m.log.Warn("policy narrowed", "workspace_dir", wsDir, "reason", note)
+	}
+	return resolved, nil
 }
 
 // workspaceDir is the stable host directory backing a workspace name's

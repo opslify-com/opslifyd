@@ -60,6 +60,11 @@ type Config struct {
 	// cloud push). An absent section takes fail-safe defaults: local persistence ON
 	// at DefaultTraceDir, batch fsync, no cloud backend.
 	Trace TraceConfig `yaml:"trace,omitempty"`
+	// PolicyFile is the path to the daemon's trusted DEFAULT policy (F4.1). A
+	// per-session workspace policy may only NARROW it. Empty => the built-in
+	// policy.Default() (no grants; deny-by-default creds). The daemon fails to
+	// start if a configured file is invalid (fail-closed).
+	PolicyFile string `yaml:"policy_file,omitempty"`
 }
 
 // TraceConfig is the operator-facing F3.2 knob set for durable trace transport.
