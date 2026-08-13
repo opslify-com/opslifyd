@@ -419,6 +419,11 @@ func writeSessionError(w http.ResponseWriter, err error) {
 		writeAPIError(w, http.StatusServiceUnavailable, "runtime", err.Error())
 	case errors.Is(err, session.ErrEgress):
 		writeAPIError(w, http.StatusServiceUnavailable, "egress", err.Error())
+	case errors.Is(err, session.ErrPolicyDenied), errors.Is(err, session.ErrPolicyApproval):
+		// F4.2: a policy-layer refusal (exec classified deny/needs_approval, or a
+		// spin-up whose tier the policy forbids). 403 with layer "policy" so the CLI
+		// and MCP agent get an actionable, non-secret reason — never a silent fail.
+		writeAPIError(w, http.StatusForbidden, "policy", err.Error())
 	default:
 		writeAPIError(w, http.StatusInternalServerError, "sandbox", err.Error())
 	}

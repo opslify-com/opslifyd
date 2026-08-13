@@ -3,6 +3,7 @@ package session
 import (
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
 )
@@ -84,6 +85,13 @@ type Session struct {
 	// emitted into the session.start binding so the trace chains to the exact
 	// policy. Empty only when policy resolution is unwired.
 	policyHash string
+
+	// policy is the F4.1 RESOLVED policy in force for this session — the model the
+	// F4.2 exec interceptor classifies every command against (policy.Classify).
+	// It is set in realize alongside policyHash from the same resolution, so the
+	// classified policy and the hash bound into the trace are always the same
+	// policy. Read on the exec hot path under the Manager mutex.
+	policy policy.Resolved
 }
 
 // deadline is the instant after which an idle session is reaped.

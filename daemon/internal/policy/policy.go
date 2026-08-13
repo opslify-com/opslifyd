@@ -104,6 +104,15 @@ func knownTier(t string) bool {
 	return ok
 }
 
+// TierRank returns the isolation rank of a tier (higher = more isolated) and
+// whether the tier is recognised. It is the EXPORTED seam F4.2 spin-up
+// enforcement uses to compare a requested tier against the policy floor without
+// duplicating the ladder ordering.
+func TierRank(tier string) (int, bool) {
+	r, ok := tierRank[tier]
+	return r, ok
+}
+
 // knownKubectlVerbs is the accepted verb vocabulary for allow.kubectl.verbs. An
 // unknown verb is a line-level validation error (fail-closed: a typo does not
 // silently become an unbounded grant).

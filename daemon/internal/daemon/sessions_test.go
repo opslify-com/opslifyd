@@ -352,6 +352,27 @@ func TestHTTPExecInvalidInput(t *testing.T) {
 	}
 }
 
+// F4.2: a policy deny (pre-stream) → 403 with layer "policy" so the CLI shows an
+// actionable, non-secret refusal.
+func TestHTTPExecPolicyDenied(t *testing.T) {
+	mgr := &fakeManager{execErr: session.ErrPolicyDenied}
+	d := newTestDaemon(t, mgr)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v1/sessions/s/exec", `{"argv":["kubectl","delete","pod","x"]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	var env apiError
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Layer != "policy" {
+		t.Fatalf("layer = %q, want policy", env.Layer)
+	}
+}
+
 func TestHTTPDeleteSession(t *testing.T) {
 	mgr := &fakeManager{}
 	d := newTestDaemon(t, mgr)

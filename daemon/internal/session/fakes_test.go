@@ -48,6 +48,7 @@ type fakeRuntime struct {
 	destroyedIDs []string
 	snapshots    []string // images committed via Snapshot, in order
 	removed      []string // images deleted via RemoveImage (ImageRemover)
+	execCount    int      // number of Exec calls (F4.2: assert deny never spawns)
 	nextExec     runtime.ExecStream
 }
 
@@ -80,11 +81,14 @@ func (f *fakeRuntime) Create(_ context.Context, spec runtime.SessionSpec) (runti
 func (f *fakeRuntime) Exec(_ context.Context, _ runtime.ContainerHandle, _ runtime.ExecRequest) (runtime.ExecStream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.execCount++
 	if f.execErr != nil {
 		return runtime.ExecStream{}, f.execErr
 	}
 	return f.nextExec, nil
 }
+
+func (f *fakeRuntime) execCalls() int { f.mu.Lock(); defer f.mu.Unlock(); return f.execCount }
 
 func (f *fakeRuntime) Destroy(_ context.Context, h runtime.ContainerHandle) error {
 	f.mu.Lock()

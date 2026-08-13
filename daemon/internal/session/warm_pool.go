@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
 
@@ -176,7 +177,11 @@ func (p *warmPool) build(gen string) {
 // generation check in build() discards any container a concurrent drain made
 // stale, so nothing built here is ever published on the wrong digest.
 func (p *warmPool) realizeWarm(ctx context.Context) (*Session, error) {
-	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, "", 0, StateWarm)
+	// A warm container is always a generic SCRATCH sandbox with no workspace
+	// policy file, so it runs under the daemon default policy. The pool tier equals
+	// cfg.DefaultTier (the enforced floor for the default policy), so no spin-up
+	// clamp applies here.
+	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, "", 0, StateWarm, policy.ResolveDefault(p.m.cfg.DefaultPolicy))
 	if err != nil {
 		return nil, err
 	}

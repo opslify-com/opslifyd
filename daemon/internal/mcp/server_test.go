@@ -382,6 +382,29 @@ func TestLayeredErrorNaming(t *testing.T) {
 	}
 }
 
+// F4.2: a policy deny surfaces through opslify_exec as a structured, non-hanging
+// tool error naming the policy layer + reason — the agent gets an actionable
+// message, never a silent failure.
+func TestExecPolicyDenySurfacesToTool(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.forceErr["exec"] = layeredErr{
+		status: http.StatusForbidden,
+		layer:  "policy",
+		msg:    "session: policy denied: kubectl namespace \"prod-b\" not in allowed namespaces [rule allow.kubectl.namespaces]",
+	}
+	cs, done := connect(t, f.sockPath, Options{})
+	defer done()
+
+	res := callTool(t, cs, "opslify_exec", map[string]any{"session_id": "sess-1", "command": []string{"kubectl", "get", "pods", "-n", "prod-b"}}, nil)
+	if !res.IsError {
+		t.Fatalf("expected a tool error for a policy deny")
+	}
+	txt := resultText(res)
+	if !strings.Contains(txt, "[policy]") || !strings.Contains(txt, "allow.kubectl.namespaces") {
+		t.Fatalf("policy deny should name the policy layer + rule: %q", txt)
+	}
+}
+
 func TestExecMidStreamRuntimeError(t *testing.T) {
 	f := newFakeDaemon(t)
 	f.execFrames = []string{

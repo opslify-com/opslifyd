@@ -410,7 +410,7 @@
       "id": "F4.2",
       "phase": "P4",
       "title": "Enforcement points (session + exec interception)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F4.1"
