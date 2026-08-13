@@ -452,7 +452,7 @@
       "id": "F4.4",
       "phase": "P4",
       "title": "Dry-run interception (preview destructive ops)",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F4.3"
