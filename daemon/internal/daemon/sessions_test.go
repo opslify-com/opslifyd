@@ -58,7 +58,31 @@ type fakeManager struct {
 	traceErr    error
 	streamLive  <-chan trace.Event
 	streamErr   error
+	// F4.3 approval control plane.
+	approvals   []session.ApprovalView
+	resolveView session.ApprovalView
+	resolveErr  error
+	getView     session.ApprovalView
+	getErr      error
+	lastResolve [3]string // sessionID, execID, decision
 }
+
+func (f *fakeManager) ResolveApproval(_ context.Context, sessionID, execID string, decision session.ApprovalDecision, comment string) (session.ApprovalView, error) {
+	f.lastResolve = [3]string{sessionID, execID, string(decision)}
+	if f.resolveErr != nil {
+		return session.ApprovalView{}, f.resolveErr
+	}
+	return f.resolveView, nil
+}
+
+func (f *fakeManager) GetApproval(_ context.Context, sessionID, execID string) (session.ApprovalView, error) {
+	if f.getErr != nil {
+		return session.ApprovalView{}, f.getErr
+	}
+	return f.getView, nil
+}
+
+func (f *fakeManager) ListApprovals() []session.ApprovalView { return f.approvals }
 
 func (f *fakeManager) TraceExport(_ context.Context, _ string) ([]trace.Event, *trace.Signature, error) {
 	if f.traceErr != nil {
@@ -349,6 +373,27 @@ func TestHTTPExecInvalidInput(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// F4.2: a policy deny (pre-stream) → 403 with layer "policy" so the CLI shows an
+// actionable, non-secret refusal.
+func TestHTTPExecPolicyDenied(t *testing.T) {
+	mgr := &fakeManager{execErr: session.ErrPolicyDenied}
+	d := newTestDaemon(t, mgr)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	resp := mustPost(t, srv.URL+"/v1/sessions/s/exec", `{"argv":["kubectl","delete","pod","x"]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	var env apiError
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Layer != "policy" {
+		t.Fatalf("layer = %q, want policy", env.Layer)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
@@ -77,6 +78,16 @@ var (
 	// a session whose egress could not be programmed is destroyed, never served
 	// with unconstrained network.
 	ErrEgress = errors.New("session: egress")
+	// ErrPolicyDenied is returned by the F4.2 enforcement points when the resolved
+	// policy denies an action: a spin-up whose requested tier is weaker than the
+	// policy-required bound, or an exec whose argv the classifier denies. It is a
+	// POLICY-layer failure (distinct from sandbox/runtime/egress) and it fails
+	// CLOSED — a denied exec never touches the runtime.
+	ErrPolicyDenied = errors.New("session: policy denied")
+	// ErrPolicyApproval is returned when an exec matches approval_required. The
+	// human approval loop is F4.3; for F4.2 this is a distinct-reason refusal (no
+	// spawn, no hang) that carries the seam F4.3 will turn into a pause.
+	ErrPolicyApproval = errors.New("session: policy requires approval")
 )
 
 // ManagerConfig carries the non-secret settings a Manager needs to realise
@@ -95,6 +106,10 @@ type ManagerConfig struct {
 	DefaultTier runtime.Tier
 	// DefaultTTL is the idle lifetime used when a create omits ttl.
 	DefaultTTL time.Duration
+	// ApprovalTTL is how long a pending human-approval gate (F4.3) waits before it
+	// is FAIL-CLOSED auto-denied with reason "timeout". Zero => DefaultApprovalTTL
+	// (10m). Measured on the injected clock, so tests advance it deterministically.
+	ApprovalTTL time.Duration
 	// Limits bounds every session's resources (a fork-bomb / OOM guard). The
 	// hard-spec defaults (pids 256, mem 2G, cpu 2) are applied by the wiring if
 	// left zero.
@@ -112,6 +127,17 @@ type ManagerConfig struct {
 	// (older ones are pruned + their images removed on each commit). Zero =>
 	// DefaultSnapshotRetention.
 	SnapshotRetention int
+	// DryRun enables F4.4 dry-run interception: before a gated destructive command
+	// pauses for approval, a PREVIEW (terraform plan / kubectl --dry-run=server /
+	// a policy dry_run rule) runs in-sandbox and its redacted diff is attached to
+	// the approval prompt. Default false preserves the pre-F4.4 approval flow
+	// exactly (no preview exec); the daemon wires it true.
+	DryRun bool
+	// DefaultPolicy is the daemon's trusted baseline policy (F4.1). A per-session
+	// workspace policy at <workspace>/opslify.policy.yaml may only NARROW it. The
+	// zero value is policy.Default() (no grants; deny-by-default creds), whose
+	// resolved policy_hash is policy.DefaultHash.
+	DefaultPolicy policy.Policy
 }
 
 // resolveFunc maps a (tier, location) to a concrete Runtime. Production uses
@@ -144,6 +170,13 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+
+	// apprMu guards the pending-approval registry (F4.3). It is a SEPARATE lock
+	// from mu so the exec hot path and the approve/deny/timeout control plane never
+	// contend on one mutex; the few places that touch both take mu inside apprMu,
+	// never the reverse, so there is a single, deadlock-free lock order.
+	apprMu    sync.Mutex
+	approvals map[string]*approval
 
 	// digestMu guards cfg.ToolchainDigest, which SetToolchainDigest mutates at
 	// runtime (a signed-toolchain rotation). realize reads it through
@@ -202,9 +235,13 @@ func NewManager(opts Options) (*Manager, error) {
 	if cfg.DefaultTier == "" {
 		cfg.DefaultTier = runtime.TierLocalHardened
 	}
+	if cfg.ApprovalTTL <= 0 {
+		cfg.ApprovalTTL = DefaultApprovalTTL
+	}
 
 	m := &Manager{
 		cfg:       cfg,
+		approvals: make(map[string]*approval),
 		resolve:   opts.Resolve,
 		clock:     opts.Clock,
 		store:     opts.Store,
@@ -274,18 +311,27 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		}
 		name = req.Name
 	}
-	tier := req.Tier
-	if tier == "" {
-		tier = m.cfg.DefaultTier
-	}
 	loc := req.Location
 	if loc == "" {
 		loc = runtime.LocationLocal
 	}
-	ttl := req.TTL
-	if ttl <= 0 {
-		ttl = m.cfg.DefaultTTL
+
+	// F4.2 session-spin-up enforcement. Resolve the policy in force FIRST, then
+	// clamp the session's tier/ttl to the daemon-authoritative bounds. This runs
+	// before any container is built, so a policy-forbidden request is refused
+	// without ever touching the runtime (fail-closed spin-up).
+	resolved, err := m.resolveCreatePolicy(mode, name)
+	if err != nil {
+		return nil, err
 	}
+	tier, err := m.enforceTier(req.Tier, resolved)
+	if err != nil {
+		// Legible, layer-tagged refusal — the requested tier is weaker than the
+		// policy floor. No sandbox is created.
+		m.log.Warn("policy denied session spin-up", "reason", err.Error(), "policy_hash", resolved.Hash)
+		return nil, err
+	}
+	ttl := m.enforceTTL(req.TTL, resolved)
 
 	// Fast path: claim a pre-warmed sandbox. The pool holds only generic SCRATCH
 	// containers (no per-name workspace dir or resume base), so a workspace create
@@ -309,7 +355,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		defer m.wsMu.Unlock()
 	}
 
-	s, err := m.realize(ctx, tier, loc, mode, name, ttl, StateReady)
+	s, err := m.realize(ctx, tier, loc, mode, name, ttl, StateReady, resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +369,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 // same hardening hard-spec (F0.3 base) and same signed toolchain digest. It does
 // NOT register the session in the live map — the caller (Create for ready
 // sessions; the pool for warm ones) decides that.
-func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, name string, ttl time.Duration, st State) (*Session, error) {
+func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, name string, ttl time.Duration, st State, resolved policy.Resolved) (*Session, error) {
 	rt, err := m.resolve(tier, loc)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
@@ -372,7 +418,16 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	// than the maximum allowed with userns=auto"). Booting the base image + host
 	// dir sidesteps that entire failure class while preserving the feature's
 	// contract (deps persist across sessions).
+	// F4.2 image enforcement: the session ALWAYS boots a daemon-authoritative
+	// image, never a workspace-supplied one. When the daemon POLICY pins an image
+	// the resolved value is trustworthy (F4.1 drops a differing workspace image);
+	// when the daemon policy leaves it unset the resolved image is the workspace's
+	// pass-through value and MUST be ignored in favour of the daemon config image
+	// (the F4.1 carry-over — an unset daemon bound never lets the workspace choose).
 	baseImage := m.cfg.Image
+	if m.cfg.DefaultPolicy.Session.Image != "" && resolved.Session.Image != "" {
+		baseImage = resolved.Session.Image
+	}
 
 	spec := runtime.SessionSpec{
 		Tier:            tier,
@@ -423,6 +478,8 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		Created:      now,
 		LastActivity: now,
 		TTL:          ttl,
+		policyHash:   resolved.Hash,
+		policy:       resolved,
 	}
 
 	if err := m.store.Save(recordOf(s)); err != nil {
@@ -466,7 +523,7 @@ func (m *Manager) registerReady(s *Session, origin string) {
 			"agent":               "",
 			"image_digest":        m.cfg.Image,
 			"toolchain_lock_hash": m.toolchainDigest(),
-			"policy_hash":         "", // populated in P4
+			"policy_hash":         s.policyHash, // F4.1: resolved policy_hash
 		}); err != nil {
 			m.log.Warn("trace session.start emit failed", "session", s.ID, "err", err)
 		}
@@ -547,6 +604,8 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 	s.State = StateExecing
 	handle := s.Handle
 	rec := s.rec
+	resolved := s.policy
+	policyHash := s.policyHash
 	m.mu.Unlock()
 
 	// Always return the session to ready (or leave ended if reaped meanwhile).
@@ -559,11 +618,47 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 		m.mu.Unlock()
 	}()
 
-	// Trace the exec: exec.start (argv/cwd) before, exec.output per streamed chunk
-	// (via the wrapping sink), exec.end (exit_code/duration_ms) after. The wrapper
-	// forwards every frame to the real sink unchanged, so tracing never alters what
-	// the caller sees. duration is measured on the injected clock (deterministic in
-	// tests).
+	// F4.2 EXEC INTERCEPTION. Classify the argv against the resolved policy BEFORE
+	// the process is ever spawned. Classify is pure (no I/O, no shell-out — it can
+	// never be an injection vector); the decision is recorded as a redacted,
+	// chained policy.decision trace event carrying the policy_hash, so every
+	// allow/deny/needs_approval is evidence under a known policy. A deny (or, for
+	// F4.2, a needs_approval — the F4.3 pause is not built yet) returns a typed,
+	// layer-tagged error and NEVER calls Runtime.Exec: the defer above returns the
+	// session to ready.
+	decision := policy.Classify(resolved, opts.Argv)
+	if rec != nil {
+		_ = rec.Emit(ctx, trace.TypePolicyDecision, map[string]any{
+			"decision":     string(decision.Verdict),
+			"rule":         decision.Rule,
+			"argv_summary": strings.Join(opts.Argv, " "),
+			"policy_hash":  policyHash,
+		})
+	}
+	switch decision.Verdict {
+	case policy.VerdictDeny:
+		return fmt.Errorf("%w: %s [rule %s]", ErrPolicyDenied, decision.Reason, decision.Rule)
+	case policy.VerdictNeedsApproval:
+		// F4.3 PAUSE. The process is NOT spawned. Register a pending approval, move
+		// the session to awaiting_approval, and emit approval.requested (which the
+		// F3.2 SSE stream pushes to the F3.5 UI live). The call returns PROMPTLY with
+		// a typed ApprovalPendingError carrying the exec_id — it NEVER blocks on a
+		// human, so the MCP agent is never hung. Resolution (approve/deny) and the
+		// fail-closed timeout arrive out-of-band through the human control plane.
+		return m.registerApproval(ctx, id, opts, rec, policyHash, decision, rt, handle, resolved)
+	case policy.VerdictAllow:
+		// fall through to spawn.
+	}
+
+	return m.runExec(ctx, id, rt, handle, rec, opts, sink)
+}
+
+// runExec is the shared spawn+stream core used by the allow path (Exec) and the
+// approved path (ResolveApproval): it emits exec.start, runs the command via the
+// F0.3 Runtime, streams bounded output through the trace-wrapping sink, and emits
+// exec.end. duration is measured on the injected clock (deterministic in tests).
+// It performs NO policy classification — the caller has already decided to spawn.
+func (m *Manager) runExec(ctx context.Context, id string, rt runtime.Runtime, handle runtime.ContainerHandle, rec *trace.Recorder, opts ExecOptions, sink ExecSink) error {
 	start := m.clock.Now()
 	if rec != nil {
 		_ = rec.Emit(ctx, trace.TypeExecStart, map[string]any{
@@ -629,6 +724,13 @@ func (m *Manager) Destroy(ctx context.Context, id string) error {
 // state regardless — re-snapshotting a stale container on every restart would
 // only churn the retention window with near-empty rootfs commits).
 func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reason string) error {
+	// FAIL-CLOSED: a session that ends (Destroy / TTL reap / graceful Shutdown /
+	// restart reconcile) while an approval is still pending auto-DENIES it — never
+	// auto-approves — and emits its policy.decision(denied, reason=session_end)
+	// into the chain BEFORE the terminal session.end below, so no pending state is
+	// leaked and the audit trail is complete.
+	m.cancelSessionApprovals(ctx, s, "session_end")
+
 	// Close the trace chain: emit the terminal session.end, then seal (sign the
 	// final hash with the daemon identity). A nil recorder (tracing unwired, or an
 	// orphan reconstructed on restart with no in-memory chain) makes this a no-op.
@@ -680,6 +782,129 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	}
 	m.log.Info("session destroyed", "session", s.ID)
 	return nil
+}
+
+// resolveCreatePolicy resolves the F4.1 policy used for F4.2 spin-up enforcement,
+// BEFORE any container is built. A scratch session has an ephemeral, freshly
+// empty /workspace and therefore never carries a workspace policy file — it runs
+// under the daemon default. A workspace session's stable per-name dir may hold an
+// (untrusted) opslify.policy.yaml, resolved (narrowed) over the daemon default;
+// an invalid file is a hard, fail-closed error (refuse to serve).
+func (m *Manager) resolveCreatePolicy(mode Mode, name string) (policy.Resolved, error) {
+	if mode != ModeWorkspace || m.cfg.WorkspaceRoot == "" {
+		return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+	}
+	return m.resolvePolicy(m.workspaceDir(name))
+}
+
+// enforceTier returns the tier the session must run at, or ErrPolicyDenied when
+// the caller EXPLICITLY requested a tier weaker than the policy-required floor.
+//
+// The floor is derived ONLY from trusted sources — the daemon config default and
+// the daemon POLICY pin — NEVER a workspace-supplied tier. This is the F4.1
+// carry-over teeth: F4.1's narrowing lets a workspace session.tier pass through
+// UNCLAMPED when the daemon policy leaves session.tier unset, so enforcement must
+// not read resolved.Session.Tier in that case. When the daemon policy DOES pin a
+// tier, resolved.Session.Tier is trustworthy (narrowing can only make it more
+// isolated), so it is honoured as an additional floor.
+func (m *Manager) enforceTier(reqTier runtime.Tier, resolved policy.Resolved) (runtime.Tier, error) {
+	// Running tier: the explicit request, else the daemon config default (prior
+	// behavior — the config default is a DEFAULT, not a floor, so a caller may
+	// still pick the weaker compat rung when no policy constrains it).
+	tier := reqTier
+	if tier == "" {
+		tier = m.cfg.DefaultTier
+	}
+	// A policy floor exists ONLY when the daemon policy pins a tier. Then
+	// resolved.Session.Tier is trustworthy (F4.1 narrowing can only make it MORE
+	// isolated than the daemon pin). When the daemon policy leaves session.tier
+	// unset we deliberately do NOT read resolved.Session.Tier — it is the
+	// workspace's pass-through value — so a workspace can neither impose nor relax
+	// a tier (the F4.1 carry-over is satisfied by ignoring it outright).
+	if m.cfg.DefaultPolicy.Session.Tier == "" {
+		return tier, nil
+	}
+	floorRank, ok := policy.TierRank(resolved.Session.Tier)
+	if !ok {
+		return tier, nil
+	}
+	tRank, ok := policy.TierRank(string(tier))
+	if !ok {
+		return "", fmt.Errorf("%w: unknown tier %q", ErrInvalidInput, tier)
+	}
+	if tRank < floorRank {
+		if reqTier != "" {
+			// Explicitly requested a tier weaker than the policy floor → refuse.
+			return "", fmt.Errorf("%w: requested tier %q is weaker than the policy-required minimum %q", ErrPolicyDenied, reqTier, resolved.Session.Tier)
+		}
+		// The config default is weaker than the policy floor → upgrade to the floor.
+		return runtime.Tier(resolved.Session.Tier), nil
+	}
+	return tier, nil
+}
+
+// enforceTTL clamps the session ttl to the daemon-authoritative maximum. Like
+// enforceTier, the maximum comes from trusted sources only: the daemon config
+// default, tightened by the daemon POLICY ttl when it is set (resolved.Session.TTL
+// is then trustworthy — narrowing takes the MIN, so it is never longer than the
+// daemon pin). When the daemon policy leaves ttl unset, resolved.Session.TTL is
+// the workspace's pass-through value and is IGNORED (the carry-over) — the bound
+// is cfg.DefaultTTL, so a workspace proposing a longer ttl cannot lengthen the
+// session. A requested ttl longer than the bound is clamped down, never honoured.
+func (m *Manager) enforceTTL(reqTTL time.Duration, resolved policy.Resolved) time.Duration {
+	ttl := reqTTL
+	if ttl <= 0 {
+		ttl = m.cfg.DefaultTTL
+	}
+	// A ttl bound exists ONLY when the daemon policy pins one. resolved.Session.TTL
+	// is then trustworthy (narrowing takes the MIN, so it is never longer than the
+	// daemon pin). When the daemon policy leaves ttl unset we do NOT read the
+	// resolved value (the workspace's pass-through) — so a workspace proposing a
+	// longer ttl can never lengthen the session (the F4.1 carry-over).
+	if m.cfg.DefaultPolicy.Session.TTL == "" {
+		return ttl
+	}
+	if d, err := time.ParseDuration(resolved.Session.TTL); err == nil && d > 0 {
+		if ttl <= 0 || ttl > d {
+			ttl = d
+		}
+	}
+	return ttl
+}
+
+// resolvePolicy resolves the F4.1 policy for a session whose /workspace is
+// backed by host dir wsDir. It reads an optional workspace policy file at
+// <wsDir>/opslify.policy.yaml — untrusted, agent-controlled input — and NARROWS
+// it over the daemon default (policy.Resolve), which structurally forbids the
+// workspace from widening any grant. It fails CLOSED on three counts:
+//   - an unparseable/invalid workspace policy is a hard error (refuse to serve),
+//     never a silent fall-back to the permissive default;
+//   - a workspace grant beyond the daemon's is dropped/clamped by Resolve (each
+//     drop logged from resolved.Notes);
+//   - when no file is present, the daemon default alone is resolved (its hash is
+//     policy.DefaultHash for an empty default).
+//
+// An empty wsDir (WorkspaceRoot unset, e.g. many unit tests) yields the daemon
+// default with no file read.
+func (m *Manager) resolvePolicy(wsDir string) (policy.Resolved, error) {
+	if wsDir == "" {
+		return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+	}
+	path := filepath.Join(wsDir, policy.DefaultFileName)
+	ws, err := policy.Load(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+		}
+		// Invalid/unreadable workspace policy: refuse to serve (fail-closed). The
+		// error carries layer context; the caller aborts the create.
+		return policy.Resolved{}, fmt.Errorf("session: policy: %w", err)
+	}
+	resolved := policy.Resolve(m.cfg.DefaultPolicy, ws)
+	for _, note := range resolved.Notes {
+		m.log.Warn("policy narrowed", "workspace_dir", wsDir, "reason", note)
+	}
+	return resolved, nil
 }
 
 // workspaceDir is the stable host directory backing a workspace name's
@@ -819,7 +1044,7 @@ func (m *Manager) ReapExpired(ctx context.Context, now time.Time) []string {
 	m.mu.Lock()
 	var due []*Session
 	for _, s := range m.sessions {
-		if s.State != StateExecing && s.expired(now) {
+		if s.State != StateExecing && s.State != StateAwaitingApproval && s.expired(now) {
 			delete(m.sessions, s.ID)
 			s.State = StateEnded
 			due = append(due, s)
@@ -880,7 +1105,9 @@ func (m *Manager) StartReaper(interval time.Duration) {
 			case <-m.reaperStop:
 				return
 			case <-t.C:
-				m.ReapExpired(context.Background(), m.clock.Now())
+				now := m.clock.Now()
+				m.ExpireApprovals(context.Background(), now)
+				m.ReapExpired(context.Background(), now)
 			}
 		}
 	}()

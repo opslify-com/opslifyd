@@ -16,6 +16,7 @@ const DefaultConfigPath = "/etc/opslify/config.yaml"
 // Default daemon config values (spec F0.1 §4).
 const (
 	DefaultSessionTTL          = "30m"
+	DefaultApprovalTTL         = "10m"
 	DefaultWarmPoolSize        = 1
 	DefaultWarmPoolConcurrency = 2
 )
@@ -35,6 +36,10 @@ type Config struct {
 	Image string `yaml:"image"`
 	// SessionTTL is the idle lifetime before the reaper destroys a session.
 	SessionTTL string `yaml:"session_ttl"`
+	// ApprovalTTL is how long a pending human-approval gate (F4.3) waits before it
+	// is FAIL-CLOSED auto-denied with reason "timeout". Empty => DefaultApprovalTTL
+	// (10m). A Go duration string, e.g. "10m".
+	ApprovalTTL string `yaml:"approval_ttl,omitempty"`
 	// WarmPoolSize is how many containers are kept warm for fast session start.
 	WarmPoolSize int `yaml:"warm_pool_size"`
 	// WarmPoolConcurrency caps how many warm containers are (re)built at once.
@@ -60,6 +65,11 @@ type Config struct {
 	// cloud push). An absent section takes fail-safe defaults: local persistence ON
 	// at DefaultTraceDir, batch fsync, no cloud backend.
 	Trace TraceConfig `yaml:"trace,omitempty"`
+	// PolicyFile is the path to the daemon's trusted DEFAULT policy (F4.1). A
+	// per-session workspace policy may only NARROW it. Empty => the built-in
+	// policy.Default() (no grants; deny-by-default creds). The daemon fails to
+	// start if a configured file is invalid (fail-closed).
+	PolicyFile string `yaml:"policy_file,omitempty"`
 }
 
 // TraceConfig is the operator-facing F3.2 knob set for durable trace transport.
@@ -96,6 +106,7 @@ func DefaultConfig() Config {
 	return Config{
 		Image:               "",
 		SessionTTL:          DefaultSessionTTL,
+		ApprovalTTL:         DefaultApprovalTTL,
 		WarmPoolSize:        DefaultWarmPoolSize,
 		WarmPoolConcurrency: DefaultWarmPoolConcurrency,
 		EgressAllowlist:     []string{},

@@ -18,6 +18,7 @@ import (
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
@@ -192,7 +193,21 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
 	}
+	approvalTTL, err := time.ParseDuration(orDefault(cfg.ApprovalTTL, install.DefaultApprovalTTL))
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: invalid approval_ttl %q: %w", cfg.ApprovalTTL, err)
+	}
 	stateDir := filepath.Join(filepath.Dir(cfg.WorkspaceDir), "sessions")
+	// Load the daemon's trusted default policy (F4.1). Fail CLOSED: a configured
+	// but invalid policy aborts startup rather than serving with a permissive one.
+	defaultPolicy := policy.Default()
+	if cfg.PolicyFile != "" {
+		p, err := policy.Load(cfg.PolicyFile)
+		if err != nil {
+			return nil, fmt.Errorf("opslifyd: load default policy %q: %w", cfg.PolicyFile, err)
+		}
+		defaultPolicy = p
+	}
 	return session.NewManager(session.Options{
 		Config: session.ManagerConfig{
 			Image:               cfg.Image,
@@ -201,9 +216,12 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			StateDir:            stateDir,
 			DefaultTier:         runtime.Tier(cfg.Tier),
 			DefaultTTL:          ttl,
+			ApprovalTTL:         approvalTTL,
 			Limits:              runtime.ResourceLimits{MemoryBytes: 2 << 30, CPUs: 2, PidsLimit: 256},
 			WarmPoolSize:        cfg.WarmPoolSize,
 			WarmPoolConcurrency: cfg.WarmPoolConcurrency,
+			DefaultPolicy:       defaultPolicy,
+			DryRun:              true, // F4.4: preview destructive ops before the approval pause
 		},
 		Egress:   egressCtl,
 		Logger:   log,

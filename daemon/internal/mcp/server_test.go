@@ -26,6 +26,8 @@ type fakeDaemon struct {
 	srv        *http.Server
 	files      map[string][]byte // path -> content, per-session flattened for the test
 	execFrames []string          // raw NDJSON lines the exec endpoint streams
+	// approval, when set, is the JSON body the GET approvals (poll) route returns.
+	approval map[string]any
 	// forceErr, when set for a route key, makes that route reply with a layered
 	// error envelope instead of the happy path.
 	forceErr map[string]layeredErr
@@ -53,6 +55,7 @@ func newFakeDaemon(t *testing.T) *fakeDaemon {
 	mux.HandleFunc("POST /v1/sessions/{id}/exec", f.exec)
 	mux.HandleFunc("PUT /v1/sessions/{id}/files", f.upload)
 	mux.HandleFunc("GET /v1/sessions/{id}/files", f.download)
+	mux.HandleFunc("GET /v1/sessions/{id}/approvals/{exec_id}", f.getApproval)
 
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -98,6 +101,15 @@ func (f *fakeDaemon) exec(w http.ResponseWriter, r *http.Request) {
 	for _, line := range f.execFrames {
 		io.WriteString(w, line+"\n")
 	}
+}
+
+func (f *fakeDaemon) getApproval(w http.ResponseWriter, r *http.Request) {
+	if e, ok := f.forceErr["approval"]; ok {
+		f.writeErr(w, e)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(f.approval)
 }
 
 func (f *fakeDaemon) upload(w http.ResponseWriter, r *http.Request) {
@@ -379,6 +391,29 @@ func TestLayeredErrorNaming(t *testing.T) {
 	txt := resultText(res)
 	if !strings.Contains(txt, "[sandbox]") || !strings.Contains(txt, "session not ready") {
 		t.Fatalf("error should name the sandbox layer: %q", txt)
+	}
+}
+
+// F4.2: a policy deny surfaces through opslify_exec as a structured, non-hanging
+// tool error naming the policy layer + reason — the agent gets an actionable
+// message, never a silent failure.
+func TestExecPolicyDenySurfacesToTool(t *testing.T) {
+	f := newFakeDaemon(t)
+	f.forceErr["exec"] = layeredErr{
+		status: http.StatusForbidden,
+		layer:  "policy",
+		msg:    "session: policy denied: kubectl namespace \"prod-b\" not in allowed namespaces [rule allow.kubectl.namespaces]",
+	}
+	cs, done := connect(t, f.sockPath, Options{})
+	defer done()
+
+	res := callTool(t, cs, "opslify_exec", map[string]any{"session_id": "sess-1", "command": []string{"kubectl", "get", "pods", "-n", "prod-b"}}, nil)
+	if !res.IsError {
+		t.Fatalf("expected a tool error for a policy deny")
+	}
+	txt := resultText(res)
+	if !strings.Contains(txt, "[policy]") || !strings.Contains(txt, "allow.kubectl.namespaces") {
+		t.Fatalf("policy deny should name the policy layer + rule: %q", txt)
 	}
 }
 

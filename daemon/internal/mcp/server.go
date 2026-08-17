@@ -50,15 +50,22 @@ type sessionCreateOut struct {
 }
 
 type execIn struct {
-	SessionID string   `json:"session_id" jsonschema:"the session to run in"`
-	Command   []string `json:"command" jsonschema:"argv to execute directly (NOT shell-parsed); e.g. [\"ls\",\"-la\"]"`
-	Cwd       string   `json:"cwd,omitempty" jsonschema:"absolute working directory inside the sandbox (e.g. /workspace)"`
+	SessionID  string   `json:"session_id" jsonschema:"the session to run in"`
+	Command    []string `json:"command,omitempty" jsonschema:"argv to execute directly (NOT shell-parsed); e.g. [\"ls\",\"-la\"]. Omit when polling with poll_exec_id"`
+	Cwd        string   `json:"cwd,omitempty" jsonschema:"absolute working directory inside the sandbox (e.g. /workspace)"`
+	PollExecID string   `json:"poll_exec_id,omitempty" jsonschema:"poll a previously-returned approval exec_id instead of running a command; returns its current status (pending|approved+output|denied+reason). This is read-only — it cannot approve a gate"`
 }
 
 type execOut struct {
 	Stdout   string `json:"stdout" jsonschema:"aggregated stdout, truncated at the output cap with a marker"`
 	Stderr   string `json:"stderr" jsonschema:"aggregated stderr, truncated at the output cap with a marker"`
 	ExitCode int    `json:"exit_code" jsonschema:"the command's exit status"`
+	// F4.3 approval gate. Status is "completed" (ran), "pending" (awaiting a human
+	// approve/deny — NOT run; poll with poll_exec_id), "approved" (ran after
+	// approval; output above), or "denied" (refused; see reason).
+	Status string `json:"status" jsonschema:"completed | pending | approved | denied"`
+	ExecID string `json:"exec_id,omitempty" jsonschema:"the approval handle to poll (set when status is pending/approved/denied)"`
+	Reason string `json:"reason,omitempty" jsonschema:"the gating rule / denial reason / approver comment, when applicable"`
 }
 
 type uploadIn struct {
@@ -162,6 +169,23 @@ func (s *server) sessionCreate(ctx context.Context, _ *mcp.CallToolRequest, in s
 }
 
 func (s *server) exec(ctx context.Context, _ *mcp.CallToolRequest, in execIn) (*mcp.CallToolResult, execOut, error) {
+	// Poll mode: fetch the current state of a previously-returned approval gate. This
+	// is read-only — it can never approve a gate (resolution is the human plane),
+	// and it returns promptly, so the agent is never blocked waiting on a human.
+	if in.PollExecID != "" {
+		av, err := s.c.getApproval(ctx, in.SessionID, in.PollExecID)
+		if err != nil {
+			return toolError[execOut](err)
+		}
+		out := execOut{Status: av.Status, ExecID: av.ExecID, Stdout: av.Stdout, Stderr: av.Stderr, Reason: av.Reason}
+		if av.ExitCode != nil {
+			out.ExitCode = *av.ExitCode
+		}
+		if av.Status == "denied" {
+			out.Reason = denialReason(av)
+		}
+		return nil, out, nil
+	}
 	if len(in.Command) == 0 {
 		return toolError[execOut](fmt.Errorf("error [input]: command must not be empty"))
 	}
@@ -169,7 +193,25 @@ func (s *server) exec(ctx context.Context, _ *mcp.CallToolRequest, in execIn) (*
 	if err != nil {
 		return toolError[execOut](err)
 	}
-	return nil, execOut{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode}, nil
+	if res.Status == "pending" {
+		// The command matched an approval gate: return a structured pending status
+		// with the exec_id to poll. The agent is NOT blocked on a human.
+		return nil, execOut{Status: "pending", ExecID: res.ExecID, Reason: res.Rule}, nil
+	}
+	return nil, execOut{Stdout: res.Stdout, Stderr: res.Stderr, ExitCode: res.ExitCode, Status: "completed"}, nil
+}
+
+// denialReason composes a legible denial explanation from the poll view: the
+// timeout/session-end/operator reason plus any approver comment.
+func denialReason(av approvalView) string {
+	r := av.DenyReason
+	if av.Comment != "" {
+		if r != "" {
+			return r + ": " + av.Comment
+		}
+		return av.Comment
+	}
+	return r
 }
 
 func (s *server) upload(ctx context.Context, _ *mcp.CallToolRequest, in uploadIn) (*mcp.CallToolResult, uploadOut, error) {

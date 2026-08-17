@@ -3,6 +3,7 @@ package session
 import (
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
 )
@@ -24,6 +25,13 @@ const (
 	// StateExecing means a mediated exec is in flight. It is a sub-state of
 	// ready: the session returns to ready when the exec completes.
 	StateExecing State = "execing"
+	// StateAwaitingApproval means a mediated exec matched an approval gate (F4.3):
+	// the process is NOT spawned and the session is paused pending a human
+	// approve/deny (or a fail-closed timeout auto-deny). Like execing it is a
+	// sub-state of ready — the session returns to ready when the approval resolves.
+	// The reaper does not TTL-reap a session in this state; the approval's own TTL
+	// resolves the pause first.
+	StateAwaitingApproval State = "awaiting_approval"
 	// StateEnded is terminal: the sandbox has been destroyed (by DELETE, TTL
 	// reaper, or orphan reconciliation). An ended session accepts no execs.
 	StateEnded State = "ended"
@@ -77,6 +85,20 @@ type Session struct {
 	// valid no-op, so emit sites need no nil check. Set/read under the Manager
 	// mutex or after the session is solely owned (teardown).
 	rec *trace.Recorder
+
+	// policyHash is the F4.1 policy_hash of the RESOLVED policy in force for this
+	// session (workspace policy narrowed over the daemon default). It is computed
+	// in realize (fail-closed: an invalid workspace policy aborts the create) and
+	// emitted into the session.start binding so the trace chains to the exact
+	// policy. Empty only when policy resolution is unwired.
+	policyHash string
+
+	// policy is the F4.1 RESOLVED policy in force for this session — the model the
+	// F4.2 exec interceptor classifies every command against (policy.Classify).
+	// It is set in realize alongside policyHash from the same resolution, so the
+	// classified policy and the hash bound into the trace are always the same
+	// policy. Read on the exec hot path under the Manager mutex.
+	policy policy.Resolved
 }
 
 // deadline is the instant after which an idle session is reaped.

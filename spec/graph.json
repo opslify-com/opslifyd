@@ -389,89 +389,81 @@
     {
       "id": "F4.1",
       "phase": "P4",
-      "title": "`opslify.policy.yaml`",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P3"
+      "title": "`opslify.policy.yaml` (declarative policy + schema)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F3.1"
       ],
-      "blocks": [],
+      "depends_on_phases": [],
+      "blocks": [
+        "F4.2"
+      ],
       "blocks_phases": [],
-      "source": "spec/phases/p4-policy/README.md",
-      "detailed": false,
+      "source": "spec/phases/p4-policy/features/F4.1-policy-file.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F3.1",
-        "F3.2",
-        "F3.3",
-        "F3.4",
-        "F3.5"
+        "F3.1"
       ]
     },
     {
       "id": "F4.2",
       "phase": "P4",
-      "title": "Enforcement points",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P3"
+      "title": "Enforcement points (session + exec interception)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F4.1"
       ],
-      "blocks": [],
+      "depends_on_phases": [],
+      "blocks": [
+        "F4.3"
+      ],
       "blocks_phases": [],
-      "source": "spec/phases/p4-policy/README.md",
-      "detailed": false,
+      "source": "spec/phases/p4-policy/features/F4.2-enforcement.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F3.1",
-        "F3.2",
-        "F3.3",
-        "F3.4",
-        "F3.5"
+        "F4.1"
       ]
     },
     {
       "id": "F4.3",
       "phase": "P4",
-      "title": "Approval gates",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P3"
+      "title": "Approval gates (human-in-the-loop)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F4.2",
+        "F3.2"
       ],
-      "blocks": [],
+      "depends_on_phases": [],
+      "blocks": [
+        "F4.4"
+      ],
       "blocks_phases": [],
-      "source": "spec/phases/p4-policy/README.md",
-      "detailed": false,
+      "source": "spec/phases/p4-policy/features/F4.3-approval-gates.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F3.1",
         "F3.2",
-        "F3.3",
-        "F3.4",
-        "F3.5"
+        "F4.2"
       ]
     },
     {
       "id": "F4.4",
       "phase": "P4",
-      "title": "Dry-run interception",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P3"
+      "title": "Dry-run interception (preview destructive ops)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F4.3"
       ],
+      "depends_on_phases": [],
       "blocks": [],
       "blocks_phases": [],
-      "source": "spec/phases/p4-policy/README.md",
-      "detailed": false,
+      "source": "spec/phases/p4-policy/features/F4.4-dry-run.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F3.1",
-        "F3.2",
-        "F3.3",
-        "F3.4",
-        "F3.5"
+        "F4.3"
       ]
     },
     {
@@ -859,79 +851,19 @@
       "to": "F4.1"
     },
     {
-      "from": "F3.2",
-      "to": "F4.1"
-    },
-    {
-      "from": "F3.3",
-      "to": "F4.1"
-    },
-    {
-      "from": "F3.4",
-      "to": "F4.1"
-    },
-    {
-      "from": "F3.5",
-      "to": "F4.1"
-    },
-    {
-      "from": "F3.1",
+      "from": "F4.1",
       "to": "F4.2"
     },
     {
       "from": "F3.2",
-      "to": "F4.2"
-    },
-    {
-      "from": "F3.3",
-      "to": "F4.2"
-    },
-    {
-      "from": "F3.4",
-      "to": "F4.2"
-    },
-    {
-      "from": "F3.5",
-      "to": "F4.2"
-    },
-    {
-      "from": "F3.1",
       "to": "F4.3"
     },
     {
-      "from": "F3.2",
+      "from": "F4.2",
       "to": "F4.3"
     },
     {
-      "from": "F3.3",
-      "to": "F4.3"
-    },
-    {
-      "from": "F3.4",
-      "to": "F4.3"
-    },
-    {
-      "from": "F3.5",
-      "to": "F4.3"
-    },
-    {
-      "from": "F3.1",
-      "to": "F4.4"
-    },
-    {
-      "from": "F3.2",
-      "to": "F4.4"
-    },
-    {
-      "from": "F3.3",
-      "to": "F4.4"
-    },
-    {
-      "from": "F3.4",
-      "to": "F4.4"
-    },
-    {
-      "from": "F3.5",
+      "from": "F4.3",
       "to": "F4.4"
     },
     {
@@ -1284,12 +1216,12 @@
     "F3.1",
     "F2.2",
     "F3.3",
+    "F4.1",
     "F2.3",
     "F3.2",
+    "F4.2",
     "F3.4",
     "F3.5",
-    "F4.1",
-    "F4.2",
     "F4.3",
     "F4.4",
     "F5.1",
