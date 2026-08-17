@@ -387,6 +387,28 @@
       ]
     },
     {
+      "id": "F3.6",
+      "phase": "P3",
+      "title": "Local UI parity (history + verify + approval actions)",
+      "status": "in-progress",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F3.5",
+        "F4.3",
+        "F4.4"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p3-audit-ui/features/F3.6-ui-parity.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F3.5",
+        "F4.3",
+        "F4.4"
+      ]
+    },
+    {
       "id": "F4.1",
       "phase": "P4",
       "title": "`opslify.policy.yaml` (declarative policy + schema)",
@@ -847,6 +869,18 @@
       "to": "F3.5"
     },
     {
+      "from": "F3.5",
+      "to": "F3.6"
+    },
+    {
+      "from": "F4.3",
+      "to": "F3.6"
+    },
+    {
+      "from": "F4.4",
+      "to": "F3.6"
+    },
+    {
       "from": "F3.1",
       "to": "F4.1"
     },
@@ -1224,6 +1258,7 @@
     "F3.5",
     "F4.3",
     "F4.4",
+    "F3.6",
     "F5.1",
     "F5.2",
     "F5.3",
