@@ -168,6 +168,18 @@ func validateSemantics(m *yaml.Node, p Policy, verr *ValidationError) {
 			verr.add(lineOf(m, "egress", "domains"), fmt.Sprintf("invalid domain %q in egress.domains", d))
 		}
 	}
+	// dry_run rules (F4.4): each needs a compilable pattern and a non-empty
+	// preview whose first token (the tool) is present.
+	for i, rule := range p.DryRun {
+		if strings.TrimSpace(rule.Pattern) == "" {
+			verr.add(lineOf(m, "dry_run"), fmt.Sprintf("dry_run[%d]: pattern is required", i))
+		} else if _, err := regexp.Compile(rule.Pattern); err != nil {
+			verr.add(lineOf(m, "dry_run"), fmt.Sprintf("dry_run[%d]: invalid regex %q: %v", i, rule.Pattern, err))
+		}
+		if len(rule.Preview) == 0 || strings.TrimSpace(rule.Preview[0]) == "" {
+			verr.add(lineOf(m, "dry_run"), fmt.Sprintf("dry_run[%d] %q: preview command is required", i, rule.Pattern))
+		}
+	}
 	// creds
 	for i, c := range p.Creds {
 		if strings.TrimSpace(c.Name) == "" {

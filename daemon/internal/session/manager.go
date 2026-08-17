@@ -127,6 +127,12 @@ type ManagerConfig struct {
 	// (older ones are pruned + their images removed on each commit). Zero =>
 	// DefaultSnapshotRetention.
 	SnapshotRetention int
+	// DryRun enables F4.4 dry-run interception: before a gated destructive command
+	// pauses for approval, a PREVIEW (terraform plan / kubectl --dry-run=server /
+	// a policy dry_run rule) runs in-sandbox and its redacted diff is attached to
+	// the approval prompt. Default false preserves the pre-F4.4 approval flow
+	// exactly (no preview exec); the daemon wires it true.
+	DryRun bool
 	// DefaultPolicy is the daemon's trusted baseline policy (F4.1). A per-session
 	// workspace policy at <workspace>/opslify.policy.yaml may only NARROW it. The
 	// zero value is policy.Default() (no grants; deny-by-default creds), whose
@@ -639,7 +645,7 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 		// a typed ApprovalPendingError carrying the exec_id — it NEVER blocks on a
 		// human, so the MCP agent is never hung. Resolution (approve/deny) and the
 		// fail-closed timeout arrive out-of-band through the human control plane.
-		return m.registerApproval(ctx, id, opts, rec, policyHash, decision)
+		return m.registerApproval(ctx, id, opts, rec, policyHash, decision, rt, handle, resolved)
 	case policy.VerdictAllow:
 		// fall through to spawn.
 	}

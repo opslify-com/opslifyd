@@ -71,6 +71,19 @@ func Resolve(daemon, workspace Policy) Resolved {
 	// ---- session ----
 	out.Session, notes = resolveSession(d.Session, w.Session, notes)
 
+	// ---- dry_run (F4.4): DAEMON-AUTHORITATIVE ----
+	// The preview rewrite rules and the fail-open/closed choice come ONLY from the
+	// trusted daemon policy. A workspace dry_run section is DROPPED, not merged — a
+	// preview command runs in-sandbox under the session's creds, so letting an
+	// untrusted workspace introduce or alter one would be a privilege/arbitrary-
+	// command widening. Dropping it outright is the narrows-not-widens invariant
+	// applied to dry_run.
+	out.DryRun = append([]DryRunRule(nil), d.DryRun...)
+	out.DryRunWarnOnFailure = d.DryRunWarnOnFailure
+	if len(w.DryRun) > 0 {
+		notes = append(notes, "dry_run: workspace rules ignored (dry_run is daemon-authoritative)")
+	}
+
 	n := out.normalize()
 	return Resolved{Policy: n, Hash: hashOf(n), Notes: notes}
 }

@@ -39,6 +39,28 @@ type Policy struct {
 	// StrictExec makes exec allowlist-only (F4.2 consumes it). Default false =
 	// allow-with-approval_required. Narrowing can only turn it ON, never OFF.
 	StrictExec bool `json:"strict_exec" yaml:"strict_exec"`
+
+	// DryRun holds F4.4 preview rewrite rules (command pattern → preview command
+	// prefix), consulted before the built-in terraform/kubectl rewrites. It is
+	// DAEMON-AUTHORITATIVE: a workspace policy's dry_run section is IGNORED by
+	// Resolve (never merged), so an untrusted workspace can never introduce a
+	// preview command. omitempty keeps the default policy_hash stable.
+	DryRun []DryRunRule `json:"dry_run,omitempty" yaml:"dry_run,omitempty"`
+	// DryRunWarnOnFailure decides what a FAILED preview does: false (default) =
+	// BLOCK the command (fail-closed — a preview that cannot run denies the gate);
+	// true = WARN (the gate is still offered, flagged preview-failed). It is
+	// daemon-authoritative like DryRun. omitempty keeps the default hash stable.
+	DryRunWarnOnFailure bool `json:"dry_run_warn_on_failure,omitempty" yaml:"dry_run_warn_on_failure,omitempty"`
+}
+
+// DryRunRule maps a command pattern to a preview command prefix (F4.4). Pattern
+// is a regex matched against the joined argv; Preview is the argv PREFIX the
+// preview runs (the original command's args after argv[0] are appended). A rule
+// is same-tool-clamped at rewrite time (Preview[0] must be the same binary as the
+// matched command), so it can only ever rewrite that tool's own invocation.
+type DryRunRule struct {
+	Pattern string   `json:"pattern" yaml:"pattern"`
+	Preview []string `json:"preview" yaml:"preview"`
 }
 
 // Session carries per-session limits.
@@ -154,6 +176,7 @@ func (p Policy) normalize() Policy {
 	p.Allow.Terraform.Commands = sortedSet(p.Allow.Terraform.Commands)
 	p.Egress.Domains = sortedSet(p.Egress.Domains)
 	p.Creds = sortedCreds(p.Creds)
+	p.DryRun = sortedDryRun(p.DryRun)
 	return p
 }
 

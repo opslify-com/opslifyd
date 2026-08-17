@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -46,9 +48,11 @@ type fakeRuntime struct {
 	created      int
 	destroyed    int
 	destroyedIDs []string
-	snapshots    []string // images committed via Snapshot, in order
-	removed      []string // images deleted via RemoveImage (ImageRemover)
-	execCount    int      // number of Exec calls (F4.2: assert deny never spawns)
+	snapshots    []string   // images committed via Snapshot, in order
+	removed      []string   // images deleted via RemoveImage (ImageRemover)
+	execCount    int        // number of Exec calls (F4.2: assert deny never spawns)
+	execArgvs    [][]string // argv of every Exec call, in order (F4.4 preview/approve checks)
+	planContent  []byte     // bytes a simulated `terraform plan -out` writes (F4.4 pin)
 	nextExec     runtime.ExecStream
 }
 
@@ -78,10 +82,25 @@ func (f *fakeRuntime) Create(_ context.Context, spec runtime.SessionSpec) (runti
 	}, nil
 }
 
-func (f *fakeRuntime) Exec(_ context.Context, _ runtime.ContainerHandle, _ runtime.ExecRequest) (runtime.ExecStream, error) {
+func (f *fakeRuntime) Exec(_ context.Context, _ runtime.ContainerHandle, req runtime.ExecRequest) (runtime.ExecStream, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.execCount++
+	f.execArgvs = append(f.execArgvs, append([]string(nil), req.Argv...))
+	// Simulate `terraform plan -out=/workspace/<rel>` writing a plan file, so the
+	// F4.4 saved-plan hash-pin (which reads the host workspace daemon-side) has a
+	// real artifact to hash. Maps the container /workspace prefix to the host dir.
+	if f.execErr == nil && len(req.Argv) >= 2 && req.Argv[0] == "terraform" && req.Argv[1] == "plan" {
+		for _, a := range req.Argv {
+			if rel, ok := strings.CutPrefix(a, "-out=/workspace/"); ok && f.lastSpec.Workspace != "" {
+				content := f.planContent
+				if content == nil {
+					content = []byte("PLAN-v1")
+				}
+				_ = os.WriteFile(filepath.Join(f.lastSpec.Workspace, rel), content, 0o600)
+			}
+		}
+	}
 	if f.execErr != nil {
 		return runtime.ExecStream{}, f.execErr
 	}
@@ -89,6 +108,26 @@ func (f *fakeRuntime) Exec(_ context.Context, _ runtime.ContainerHandle, _ runti
 }
 
 func (f *fakeRuntime) execCalls() int { f.mu.Lock(); defer f.mu.Unlock(); return f.execCount }
+
+// lastExecArgv returns the argv of the most recent Exec (nil if none since the
+// last reset) — the F4.4 hook to assert the preview / approved command.
+func (f *fakeRuntime) lastExecArgv() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.execArgvs) == 0 {
+		return nil
+	}
+	return f.execArgvs[len(f.execArgvs)-1]
+}
+
+// lastExecReset clears the recorded argv history so a later lastExecArgv reflects
+// only Exec calls made after the reset (e.g. isolate the approved run from the
+// preview run).
+func (f *fakeRuntime) lastExecReset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execArgvs = nil
+}
 
 func (f *fakeRuntime) Destroy(_ context.Context, h runtime.ContainerHandle) error {
 	f.mu.Lock()

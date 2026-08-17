@@ -221,6 +221,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			WarmPoolSize:        cfg.WarmPoolSize,
 			WarmPoolConcurrency: cfg.WarmPoolConcurrency,
 			DefaultPolicy:       defaultPolicy,
+			DryRun:              true, // F4.4: preview destructive ops before the approval pause
 		},
 		Egress:   egressCtl,
 		Logger:   log,

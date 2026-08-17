@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
@@ -96,6 +99,19 @@ type approval struct {
 	deadline    time.Time
 	rec         *trace.Recorder
 
+	// F4.4 dry-run preview attached to the gate (all redacted before storage).
+	previewCmd    string // the preview command that ran (argv joined), "" if none
+	previewDiff   string // the captured, REDACTED preview output shown beside the prompt
+	previewStatus string // "none" | "ok" | "failed" (warn mode)
+
+	// F4.4 saved-plan integrity (terraform GuaranteeSavedPlan only). The saved plan
+	// lives in the agent-writable /workspace, so we pin its SHA-256 (read
+	// daemon-side, not in-container) at preview time and re-verify it immediately
+	// before the approved apply — a tampered plan fails closed. planRelPath is the
+	// workspace-relative path; planHash is empty for kubectl/custom (fresh-apply).
+	planRelPath string
+	planHash    string
+
 	status     ApprovalStatus
 	comment    string
 	denyReason string // "timeout" | "session_end" | "operator" (deny) — empty for approve
@@ -120,11 +136,17 @@ type ApprovalView struct {
 	ArgvSummary string         `json:"argv_summary,omitempty"`
 	Comment     string         `json:"comment,omitempty"`
 	DenyReason  string         `json:"deny_reason,omitempty"`
-	RequestedAt time.Time      `json:"requested_at"`
-	Ran         bool           `json:"ran,omitempty"`
-	Stdout      string         `json:"stdout,omitempty"`
-	Stderr      string         `json:"stderr,omitempty"`
-	ExitCode    *int           `json:"exit_code,omitempty"`
+	// F4.4 dry-run preview (redacted). PreviewCmd/PreviewDiff/PreviewStatus let the
+	// F3.5 UI render the diff beside approve/deny.
+	PreviewCmd    string    `json:"preview_cmd,omitempty"`
+	PreviewDiff   string    `json:"preview_diff,omitempty"`
+	PreviewStatus string    `json:"preview_status,omitempty"`
+	RequestedAt   time.Time `json:"requested_at"`
+	Ran           bool      `json:"ran,omitempty"`
+	Stdout        string    `json:"stdout,omitempty"`
+	Stderr        string    `json:"stderr,omitempty"`
+	ExitCode      *int      `json:"exit_code,omitempty"`
+	RunErr        string    `json:"run_err,omitempty"` // why an approved run failed (e.g. tamper detected)
 }
 
 // view snapshots the approval under its lock.
@@ -132,16 +154,20 @@ func (a *approval) view() ApprovalView {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	v := ApprovalView{
-		SessionID:   a.sessionID,
-		ExecID:      a.execID,
-		Status:      a.status,
-		Rule:        a.rule,
-		Reason:      a.reason,
-		ArgvSummary: a.argvSummary,
-		Comment:     a.comment,
-		DenyReason:  a.denyReason,
-		RequestedAt: a.requestedAt,
-		Ran:         a.ran,
+		SessionID:     a.sessionID,
+		ExecID:        a.execID,
+		Status:        a.status,
+		Rule:          a.rule,
+		Reason:        a.reason,
+		ArgvSummary:   a.argvSummary,
+		Comment:       a.comment,
+		DenyReason:    a.denyReason,
+		PreviewCmd:    a.previewCmd,
+		PreviewDiff:   a.previewDiff,
+		PreviewStatus: a.previewStatus,
+		RequestedAt:   a.requestedAt,
+		Ran:           a.ran,
+		RunErr:        a.runErr,
 	}
 	if a.ran {
 		v.Stdout = a.stdout
@@ -160,27 +186,82 @@ func approvalKey(sessionID, execID string) string { return sessionID + "/" + exe
 // F3.5 UI over the F3.2 SSE stream), and returns the typed, non-blocking
 // ApprovalPendingError. The process is NOT spawned. Called from Exec with the
 // session already transitioned to execing; this moves it to awaiting_approval.
-func (m *Manager) registerApproval(ctx context.Context, sessionID string, opts ExecOptions, rec *trace.Recorder, policyHash string, decision policy.Decision) error {
+func (m *Manager) registerApproval(ctx context.Context, sessionID string, opts ExecOptions, rec *trace.Recorder, policyHash string, decision policy.Decision, rt runtime.Runtime, handle runtime.ContainerHandle, resolved policy.Resolved) error {
 	execID, err := newID()
 	if err != nil {
 		return err
 	}
 	now := m.clock.Now()
 	summary := strings.Join(opts.Argv, " ")
+
+	// F4.4 DRY-RUN PREVIEW. Before the gate is registered, rewrite the command into
+	// a preview and run it IN-SANDBOX (same session/container/creds — never on the
+	// host) so the human approves with the actual diff in front of them. On success
+	// the approved run may differ from the original (terraform replays the SAVED
+	// plan). A FAILED preview never silently approves: policy decides block vs warn.
+	argvToRun := append([]string(nil), opts.Argv...)
+	previewCmd, previewDiff, previewStatus := "", "", "none"
+	planRelPath, planHash := "", ""
+	if m.cfg.DryRun {
+		// Per-exec saved-plan path under /workspace (the one writable mount): it
+		// survives from the terraform-plan preview to the terraform-apply on approve
+		// in the SAME container, so what runs equals what was reviewed.
+		planPath := "/workspace/.opslify-plan-" + execID + ".tfplan"
+		pv := policy.RewriteForDryRun(opts.Argv, resolved.DryRun, planPath)
+		if pv.Matched {
+			previewCmd = strings.Join(pv.PreviewArgv, " ")
+			diff, ok := m.runPreview(ctx, sessionID, rt, handle, rec, opts, pv.PreviewArgv)
+			previewDiff = m.redactString(diff)
+			if ok {
+				previewStatus = "ok"
+				argvToRun = pv.ApprovedArgv // e.g. terraform apply <saved-plan>
+				// Saved-plan integrity: pin the plan's hash (read daemon-side from the
+				// host workspace, NOT via an in-container command the agent controls)
+				// so a tamper between review and apply is detected. If we can't read
+				// the plan we just wrote, the guarantee is void → fail closed (block).
+				if pv.Guarantee == policy.GuaranteeSavedPlan {
+					rel := ".opslify-plan-" + execID + ".tfplan"
+					b, rerr := m.ReadFile(ctx, sessionID, rel)
+					if rerr != nil {
+						return m.blockOnPreviewFailure(ctx, sessionID, rec, decision, policyHash, summary, previewCmd,
+							m.redactString("saved plan unreadable after preview: "+rerr.Error()))
+					}
+					sum := sha256.Sum256(b)
+					planRelPath = rel
+					planHash = hex.EncodeToString(sum[:])
+				}
+			} else if resolved.DryRunWarnOnFailure {
+				// WARN: still offer the gate, flagged preview-failed. The saved plan
+				// does not exist, so approve runs the ORIGINAL command (fresh).
+				previewStatus = "failed"
+			} else {
+				// BLOCK (fail-closed default): a preview that could not run denies the
+				// command. Surface the failure (approval.requested + policy.decision)
+				// so the UI/agent see WHY, then refuse — never a silent approve.
+				return m.blockOnPreviewFailure(ctx, sessionID, rec, decision, policyHash, summary, previewCmd, previewDiff)
+			}
+		}
+	}
+
 	a := &approval{
-		sessionID:   sessionID,
-		execID:      execID,
-		argv:        append([]string(nil), opts.Argv...),
-		cwd:         opts.Cwd,
-		env:         append([]string(nil), opts.Env...),
-		argvSummary: summary,
-		rule:        decision.Rule,
-		reason:      decision.Reason,
-		policyHash:  policyHash,
-		requestedAt: now,
-		deadline:    now.Add(m.cfg.ApprovalTTL),
-		rec:         rec,
-		status:      ApprovalPending,
+		sessionID:     sessionID,
+		execID:        execID,
+		argv:          argvToRun,
+		cwd:           opts.Cwd,
+		env:           append([]string(nil), opts.Env...),
+		argvSummary:   summary,
+		rule:          decision.Rule,
+		reason:        decision.Reason,
+		policyHash:    policyHash,
+		requestedAt:   now,
+		deadline:      now.Add(m.cfg.ApprovalTTL),
+		rec:           rec,
+		previewCmd:    previewCmd,
+		previewDiff:   previewDiff,
+		previewStatus: previewStatus,
+		planRelPath:   planRelPath,
+		planHash:      planHash,
+		status:        ApprovalPending,
 	}
 
 	m.apprMu.Lock()
@@ -196,12 +277,17 @@ func (m *Manager) registerApproval(ctx context.Context, sessionID string, opts E
 	m.mu.Unlock()
 
 	// approval.requested → SSE → F3.5 live prompt. Redacted (F3.3) + chained (F3.1)
-	// like every other event: it flows through the session Recorder.
+	// like every other event: it flows through the session Recorder. The preview_*
+	// fields carry the diff shown beside approve/deny (the diff is already redacted;
+	// the recorder redacts the whole payload again — idempotent on a redacted diff).
 	_ = rec.Emit(ctx, trace.TypeApprovalRequested, map[string]any{
-		"exec_id":      execID,
-		"argv_summary": summary,
-		"rule":         decision.Rule,
-		"reason":       decision.Reason,
+		"exec_id":        execID,
+		"argv_summary":   summary,
+		"rule":           decision.Rule,
+		"reason":         decision.Reason,
+		"preview_cmd":    previewCmd,
+		"preview_diff":   previewDiff,
+		"preview_status": previewStatus,
 	})
 
 	return &ApprovalPendingError{
@@ -211,6 +297,64 @@ func (m *Manager) registerApproval(ctx context.Context, sessionID string, opts E
 		Reason:      decision.Reason,
 		ArgvSummary: summary,
 	}
+}
+
+// runPreview runs a dry-run preview command IN-SANDBOX via runExec (the same
+// Runtime.Exec seam, container, and creds the real command would use — no host
+// execution, no capability widening) and returns the captured (still-raw) diff
+// plus whether the preview succeeded (spawned cleanly AND exited 0). Its exec.*
+// output is redacted+chained by the session Recorder like any other exec.
+func (m *Manager) runPreview(ctx context.Context, sessionID string, rt runtime.Runtime, handle runtime.ContainerHandle, rec *trace.Recorder, opts ExecOptions, previewArgv []string) (string, bool) {
+	sink := newBufferSink(m.cfg.OutputCap)
+	prevOpts := ExecOptions{Argv: previewArgv, Cwd: opts.Cwd, Env: append([]string(nil), opts.Env...)}
+	runErr := m.runExec(ctx, sessionID, rt, handle, rec, prevOpts, sink)
+	diff := sink.stdoutString()
+	if e := sink.stderrString(); e != "" {
+		if diff != "" {
+			diff += "\n"
+		}
+		diff += e
+	}
+	ok := runErr == nil && sink.exit() == 0
+	return diff, ok
+}
+
+// blockOnPreviewFailure is the fail-closed path when a preview command fails and
+// policy does NOT warn: it emits approval.requested (so the UI still shows the
+// failed preview) and a chained policy.decision(denied, reason=preview_failed),
+// registers NO pending gate, and returns a typed policy denial. The session is
+// left execing so Exec's defer restores it to ready.
+func (m *Manager) blockOnPreviewFailure(ctx context.Context, sessionID string, rec *trace.Recorder, decision policy.Decision, policyHash, summary, previewCmd, previewDiff string) error {
+	_ = rec.Emit(ctx, trace.TypeApprovalRequested, map[string]any{
+		"argv_summary":   summary,
+		"rule":           decision.Rule,
+		"reason":         decision.Reason,
+		"preview_cmd":    previewCmd,
+		"preview_diff":   previewDiff,
+		"preview_status": "failed",
+	})
+	_ = rec.Emit(ctx, trace.TypePolicyDecision, map[string]any{
+		"decision":     "denied",
+		"rule":         decision.Rule,
+		"argv_summary": summary,
+		"reason":       "preview_failed",
+		"policy_hash":  policyHash,
+	})
+	return fmt.Errorf("%w: dry-run preview failed and policy blocks on preview failure (fail-closed) [rule %s]", ErrPolicyDenied, decision.Rule)
+}
+
+// redactString runs the F3.3 redactor over a single diff string so the stored
+// approval view AND the emitted event carry identical, redacted content (a plan
+// diff can echo vars/secrets). It reuses the payload-map redactor on a one-key map.
+func (m *Manager) redactString(s string) string {
+	if s == "" {
+		return s
+	}
+	out := m.redactor.Redact(trace.TypeApprovalRequested, map[string]any{"diff": s})
+	if v, ok := out["diff"].(string); ok {
+		return v
+	}
+	return "[REDACTED:error]"
 }
 
 // GetApproval returns the current state of a gate (the poll path the MCP agent
@@ -330,6 +474,33 @@ func (m *Manager) runApproved(ctx context.Context, a *approval) {
 	handle := s.Handle
 	rec := s.rec
 	m.mu.Unlock()
+
+	// Saved-plan integrity check (F4.4): the approved run replays a plan file in the
+	// agent-writable /workspace. Re-hash it daemon-side immediately before apply and
+	// compare to the value pinned at preview; a mismatch (or a now-unreadable plan)
+	// means the agent altered what the human reviewed → fail closed, do NOT apply.
+	// (Residual: a sub-exec race between this read and terraform's own read of the
+	// file remains — see the read-only-plan-mount note in the F4.4 spec.)
+	if a.planHash != "" {
+		b, rerr := m.ReadFile(ctx, a.sessionID, a.planRelPath)
+		if rerr != nil || fmt.Sprintf("%x", sha256.Sum256(b)) != a.planHash {
+			m.mu.Lock()
+			if s, ok := m.sessions[a.sessionID]; ok && s.State == StateExecing {
+				s.State = StateReady
+			}
+			m.mu.Unlock()
+			_ = rec.Emit(ctx, trace.TypePolicyDecision, map[string]any{
+				"decision": "denied", "rule": a.rule, "reason": "plan_tampered",
+				"exec_id": a.execID, "policy_hash": a.policyHash,
+			})
+			a.mu.Lock()
+			a.runErr = "saved plan changed after review (tamper detected); apply refused"
+			a.exitCode = -1
+			a.ran = true
+			a.mu.Unlock()
+			return
+		}
+	}
 
 	sink := newBufferSink(m.cfg.OutputCap)
 	opts := ExecOptions{Argv: a.argv, Cwd: a.cwd, Env: a.env}
