@@ -587,7 +587,7 @@
       "id": "F5.6",
       "phase": "P5",
       "title": "SecretBackend interface + local encrypted vault + audit",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F4.1",
