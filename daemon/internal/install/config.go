@@ -65,6 +65,11 @@ type Config struct {
 	// cloud push). An absent section takes fail-safe defaults: local persistence ON
 	// at DefaultTraceDir, batch fsync, no cloud backend.
 	Trace TraceConfig `yaml:"trace,omitempty"`
+	// Vault configures the F5.6 local encrypted secret vault (the default broker
+	// backend). An absent section takes fail-safe defaults: DefaultVaultPath, master
+	// key from the OPSLIFY_VAULT_KEY env. The vault holds NO plaintext at rest and
+	// its master key is NEVER a plaintext file beside the db.
+	Vault VaultConfig `yaml:"vault,omitempty"`
 	// PolicyFile is the path to the daemon's trusted DEFAULT policy (F4.1). A
 	// per-session workspace policy may only NARROW it. Empty => the built-in
 	// policy.Default() (no grants; deny-by-default creds). The daemon fails to
@@ -84,6 +89,18 @@ type TraceConfig struct {
 	// CloudURL, if set, enables the resumable cloud uploader (F3.4 receiver). Empty
 	// => the uploader is a clean no-op; local persistence + SSE are unaffected.
 	CloudURL string `yaml:"cloud_url,omitempty"`
+}
+
+// VaultConfig is the operator-facing F5.6 knob set for the local encrypted vault.
+// It intentionally holds NO key material — only the db path and the NAME of the
+// env var the 32-byte master key is read from (never the key itself).
+type VaultConfig struct {
+	// Path is the encrypted vault db (0600, daemon-user). Empty => broker.DefaultVaultPath.
+	Path string `yaml:"path,omitempty"`
+	// KeyEnv is the environment variable the 32-byte master key (hex/base64) is read
+	// from. Empty => broker.DefaultVaultKeyEnv (OPSLIFY_VAULT_KEY). The key is NEVER
+	// stored in config or in a plaintext file beside the db.
+	KeyEnv string `yaml:"key_env,omitempty"`
 }
 
 // RedactionConfig is the operator-facing F3.3 knob set. Fields left unset take

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
@@ -168,6 +169,11 @@ type Manager struct {
 	trace    trace.TraceSink
 	redactor trace.Redactor
 
+	// broker is the F5.6 credential broker. nil disables secret resolution (an
+	// unwired daemon never resolves a secret). It gates a resolve on the session's
+	// resolved-policy `creds` grants (deny-by-default) and audits every resolve.
+	broker *broker.Broker
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 
@@ -219,6 +225,9 @@ type Options struct {
 	// Redactor is the F3.3 payload-scrub seam, applied before events are hashed.
 	// nil => trace.NoopRedactor (no redaction in F3.1).
 	Redactor trace.Redactor
+	// Broker is the F5.6 credential broker backing ResolveSecret. nil disables
+	// secret resolution — the daemon wires a broker over the local encrypted vault.
+	Broker *broker.Broker
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -250,6 +259,7 @@ func NewManager(opts Options) (*Manager, error) {
 		log:       opts.Logger,
 		trace:     opts.Trace,
 		redactor:  opts.Redactor,
+		broker:    opts.Broker,
 		sessions:  make(map[string]*Session),
 	}
 	if m.redactor == nil {
@@ -651,6 +661,33 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 	}
 
 	return m.runExec(ctx, id, rt, handle, rec, opts, sink)
+}
+
+// ResolveSecret is the DAEMON-INTERNAL F5.6 credential resolution entrypoint — the
+// seam F5.1 injection will consume. It looks up the session, gates the resolve on
+// the session's RESOLVED policy `creds` grants (deny-by-default), fetches the value
+// via the broker's internal backend, and emits a chained+redacted `cred.resolve`
+// audit event under the session's trace. It returns the plaintext value ONLY to
+// this internal caller; it is NEVER reachable from a REST/CLI/UI route (there is no
+// handler that calls it). The caller SHOULD broker.Zeroize the value after use.
+//
+// It fails CLOSED: an unwired broker, an unknown session, an ungranted ref, or any
+// backend error returns an error and NO value — and (except for an unknown session,
+// which has no recorder) audits the denial.
+func (m *Manager) ResolveSecret(ctx context.Context, id, ref string) ([]byte, broker.SecretMeta, error) {
+	if m.broker == nil {
+		return nil, broker.SecretMeta{}, fmt.Errorf("%w: credential broker is not enabled on this daemon", ErrNotFound)
+	}
+	m.mu.Lock()
+	s, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil, broker.SecretMeta{}, fmt.Errorf("%w: session %s", ErrNotFound, id)
+	}
+	rec := s.rec
+	grants := s.policy.Creds
+	m.mu.Unlock()
+	return m.broker.Resolve(ctx, rec, grants, ref)
 }
 
 // runExec is the shared spawn+stream core used by the allow path (Exec) and the

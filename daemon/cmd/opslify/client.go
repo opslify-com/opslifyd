@@ -306,6 +306,90 @@ func (c *client) resolveApproval(ctx context.Context, id, execID, decision, comm
 	return out, nil
 }
 
+// --- F5.6 secrets management (metadata out, value in only) ---
+
+// secretMeta mirrors the daemon's metadata-only secret projection. It carries NO
+// value (the daemon never returns one).
+type secretMeta struct {
+	Ref       string `json:"ref"`
+	Provider  string `json:"provider,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+	TTL       string `json:"ttl,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// addSecretReq is the POST /v1/secrets body. The value is base64 so it may be
+// binary; it travels IN only and is never returned.
+type addSecretReq struct {
+	Ref       string `json:"ref"`
+	Provider  string `json:"provider,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+	TTL       string `json:"ttl,omitempty"`
+	ValueB64  string `json:"value_b64"`
+	Overwrite bool   `json:"overwrite,omitempty"`
+}
+
+// addSecret POSTs a secret value. The returned metadata carries no value.
+func (c *client) addSecret(ctx context.Context, req addSecretReq) (secretMeta, error) {
+	var out secretMeta
+	body, _ := json.Marshal(req)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/secrets", bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// listSecrets GETs /v1/secrets — metadata only, never a value.
+func (c *client) listSecrets(ctx context.Context) ([]secretMeta, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/secrets", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []secretMeta
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// removeSecret DELETEs /v1/secrets/{ref}.
+func (c *client) removeSecret(ctx context.Context, ref string) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/secrets/"+ref, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}
+
 // traceResp mirrors the daemon's GET /v1/sessions/{id}/trace body.
 type traceResp struct {
 	Events []trace.Event    `json:"events"`

@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
@@ -96,7 +97,16 @@ func run() error {
 	}
 	defer traceStop()
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink)
+	// Wire the F5.6 local encrypted vault (the default broker backend). It fails
+	// CLOSED: a missing/short master key aborts startup rather than serving without a
+	// vault. The vault is the value store; the broker gates + audits every resolve.
+	vault, err := buildVault(cfg, log)
+	if err != nil {
+		return err
+	}
+	brk := broker.NewBroker(vault)
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk)
 	if err != nil {
 		return err
 	}
@@ -107,6 +117,7 @@ func run() error {
 		SocketGroup: *socketGroup,
 		Verifier:    verifier,
 		Sessions:    mgr,
+		Secrets:     vault, // narrow management surface (Put/List/Delete — no Get)
 		Ready:       sdNotifyReady,
 		Version:     version,
 		Logger:      log,
@@ -188,7 +199,29 @@ func buildTraceSink(cfg install.Config, log *slog.Logger) (trace.TraceSink, func
 	return sink, stop, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink) (*session.Manager, error) {
+// buildVault opens the F5.6 local encrypted vault. It fails CLOSED: an absent or
+// wrong-length master key (env OPSLIFY_VAULT_KEY / configured key_env), an
+// insecure-perms vault file, or a malformed db aborts startup — the daemon never
+// serves a broken or unencryptable vault. The master key is read from the env, so
+// it is never written to config or to a plaintext file beside the db.
+func buildVault(cfg install.Config, log *slog.Logger) (*broker.Vault, error) {
+	path := cfg.Vault.Path
+	if path == "" {
+		path = broker.DefaultVaultPath
+	}
+	keyEnv := cfg.Vault.KeyEnv
+	if keyEnv == "" {
+		keyEnv = broker.DefaultVaultKeyEnv
+	}
+	v, err := broker.OpenVault(path, broker.EnvKeySource{Var: keyEnv})
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: open secret vault: %w (set %s to a 32-byte hex/base64 master key)", err, keyEnv)
+	}
+	log.Info("secret vault active", "path", path, "key_env", keyEnv)
+	return v, nil
+}
+
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -227,6 +260,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 		Logger:   log,
 		Trace:    traceSink,
 		Redactor: buildRedactor(cfg), // F3.3: config-driven secret scrubber
+		Broker:   brk,                // F5.6: policy-gated, audited secret resolution
 	})
 }
 

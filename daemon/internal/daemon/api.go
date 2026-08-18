@@ -44,6 +44,7 @@ func (d *Daemon) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /"+APIVersion+"/health", d.handleHealth)
 	d.registerSessionRoutes(mux)
+	d.registerSecretRoutes(mux)
 	return mux
 }
 
