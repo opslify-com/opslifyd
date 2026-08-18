@@ -99,6 +99,15 @@ type Session struct {
 	// classified policy and the hash bound into the trace are always the same
 	// policy. Read on the exec hot path under the Manager mutex.
 	policy policy.Resolved
+
+	// credEnv is the F5.1 executor-side credential injection: the process-env
+	// entries added to EVERY exec in this session for its policy-granted creds. On
+	// the AWS blind path it holds ONLY the container-credentials endpoint URI + a
+	// per-session bearer token (NEVER a raw durable secret — that is served by the
+	// daemon's token-gated endpoint); on the GCP/Azure v1 fallback it holds a
+	// short-lived, agent-visible token. Set once at registerReady (under the Manager
+	// mutex) and read on the exec hot path under the same mutex.
+	credEnv []string
 }
 
 // deadline is the instant after which an idle session is reaped.

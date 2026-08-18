@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -106,7 +107,15 @@ func run() error {
 	}
 	brk := broker.NewBroker(vault)
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk)
+	// Wire the F5.1 executor-side credential injection: a loopback creds endpoint
+	// (the fully credential-blind AWS container-credentials path) + the injector that
+	// resolves granted creds and injects a scoped, TTL-bounded credential at exec.
+	// The endpoint fails safe: if it cannot bind, the injector runs with no endpoint
+	// and the AWS blind path fails closed (no raw-secret env fallback).
+	credInjector, credStop := buildCredInjection(brk, log)
+	defer credStop()
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector)
 	if err != nil {
 		return err
 	}
@@ -221,7 +230,42 @@ func buildVault(cfg install.Config, log *slog.Logger) (*broker.Vault, error) {
 	return v, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker) (*session.Manager, error) {
+// buildCredInjection stands up the F5.1 loopback credential endpoint and injector.
+// The endpoint serves each session a scoped, TTL-bounded credential body that the
+// AWS CLI/SDK fetches unmodified via AWS_CONTAINER_CREDENTIALS_FULL_URI, so the raw
+// secret is NEVER placed in the container env. It binds a pinned loopback address
+// (never 0.0.0.0), so a host-network request cannot reach it; the in-sandbox→daemon
+// network reachability (egress allowlist to the bridge gateway) is INTEGRATION-
+// gated — the token/cross-session/expiry gates are unit-tested. If the listener
+// cannot bind, injection runs WITHOUT an endpoint (the AWS blind path then fails
+// closed), never falling back to a raw-secret env injection.
+func buildCredInjection(brk *broker.Broker, log *slog.Logger) (*broker.Injector, func()) {
+	server := broker.NewCredServer(time.Now)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Warn("F5.1 creds endpoint unavailable; AWS credential-blind path disabled (fail-closed, no env fallback)", "err", err)
+		return broker.NewInjector(brk, nil, "", 0, time.Now), func() {}
+	}
+	baseURL := "http://" + ln.Addr().String()
+	mux := http.NewServeMux()
+	mux.Handle(broker.CredPath, server)
+	srv := &http.Server{Handler: mux}
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Warn("F5.1 creds endpoint serve stopped", "err", err)
+		}
+	}()
+	log.Info("F5.1 creds endpoint active", "base_url", baseURL)
+	injector := broker.NewInjector(brk, server, baseURL, 0, time.Now)
+	stop := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}
+	return injector, stop
+}
+
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -256,11 +300,12 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			DefaultPolicy:       defaultPolicy,
 			DryRun:              true, // F4.4: preview destructive ops before the approval pause
 		},
-		Egress:   egressCtl,
-		Logger:   log,
-		Trace:    traceSink,
-		Redactor: buildRedactor(cfg), // F3.3: config-driven secret scrubber
-		Broker:   brk,                // F5.6: policy-gated, audited secret resolution
+		Egress:       egressCtl,
+		Logger:       log,
+		Trace:        traceSink,
+		Redactor:     buildRedactor(cfg), // F3.3: config-driven secret scrubber
+		Broker:       brk,                // F5.6: policy-gated, audited secret resolution
+		CredInjector: credInjector,       // F5.1: executor-side credential injection
 	})
 }
 

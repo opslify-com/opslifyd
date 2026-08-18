@@ -174,6 +174,14 @@ type Manager struct {
 	// resolved-policy `creds` grants (deny-by-default) and audits every resolve.
 	broker *broker.Broker
 
+	// credInjector is the F5.1 executor-side credential injector. nil disables
+	// injection (a session runs with no injected creds). At registerReady it
+	// resolves every policy-granted cred through the broker, builds a scoped,
+	// TTL-bounded injection (AWS container-credentials endpoint, or the GCP/Azure v1
+	// env fallback), and stores the resulting env on the session — merged into every
+	// exec. It is released on teardown.
+	credInjector *broker.Injector
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 
@@ -228,6 +236,9 @@ type Options struct {
 	// Broker is the F5.6 credential broker backing ResolveSecret. nil disables
 	// secret resolution — the daemon wires a broker over the local encrypted vault.
 	Broker *broker.Broker
+	// CredInjector is the F5.1 executor-side credential injector. nil disables
+	// injection — the daemon wires it over the broker + the loopback creds endpoint.
+	CredInjector *broker.Injector
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -249,18 +260,19 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:       cfg,
-		approvals: make(map[string]*approval),
-		resolve:   opts.Resolve,
-		clock:     opts.Clock,
-		store:     opts.Store,
-		egress:    opts.Egress,
-		sandboxIP: opts.SandboxIP,
-		log:       opts.Logger,
-		trace:     opts.Trace,
-		redactor:  opts.Redactor,
-		broker:    opts.Broker,
-		sessions:  make(map[string]*Session),
+		cfg:          cfg,
+		approvals:    make(map[string]*approval),
+		resolve:      opts.Resolve,
+		clock:        opts.Clock,
+		store:        opts.Store,
+		egress:       opts.Egress,
+		sandboxIP:    opts.SandboxIP,
+		log:          opts.Logger,
+		trace:        opts.Trace,
+		redactor:     opts.Redactor,
+		broker:       opts.Broker,
+		credInjector: opts.CredInjector,
+		sessions:     make(map[string]*Session),
 	}
 	if m.redactor == nil {
 		m.redactor = trace.NoopRedactor{}
@@ -538,6 +550,13 @@ func (m *Manager) registerReady(s *Session, origin string) {
 			m.log.Warn("trace session.start emit failed", "session", s.ID, "err", err)
 		}
 	}
+	// F5.1 executor-side credential injection. Resolve every policy-granted cred and
+	// build the scoped, TTL-bounded injection BEFORE the session is visible in the
+	// live map, so no exec can run before its creds are wired. It is fail-closed: a
+	// per-cred resolve/adapter failure injects nothing for that cred (no raw-secret
+	// fallback) and warns; the AWS blind path puts ONLY the endpoint URI + a
+	// per-session token in credEnv (the value is served by the token-gated endpoint).
+	m.injectCredentials(context.Background(), s)
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -690,6 +709,31 @@ func (m *Manager) ResolveSecret(ctx context.Context, id, ref string) ([]byte, br
 	return m.broker.Resolve(ctx, rec, grants, ref)
 }
 
+// injectCredentials runs F5.1 executor-side injection for a freshly-registered
+// session: it resolves the session's policy-granted creds through the broker
+// (deny-by-default + `cred.resolve` audit), builds a scoped TTL-bounded injection
+// per provider (AWS container-credentials endpoint, or the GCP/Azure v1 env
+// fallback), and records the resulting env on the session for merge into every
+// exec. Every resolved plaintext is Zeroized inside the injector. It is called
+// before the session enters the live map, so s.credEnv is set without a lock
+// (no concurrent exec can observe the session yet). A nil injector is a no-op.
+func (m *Manager) injectCredentials(ctx context.Context, s *Session) {
+	if m.credInjector == nil || len(s.policy.Creds) == 0 {
+		return
+	}
+	si, err := m.credInjector.InjectSession(ctx, s.rec, s.ID, s.policy.Creds)
+	if err != nil {
+		// An internal invariant break (e.g. token generation) — fail closed: the
+		// session runs with NO injected creds rather than a partial/raw one.
+		m.log.Warn("credential injection failed; session runs without injected creds", "session", s.ID, "err", err)
+		return
+	}
+	s.credEnv = si.Env
+	for _, w := range si.Warnings {
+		m.log.Warn("credential injection", "session", s.ID, "detail", w)
+	}
+}
+
 // runExec is the shared spawn+stream core used by the allow path (Exec) and the
 // approved path (ResolveApproval): it emits exec.start, runs the command via the
 // F0.3 Runtime, streams bounded output through the trace-wrapping sink, and emits
@@ -704,9 +748,25 @@ func (m *Manager) runExec(ctx context.Context, id string, rt runtime.Runtime, ha
 		})
 	}
 
+	// F5.1: merge the session's injected credential env into this exec. credEnv holds
+	// only scoped, TTL-bounded artifacts (AWS endpoint URI + per-session token, or a
+	// short-lived GCP/Azure token) — never a raw durable secret. Caller env comes
+	// first so a session's injected creds are authoritative and cannot be shadowed by
+	// a caller-supplied duplicate key.
+	m.mu.Lock()
+	var credEnv []string
+	if cur, ok := m.sessions[id]; ok {
+		credEnv = cur.credEnv
+	}
+	m.mu.Unlock()
+	env := opts.Env
+	if len(credEnv) > 0 {
+		env = append(append([]string(nil), opts.Env...), credEnv...)
+	}
+
 	req := runtime.ExecRequest{
 		Argv:    opts.Argv,
-		Env:     opts.Env,
+		Env:     env,
 		Workdir: opts.Cwd,
 	}
 	es, err := rt.Exec(ctx, handle, req)
@@ -767,6 +827,12 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	// into the chain BEFORE the terminal session.end below, so no pending state is
 	// leaked and the audit trail is complete.
 	m.cancelSessionApprovals(ctx, s, "session_end")
+
+	// F5.1: drop this session's endpoint credential so its per-session token can
+	// never fetch again after teardown (idempotent; safe on the reconcile path).
+	if m.credInjector != nil {
+		m.credInjector.Release(s.ID)
+	}
 
 	// Close the trace chain: emit the terminal session.end, then seal (sign the
 	// final hash with the daemon identity). A nil recorder (tracing unwired, or an
