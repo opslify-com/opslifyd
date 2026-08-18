@@ -533,7 +533,7 @@
       "id": "F5.3",
       "phase": "P5",
       "title": "Tier-1 cloud adapters (AWS / GCP / Azure scope-down)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.1"
