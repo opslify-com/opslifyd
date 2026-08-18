@@ -31,12 +31,12 @@ flowchart LR
         F4_4["F4.4<br/>Dry-run interception (preview destructive ops)"]
     end
     subgraph P5
-        F5_1["F5.1 ~<br/>Executor-side credential injection (primary model)"]
-        F5_2["F5.2 ~<br/>L7 egress proxy (Rust) — *research-flagged as hardest*"]
-        F5_3["F5.3 ~<br/>Tier 1 adapters"]
-        F5_4["F5.4 ~<br/>Tier 2 OAuth2"]
-        F5_5["F5.5 ~<br/>Tier 3 vault + package registry proxy"]
-        F5_6["F5.6 ~<br/>SecretBackend interface + audit"]
+        F5_1["F5.1<br/>Executor-side credential injection (primary credential-blind model)"]
+        F5_2["F5.2<br/>L7 egress proxy (credential-blind HTTP injection)"]
+        F5_3["F5.3<br/>Tier-1 cloud adapters (AWS / GCP / Azure scope-down)"]
+        F5_4["F5.4<br/>Tier-2 OAuth2 adapter"]
+        F5_5["F5.5<br/>Package registry proxy (supply-chain + checksum-safe path)"]
+        F5_6["F5.6<br/>SecretBackend interface + local encrypted vault + audit"]
     end
     subgraph P6
         F6_1["F6.1 ~<br/>Compliance evidence packs (MONETIZATION HERO)"]
@@ -75,30 +75,13 @@ flowchart LR
     F3_2 --> F4_3
     F4_2 --> F4_3
     F4_3 --> F4_4
-    F4_1 --> F5_1
-    F4_2 --> F5_1
-    F4_3 --> F5_1
-    F4_4 --> F5_1
-    F4_1 --> F5_2
-    F4_2 --> F5_2
-    F4_3 --> F5_2
-    F4_4 --> F5_2
-    F4_1 --> F5_3
-    F4_2 --> F5_3
-    F4_3 --> F5_3
-    F4_4 --> F5_3
-    F4_1 --> F5_4
-    F4_2 --> F5_4
-    F4_3 --> F5_4
-    F4_4 --> F5_4
-    F4_1 --> F5_5
-    F4_2 --> F5_5
-    F4_3 --> F5_5
-    F4_4 --> F5_5
+    F5_6 --> F5_1
+    F5_1 --> F5_2
+    F5_1 --> F5_3
+    F5_6 --> F5_4
+    F5_2 --> F5_5
+    F3_1 --> F5_6
     F4_1 --> F5_6
-    F4_2 --> F5_6
-    F4_3 --> F5_6
-    F4_4 --> F5_6
     F4_1 --> F6_1
     F4_2 --> F6_1
     F4_3 --> F6_1
