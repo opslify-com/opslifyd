@@ -138,7 +138,7 @@ func newUIServer(socketPath string) (http.Handler, error) {
 	// though the daemon itself still serves those routes to the CLI.
 	guardedProxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !allowedProxyRoute(r.Method, r.URL.Path) {
-			http.Error(w, "opslify ui: endpoint not exposed by the local UI (read + kill only)", http.StatusForbidden)
+			http.Error(w, "opslify ui: endpoint not exposed by the local UI (read + kill + approve/deny only)", http.StatusForbidden)
 			return
 		}
 		proxy.ServeHTTP(w, r)
@@ -157,12 +157,16 @@ func newUIServer(socketPath string) (http.Handler, error) {
 }
 
 // allowedProxyRoute is the browser-reachable /v1 allowlist. It permits only:
-//   - GET  /v1/sessions            (session list)
-//   - GET  /v1/sessions/<id>...    (a session + its trace stream / replay — read)
-//   - DELETE /v1/sessions/<id>     (Kill — the session resource itself only)
+//   - GET  /v1/sessions                         (live session list)
+//   - GET  /v1/sessions/history                 (F3.6 past-session list — read)
+//   - GET  /v1/sessions/<id>...                 (a session, its trace stream/replay,
+//     and the F3.6 verify verdict — all read, all already-redacted/derived data)
+//   - POST /v1/sessions/<id>/approvals/<exec_id> (F3.6/F4.3 approve|deny — the ONE
+//     privileged mutation, guarded by the loopback bind + DNS-rebind Host-guard)
+//   - DELETE /v1/sessions/<id>                  (Kill — the session resource itself only)
 //
-// Everything else (session create, exec, file upload, /v1/workspaces, any
-// mutation sub-path) is refused, so the local UI is read + Kill only.
+// Everything else (session create, exec, file upload, /v1/workspaces, any other
+// mutation sub-path) is refused, so the local UI is read + Kill + approve/deny.
 func allowedProxyRoute(method, p string) bool {
 	if method == http.MethodGet && p == "/v1/sessions" {
 		return true
@@ -174,14 +178,44 @@ func allowedProxyRoute(method, p string) bool {
 	}
 	switch method {
 	case http.MethodGet:
-		// Read a session or its (already-redacted) trace stream, incl. ?from_seq replay.
-		return true
+		// EXPLICIT read allowlist — only already-redacted / derived data. A blanket
+		// GET would also expose `/v1/sessions/{id}/files` (raw, UNredacted /workspace
+		// bytes), letting a local browser page read anything the agent wrote; that is
+		// refused here. Permitted GETs:
+		//   history                    — the past-session list (metadata only)
+		//   {id}/trace   (+ ?from_seq) — the F3.3-redacted trace stream / replay
+		//   {id}/verify                — the server-computed verify verdict
+		//   {id}/approvals/{exec_id}   — the redacted approval view (poll)
+		if rest == "history" {
+			return true
+		}
+		seg := strings.Split(strings.TrimSuffix(rest, "/"), "/")
+		if len(seg) == 2 && seg[0] != "" && (seg[1] == "trace" || seg[1] == "verify") {
+			return true
+		}
+		if isApprovalsResolvePath(rest) { // {id}/approvals/{exec_id} — GET poll of the view
+			return true
+		}
+		return false
+	case http.MethodPost:
+		// ONLY the F4.3 approvals-resolve action: /v1/sessions/{id}/approvals/{exec_id}.
+		// No other POST (create is not under this prefix; exec is refused here).
+		return isApprovalsResolvePath(rest)
 	case http.MethodDelete:
 		// Kill only the session resource itself, never a mutation sub-path.
 		return !strings.Contains(strings.TrimSuffix(rest, "/"), "/")
 	default:
 		return false
 	}
+}
+
+// isApprovalsResolvePath reports whether rest (the path after "/v1/sessions/")
+// names exactly the approvals-resolve resource "{id}/approvals/{exec_id}" — three
+// non-empty segments with "approvals" in the middle. It deliberately matches
+// nothing else (e.g. "{id}/exec"), so POST opens no surface beyond approve/deny.
+func isApprovalsResolvePath(rest string) bool {
+	parts := strings.Split(strings.TrimSuffix(rest, "/"), "/")
+	return len(parts) == 3 && parts[0] != "" && parts[1] == "approvals" && parts[2] != ""
 }
 
 // loopbackHostGuard rejects any request whose Host header is not loopback. This

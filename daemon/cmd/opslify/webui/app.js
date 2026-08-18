@@ -2,9 +2,16 @@
 //
 // Data sources (existing daemon API only, proxied via the localhost UI server to
 // the daemon's Unix socket — the browser never talks to the socket directly):
-//   GET    /v1/sessions                       — live session list (polled)
-//   GET    /v1/sessions/{id}/trace  (SSE)     — live event stream + backfill (from_seq)
-//   DELETE /v1/sessions/{id}                   — Kill (the ONLY mutation this UI issues)
+//   GET    /v1/sessions                          — live session list (polled)
+//   GET    /v1/sessions/history                   — ended sessions (durable store, F3.6)
+//   GET    /v1/sessions/{id}/trace  (SSE)         — event stream + backfill (from_seq); replay=0
+//   GET    /v1/sessions/{id}/verify               — server-side integrity verdict (F3.6)
+//   DELETE /v1/sessions/{id}                       — Kill
+//   POST   /v1/sessions/{id}/approvals/{exec_id}   — approve|deny a gated command (F3.6/F4.3)
+//
+// The verify verdict is computed DAEMON-SIDE against the trusted identity; the
+// browser only renders ✓/✗ and can never fabricate a pass. Approve/Deny is the
+// only privileged mutation, reachable solely over this loopback + Host-guarded UI.
 //
 // Terminal renderer: a lightweight ANSI-aware <pre>, NOT xterm.js. Rationale in
 // F3.5 report: vendoring xterm.js fully offline is heavy (~250KB of JS/CSS to
@@ -17,18 +24,27 @@
 
 const $ = (s) => document.querySelector(s);
 const sessionsEl = $("#sessions");
+const historyEl = $("#history");
 const terminalEl = $("#terminal");
 const timelineEl = $("#timeline");
 const selIdEl = $("#sel-id");
 const killBtn = $("#btn-kill");
 const replayBtn = $("#btn-replay");
 const connEl = $("#conn");
+const verifyBadge = $("#verifyBadge");
+const approvalsEl = $("#approvals");
+const liveTable = $("#live-table");
+const historyTable = $("#history-table");
+const modeLiveBtn = $("#mode-live");
+const modeHistoryBtn = $("#mode-history");
 
 const state = {
   selected: null,     // selected session id
   stream: null,       // AbortController for the active trace stream
   lastSeq: -1,        // highest seq rendered (for reconnect resume)
   events: [],         // rendered timeline events
+  mode: "live",       // "live" | "history"
+  approvals: {},       // exec_id -> pending approval payload (per selected session)
 };
 
 // ---- session list (poll every 2s so state changes surface live) ----
@@ -62,8 +78,9 @@ function renderSessions(list) {
     return;
   }
   const ids = new Set(list.map((s) => s.session_id));
-  // If the selected session vanished (ended between renders), disable actions.
-  if (state.selected && !ids.has(state.selected)) markSelectionGone();
+  // If the selected LIVE session vanished (ended between renders), disable Kill.
+  // (In history mode the selection is intentionally not in the live list.)
+  if (state.mode === "live" && state.selected && !ids.has(state.selected)) markSelectionGone();
 
   sessionsEl.innerHTML = "";
   for (const s of list) {
@@ -93,13 +110,45 @@ function selectSession(id) {
   if (state.selected === id) return;
   state.selected = id;
   selIdEl.textContent = id;
-  killBtn.disabled = false;
+  // Kill only makes sense for a live session; a historical replay is read-only.
+  killBtn.disabled = state.mode === "history";
   replayBtn.disabled = false;
+  state.approvals = {};
+  renderApprovals();
   openStream(id, 0);
+  fetchVerify(id);
   // Re-highlight rows on next poll; also do it immediately.
   document.querySelectorAll("tr.session").forEach((tr) => {
     tr.classList.toggle("sel", tr.querySelector("td")?.title === id);
   });
+}
+
+// ---- verify badge (server-side verdict; the browser only renders it) ----
+
+async function fetchVerify(id) {
+  setVerifyBadge("pending", "verify: …");
+  try {
+    const r = await fetch(`/v1/sessions/${encodeURIComponent(id)}/verify`, {
+      headers: { Accept: "application/json" },
+    });
+    if (state.selected !== id) return; // selection moved on
+    if (!r.ok) { setVerifyBadge("pending", "verify: n/a"); return; }
+    const v = await r.json();
+    if (v.verified) {
+      setVerifyBadge("ok", `✓ verified (${v.events} events)`);
+    } else {
+      const seq = (v.broken_seq === undefined || v.broken_seq === null) ? "?" : v.broken_seq;
+      setVerifyBadge("bad", `✗ tampered @ seq ${seq}`, v.reason || "");
+    }
+  } catch {
+    if (state.selected === id) setVerifyBadge("pending", "verify: n/a");
+  }
+}
+
+function setVerifyBadge(kind, text, title) {
+  verifyBadge.className = "badge " + kind;
+  verifyBadge.textContent = text;
+  verifyBadge.title = title || "Integrity verdict computed server-side against the trusted daemon identity";
 }
 
 // openStream tails a session's trace over SSE. fromSeq lets replay (0) and
@@ -165,8 +214,77 @@ function renderEvent(ev) {
     } else if (typeof p.chunk === "string") {
       appendTerminal(p.chunk);
     }
+  } else if (ev.type === "approval.requested" && p.exec_id) {
+    // A gated command paused (F4.3). Render the prompt with the F4.4 preview diff
+    // and Approve/Deny buttons. Only shown while viewing a LIVE session — a
+    // historical replay of the same event is read-only evidence, not actionable.
+    if (state.mode === "live") {
+      state.approvals[p.exec_id] = p;
+      renderApprovals();
+    }
   }
   addTimeline(ev);
+}
+
+// ---- approval prompts (F3.6/F4.3): render + Approve/Deny ----
+
+function renderApprovals() {
+  const pending = Object.values(state.approvals).filter((a) => !a._resolved);
+  if (pending.length === 0) { approvalsEl.innerHTML = ""; return; }
+  approvalsEl.innerHTML = "";
+  for (const a of pending) approvalsEl.appendChild(approvalCard(a));
+}
+
+function approvalCard(a) {
+  const div = document.createElement("div");
+  div.className = "approval";
+  const status = a.preview_status || "none";
+  const diff = a.preview_diff
+    ? `<pre class="diff">${esc(a.preview_diff)}</pre>`
+    : `<div class="resolved">no dry-run preview available (status=${esc(status)})</div>`;
+  div.innerHTML =
+    `<h3>APPROVAL REQUIRED <span class="badge">rule <span class="rule">${esc(a.rule || "?")}</span></span>` +
+    `<span class="badge">preview: ${esc(status)}</span></h3>` +
+    `<div class="argv">$ ${esc(a.argv_summary || "")}</div>` +
+    (a.reason ? `<div class="resolved">${esc(a.reason)}</div>` : "") +
+    diff +
+    `<div class="row">` +
+    `<input class="comment" type="text" placeholder="optional comment (recorded in the trace)">` +
+    `<button class="approve">Approve</button>` +
+    `<button class="danger deny">Deny</button>` +
+    `</div>` +
+    `<div class="resolved" style="display:none"></div>`;
+  const comment = div.querySelector("input.comment");
+  const note = div.querySelector(".resolved:last-child");
+  div.querySelector("button.approve").onclick = () => resolveApproval(a, "approve", comment.value, div, note);
+  div.querySelector("button.deny").onclick = () => resolveApproval(a, "deny", comment.value, div, note);
+  return div;
+}
+
+async function resolveApproval(a, decision, comment, card, note) {
+  const id = state.selected;
+  if (!id) return;
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try {
+    const r = await fetch(`/v1/sessions/${encodeURIComponent(id)}/approvals/${encodeURIComponent(a.exec_id)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, comment: comment || "" }),
+    });
+    if (!r.ok) {
+      const msg = await r.text().catch(() => "");
+      note.style.display = "";
+      note.textContent = `resolve failed: HTTP ${r.status} ${msg}`;
+      card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+      return;
+    }
+    a._resolved = decision;
+    renderApprovals();
+  } catch (e) {
+    note.style.display = "";
+    note.textContent = "resolve failed: " + e.message;
+    card.querySelectorAll("button").forEach((b) => (b.disabled = false));
+  }
 }
 
 function appendTerminal(text) {
@@ -241,5 +359,79 @@ document.querySelectorAll(".tabs button").forEach((b) => {
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.dataset.view === b.dataset.tab));
   };
 });
+
+// ---- Live / History mode switch ----
+
+function setMode(mode) {
+  if (state.mode === mode) return;
+  state.mode = mode;
+  modeLiveBtn.classList.toggle("active", mode === "live");
+  modeHistoryBtn.classList.toggle("active", mode === "history");
+  liveTable.style.display = mode === "live" ? "" : "none";
+  historyTable.style.display = mode === "history" ? "" : "none";
+  if (mode === "history") loadHistory();
+}
+
+modeLiveBtn.onclick = () => setMode("live");
+modeHistoryBtn.onclick = () => setMode("history");
+
+// loadHistory lists ENDED sessions from the durable trace store (F3.6). Each row
+// carries a per-session verify badge fetched from the server-side verdict.
+async function loadHistory() {
+  try {
+    const r = await fetch("/v1/sessions/history", { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    renderHistory(await r.json());
+  } catch (e) {
+    historyEl.innerHTML = `<tr><td colspan="4" class="empty">history unavailable: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+function renderHistory(list) {
+  if (!list || list.length === 0) {
+    historyEl.innerHTML = `<tr><td colspan="4" class="empty">no persisted sessions</td></tr>`;
+    return;
+  }
+  historyEl.innerHTML = "";
+  for (const s of list) {
+    const tr = document.createElement("tr");
+    tr.className = "session" + (s.session_id === state.selected ? " sel" : "");
+    tr.innerHTML =
+      `<td title="${esc(s.session_id)}"><code>${esc(shortId(s.session_id))}</code></td>` +
+      `<td>${esc(s.tier || "")}</td>` +
+      `<td>${s.event_count | 0}</td>` +
+      `<td><span class="badge pending" data-verify="${esc(s.session_id)}">…</span></td>`;
+    tr.onclick = () => selectSession(s.session_id);
+    historyEl.appendChild(tr);
+    fetchRowVerify(s.session_id);
+  }
+}
+
+// fetchRowVerify populates one history row's verify badge from the server-side
+// verdict (never a browser-computed pass).
+async function fetchRowVerify(id) {
+  const cell = () => historyEl.querySelector(`[data-verify="${cssEsc(id)}"]`);
+  try {
+    const r = await fetch(`/v1/sessions/${encodeURIComponent(id)}/verify`, { headers: { Accept: "application/json" } });
+    const el = cell();
+    if (!el) return;
+    if (!r.ok) { el.className = "badge pending"; el.textContent = "n/a"; return; }
+    const v = await r.json();
+    if (v.verified) { el.className = "badge ok"; el.textContent = "✓"; el.title = `verified — ${v.events} events`; }
+    else {
+      const seq = (v.broken_seq === undefined || v.broken_seq === null) ? "?" : v.broken_seq;
+      el.className = "badge bad"; el.textContent = `✗ @${seq}`; el.title = v.reason || "tampered";
+    }
+  } catch {
+    const el = cell();
+    if (el) { el.className = "badge pending"; el.textContent = "n/a"; }
+  }
+}
+
+// cssEsc escapes an id for use in a CSS attribute selector (session ids are
+// daemon-generated, but be defensive against selector metacharacters).
+function cssEsc(s) {
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&");
+}
 
 pollSessions();

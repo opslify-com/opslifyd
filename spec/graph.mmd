@@ -22,6 +22,7 @@ flowchart LR
         F3_3["F3.3<br/>Redaction v1"]
         F3_4["F3.4<br/>Cloud dashboard"]
         F3_5["F3.5<br/>Local UI (daemon-served, no cloud)"]
+        F3_6["F3.6<br/>Local UI parity (history + verify + approval actions)"]
     end
     subgraph P4
         F4_1["F4.1<br/>`opslify.policy.yaml` (declarative policy + schema)"]
@@ -66,6 +67,9 @@ flowchart LR
     F3_2 --> F3_4
     F3_3 --> F3_4
     F3_2 --> F3_5
+    F3_5 --> F3_6
+    F4_3 --> F3_6
+    F4_4 --> F3_6
     F3_1 --> F4_1
     F4_1 --> F4_2
     F3_2 --> F4_3
