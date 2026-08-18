@@ -492,7 +492,7 @@
       "id": "F5.1",
       "phase": "P5",
       "title": "Executor-side credential injection (primary credential-blind model)",
-      "status": "todo",
+      "status": "in-progress",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.6"
