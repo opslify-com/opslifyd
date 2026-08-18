@@ -390,7 +390,7 @@
       "id": "F3.6",
       "phase": "P3",
       "title": "Local UI parity (history + verify + approval actions)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F3.5",

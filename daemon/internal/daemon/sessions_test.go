@@ -56,6 +56,8 @@ type fakeManager struct {
 	traceEvents []trace.Event
 	traceSeal   *trace.Signature
 	traceErr    error
+	history     []trace.SessionMeta
+	historyErr  error
 	streamLive  <-chan trace.Event
 	streamErr   error
 	// F4.3 approval control plane.
@@ -89,6 +91,13 @@ func (f *fakeManager) TraceExport(_ context.Context, _ string) ([]trace.Event, *
 		return nil, nil, f.traceErr
 	}
 	return f.traceEvents, f.traceSeal, nil
+}
+
+func (f *fakeManager) TraceHistory(_ context.Context) ([]trace.SessionMeta, error) {
+	if f.historyErr != nil {
+		return nil, f.historyErr
+	}
+	return f.history, nil
 }
 
 func (f *fakeManager) TraceStream(_ string, fromSeq uint64) ([]trace.Event, <-chan trace.Event, func(), error) {

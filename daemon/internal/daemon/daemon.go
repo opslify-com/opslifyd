@@ -14,6 +14,8 @@ package daemon
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -82,6 +84,12 @@ type Daemon struct {
 	version  string
 	tier     string
 	identity string // public fingerprint, populated at startup (never the key)
+	// trustedPub is the daemon's OWN Ed25519 public key, loaded at startup from
+	// the identity file. It is the out-of-band trust anchor the F3.6 server-side
+	// verify endpoint pins the trace seal against (trace.Verify): the browser only
+	// renders the verdict and can never fabricate a ✓, because this key is derived
+	// from the daemon's identity, not from the seal the endpoint is checking.
+	trustedPub ed25519.PublicKey
 }
 
 // New validates Options and builds a Daemon. It applies non-root defaults but
@@ -128,6 +136,13 @@ func (d *Daemon) Startup(ctx context.Context) error {
 		return err // already layer-tagged + legible; contains no key material
 	}
 	d.identity = id.Fingerprint
+	// Record the daemon's own public key as the out-of-band trust anchor for
+	// server-side trace verification (F3.6). A malformed hex here is non-fatal:
+	// the verify endpoint fails closed (a sealed session cannot be anchored, so
+	// trace.Verify reports it unverifiable) rather than the daemon refusing to serve.
+	if pub, decErr := hex.DecodeString(id.PublicKeyHex); decErr == nil && len(pub) == ed25519.PublicKeySize {
+		d.trustedPub = ed25519.PublicKey(pub)
+	}
 	d.log.Info("identity loaded", "fingerprint", id.Fingerprint, "key_path", d.identityPath)
 
 	if err := d.verifier.VerifyToolchain(ctx); err != nil {

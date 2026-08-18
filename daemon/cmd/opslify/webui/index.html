@@ -60,9 +60,28 @@
   .timeline .ty.session { color: var(--ok); } .timeline .ty.redact, .timeline .ty.policy { color: var(--danger); }
   .timeline .detail { color: var(--fg); word-break: break-all; }
   .empty { color: var(--muted); padding: 24px; text-align: center; }
-  .approval { margin: 12px; padding: 12px; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); }
-  .approval h3 { margin: 0 0 4px; font-size: 12px; color: var(--warn); }
   .badge { font-size: 10px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); }
+  .badge.ok { color: var(--ok); border-color: #2a4a37; }
+  .badge.bad { color: var(--danger); border-color: #5a2a2a; }
+  .badge.pending { color: var(--muted); }
+  /* sidebar Live/History mode switch */
+  .sidemode { display: flex; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  .sidemode button { flex: 1; border: 1px solid var(--border); border-radius: 5px; padding: 5px 0; color: var(--muted); background: var(--panel2); }
+  .sidemode button.active { color: var(--fg); border-color: var(--accent); }
+  #verifyBadge { margin-left: 8px; }
+  /* approval prompts */
+  .approvals { border-top: 1px solid var(--border); background: var(--panel); max-height: 45%; overflow-y: auto; }
+  .approval { margin: 10px 12px; padding: 12px; border: 1px solid var(--warn); border-radius: 6px; background: var(--panel2); }
+  .approval h3 { margin: 0 0 6px; font-size: 12px; color: var(--warn); display: flex; align-items: center; gap: 8px; }
+  .approval .rule { font-family: var(--mono); color: var(--accent); }
+  .approval .argv { font-family: var(--mono); font-size: 12px; margin: 4px 0; word-break: break-all; }
+  .approval pre.diff { font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; word-break: break-word;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 8px; margin: 6px 0; max-height: 220px; overflow: auto; }
+  .approval .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  .approval input.comment { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; font-size: 12px; }
+  .approval button.approve { border-color: #2a4a37; color: var(--ok); }
+  .approval button.approve:hover { background: #16281e; }
+  .approval .resolved { color: var(--muted); font-size: 12px; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -73,14 +92,23 @@
 </header>
 <main>
   <div class="sidebar">
-    <table>
+    <div class="sidemode">
+      <button id="mode-live" class="active" title="Currently-running sessions (polled live)">Live</button>
+      <button id="mode-history" title="Ended sessions from the durable trace store (F3.6)">History</button>
+    </div>
+    <table id="live-table">
       <thead><tr><th>SESSION</th><th>STATE</th><th>TIER</th><th>AGE</th><th>TTL</th></tr></thead>
       <tbody id="sessions"><tr><td colspan="5" class="empty">loading…</td></tr></tbody>
+    </table>
+    <table id="history-table" style="display:none">
+      <thead><tr><th>SESSION</th><th>TIER</th><th>EVENTS</th><th>VERIFY</th></tr></thead>
+      <tbody id="history"><tr><td colspan="4" class="empty">—</td></tr></tbody>
     </table>
   </div>
   <div class="content">
     <div class="toolbar">
       <span>selected:</span> <span class="sid" id="sel-id">—</span>
+      <span class="badge pending" id="verifyBadge" title="Integrity verdict computed server-side against the trusted daemon identity">verify: —</span>
       <span class="spacer"></span>
       <button id="btn-replay" disabled title="Re-stream this session from seq 0">Replay</button>
       <button id="btn-kill" class="danger" disabled title="Terminate this session (DELETE /v1/sessions/{id})">Kill</button>
@@ -91,12 +119,10 @@
     </div>
     <div class="view active" data-view="terminal"><pre id="terminal"></pre></div>
     <div class="view" data-view="timeline"><ul class="timeline" id="timeline"></ul></div>
-    <!-- P4 seam: inert approval-prompt slot. No logic yet; wired when policy.decision lands. -->
-    <div class="approval">
-      <h3>APPROVAL PROMPTS <span class="badge">P4</span></h3>
-      Inert placeholder. When policy gating ships, pending <code>policy.decision</code> events
-      and approve/deny actions render here. Disabled in v1.
-    </div>
+    <!-- F3.6/F4.3: live approval prompts render here when an approval.requested
+         event arrives over the SSE stream. Approve/Deny POST to the existing
+         resolve API (the ONLY mutation this UI issues beyond Kill). -->
+    <div class="approvals" id="approvals"></div>
   </div>
 </main>
 <script type="module" src="app.js"></script>

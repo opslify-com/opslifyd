@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -303,11 +304,17 @@ func TestUIProxyAllowlistBlocksMutations(t *testing.T) {
 
 	// These pre-existing daemon routes must NOT be reachable through the UI bridge.
 	blocked := []struct{ method, path string }{
-		{http.MethodPost, "/v1/sessions"},               // create a session
-		{http.MethodPost, "/v1/sessions/s1/exec"},       // run a command
-		{http.MethodPut, "/v1/sessions/s1/files"},       // upload a file
-		{http.MethodDelete, "/v1/workspaces/proj"},      // delete a workspace
-		{http.MethodDelete, "/v1/sessions/s1/whatever"}, // mutation sub-path
+		{http.MethodPost, "/v1/sessions"},                   // create a session
+		{http.MethodPost, "/v1/sessions/s1/exec"},           // run a command
+		{http.MethodPut, "/v1/sessions/s1/files"},           // upload a file
+		{http.MethodDelete, "/v1/workspaces/proj"},          // delete a workspace
+		{http.MethodDelete, "/v1/sessions/s1/whatever"},     // mutation sub-path
+		{http.MethodPost, "/v1/sessions/s1/approvals"},      // approvals list path (not resolve) — not a POST target
+		{http.MethodPost, "/v1/sessions/s1/approvals/e1/x"}, // over-long approvals path
+		{http.MethodPost, "/v1/sessions/s1/files"},          // POST file path
+		{http.MethodPut, "/v1/sessions/s1/approvals/e1"},    // PUT is not the resolve verb
+		{http.MethodGet, "/v1/sessions/s1/files"},           // RAW /workspace download — must NOT be browser-reachable
+		{http.MethodGet, "/v1/sessions/s1"},                 // single-session GET not needed by the UI — kept closed
 	}
 	for _, b := range blocked {
 		req, _ := http.NewRequest(b.method, srv.URL+b.path, nil)
@@ -324,15 +331,104 @@ func TestUIProxyAllowlistBlocksMutations(t *testing.T) {
 		t.Error("a blocked mutation route reached the daemon — the UI must be read + Kill only")
 	}
 
-	// And the allowed routes pass the allowlist.
+	// And the allowed routes pass the allowlist: the exact read + Kill +
+	// history/verify GETs + the single approvals-resolve POST — nothing more.
 	for _, a := range []struct{ method, path string }{
-		{http.MethodGet, "/v1/sessions"},
-		{http.MethodGet, "/v1/sessions/s1/trace"},
-		{http.MethodDelete, "/v1/sessions/s1"},
+		{http.MethodGet, "/v1/sessions"},                  // live list
+		{http.MethodGet, "/v1/sessions/history"},          // F3.6 history list
+		{http.MethodGet, "/v1/sessions/s1/trace"},         // trace read / SSE replay
+		{http.MethodGet, "/v1/sessions/s1/verify"},        // F3.6 verify verdict
+		{http.MethodGet, "/v1/sessions/s1/approvals/e1"},  // F4.3 approval view poll (redacted)
+		{http.MethodPost, "/v1/sessions/s1/approvals/e1"}, // F4.3 approve/deny
+		{http.MethodDelete, "/v1/sessions/s1"},            // Kill
 	} {
 		if !allowedProxyRoute(a.method, a.path) {
 			t.Errorf("allowed route %s %s wrongly blocked", a.method, a.path)
 		}
+	}
+
+	// The blocked POST/PUT targets + the raw-file GET must also fail the predicate.
+	for _, b := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/sessions"},
+		{http.MethodPost, "/v1/sessions/s1/exec"},
+		{http.MethodPost, "/v1/sessions/s1/approvals"},
+		{http.MethodPost, "/v1/sessions/s1/approvals/e1/x"},
+		{http.MethodGet, "/v1/sessions/s1/files"}, // raw workspace download — closed
+	} {
+		if allowedProxyRoute(b.method, b.path) {
+			t.Errorf("blocked route %s %s wrongly allowed", b.method, b.path)
+		}
+	}
+}
+
+// --- Approve/Deny proxies to the existing F4.3 resolve endpoint ---
+
+func TestUIProxyForwardsApprovalResolve(t *testing.T) {
+	var gotSession, gotExec, gotBody string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/sessions/{id}/approvals/{exec_id}", func(w http.ResponseWriter, r *http.Request) {
+		gotSession, gotExec = r.PathValue("id"), r.PathValue("exec_id")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"state":"approved"}`))
+	})
+	fd := newFakeDaemon(t, mux)
+
+	h, _ := newUIServer(fd.socketPath)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/sessions/s7/approvals/e9",
+		strings.NewReader(`{"decision":"approve","comment":"lgtm"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("resolve via UI proxy status = %d, want 200", resp.StatusCode)
+	}
+	if gotSession != "s7" || gotExec != "e9" {
+		t.Errorf("resolve not proxied to F4.3 endpoint: session=%q exec=%q", gotSession, gotExec)
+	}
+	if !strings.Contains(gotBody, "approve") {
+		t.Errorf("decision body not forwarded: %q", gotBody)
+	}
+}
+
+// --- DNS-rebind Host-guard covers the NEW F3.6 routes too ---
+
+func TestUIRefusesNonLoopbackHostOnNewRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	daemonHit := false
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { daemonHit = true })
+	fd := newFakeDaemon(t, mux)
+
+	h, _ := newUIServer(fd.socketPath)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	routes := []struct{ method, path string }{
+		{http.MethodGet, "/v1/sessions/history"},
+		{http.MethodGet, "/v1/sessions/s1/verify"},
+		{http.MethodPost, "/v1/sessions/s1/approvals/e1"},
+	}
+	for _, rt := range routes {
+		req, _ := http.NewRequest(rt.method, srv.URL+rt.path, strings.NewReader("{}"))
+		req.Host = "evil.com" // a rebound DNS name still carries the attacker's Host
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", rt.method, rt.path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s %s with foreign Host must be 403, got %d", rt.method, rt.path, resp.StatusCode)
+		}
+	}
+	if daemonHit {
+		t.Error("a foreign-Host request to a new route reached the daemon — Host-guard failed")
 	}
 }
 

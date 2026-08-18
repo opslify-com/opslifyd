@@ -34,6 +34,10 @@ type SessionService interface {
 	// TraceExport returns a session's F3.1 trace events (chain order) + seal for
 	// `opslify verify`. Absent trace => session.ErrNotFound.
 	TraceExport(ctx context.Context, id string) ([]trace.Event, *trace.Signature, error)
+	// TraceHistory lists PERSISTED sessions from the durable trace store (F3.2),
+	// newest first, backing the F3.6 past-session browser. It reads the durable
+	// directory, not the live List(), so ended (and post-restart) sessions list.
+	TraceHistory(ctx context.Context) ([]trace.SessionMeta, error)
 	// TraceStream opens a live SSE tail (F3.2): backfill from fromSeq + a channel
 	// of subsequently-appended events + a cancel func. Requires a streamable
 	// (durable) sink; otherwise session.ErrNotFound.
@@ -99,6 +103,11 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /"+APIVersion+"/sessions/{id}", d.handleSessionDelete)
 	// F3.1 tamper-evident trace: the event chain + seal for `opslify verify`.
 	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/trace", d.handleSessionTrace)
+	// F3.6 past-session browser: list PERSISTED sessions from the durable store.
+	// (Literal "history" segment; no conflict with the {id} routes.)
+	mux.HandleFunc("GET /"+APIVersion+"/sessions/history", d.handleSessionHistory)
+	// F3.6 verify badge: the SERVER-SIDE verdict against the trusted daemon identity.
+	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/verify", d.handleSessionVerify)
 	// F2.1 mediated file transfer, confined to the session's /workspace.
 	mux.HandleFunc("PUT /"+APIVersion+"/sessions/{id}/files", d.handleFileUpload)
 	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/files", d.handleFileDownload)
@@ -207,6 +216,78 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, createResponse{SessionID: s.ID, State: string(s.State)})
+}
+
+// historyItem is one row of GET /v1/sessions/history: a cheap summary of a
+// PERSISTED session read from the durable trace store (F3.2). It carries no
+// event payloads — only lifecycle metadata — so the history list adds no
+// redacted/unredacted data path.
+type historyItem struct {
+	SessionID  string     `json:"session_id"`
+	StartedAt  time.Time  `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Tier       string     `json:"tier,omitempty"`
+	EventCount int        `json:"event_count"`
+	Sealed     bool       `json:"sealed"`
+}
+
+// handleSessionHistory lists PERSISTED sessions (newest first) from the durable
+// trace store — independent of the live List(), so an ended session (even one
+// that survived a restart) still lists, replays (via ?from_seq=0 on the trace
+// stream), and verifies.
+func (d *Daemon) handleSessionHistory(w http.ResponseWriter, r *http.Request) {
+	metas, err := d.sessions.TraceHistory(r.Context())
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	items := make([]historyItem, 0, len(metas))
+	for _, m := range metas {
+		items = append(items, historyItem{
+			SessionID:  m.SessionID,
+			StartedAt:  m.StartedAt,
+			EndedAt:    m.EndedAt,
+			Tier:       m.Tier,
+			EventCount: m.EventCount,
+			Sealed:     m.Sealed,
+		})
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+// verifyResponse is the GET /v1/sessions/{id}/verify body: the SERVER-SIDE
+// verdict of recomputing the session's persisted chain and checking its seal
+// against the TRUSTED daemon identity (the daemon's own public key, held
+// out-of-band from the trace). The browser only renders this verdict — it cannot
+// fabricate a ✓, because the trust anchor never comes from the seal being checked.
+type verifyResponse struct {
+	Verified  bool   `json:"verified"`
+	Events    int    `json:"events"`
+	BrokenSeq *int64 `json:"broken_seq,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// handleSessionVerify runs the F3.1 chain+seal check server-side over the
+// session's PERSISTED events, pinning the seal to the daemon's own identity. It
+// returns the verdict as JSON (never the events); a tampered on-disk trace
+// reports verified=false with the first broken seq, matching `opslify verify`.
+func (d *Daemon) handleSessionVerify(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	events, seal, err := d.sessions.TraceExport(r.Context(), id)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	res := trace.Verify(events, seal, d.trustedPub)
+	resp := verifyResponse{Verified: res.OK, Events: res.Events, Reason: res.Reason}
+	if !res.OK {
+		bs := res.BrokenSeq
+		resp.BrokenSeq = &bs
+		// Verify only fills Events on success; report what we attempted so the
+		// badge can still show a count next to the ✗.
+		resp.Events = len(events)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleSessionTrace serves the session's trace two ways over one endpoint. With

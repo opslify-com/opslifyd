@@ -91,6 +91,23 @@ func (m *Manager) TraceExport(_ context.Context, id string) ([]trace.Event, *tra
 	return events, seal, nil
 }
 
+// TraceHistory lists the PERSISTED sessions in the durable trace store (F3.2),
+// newest first, for the F3.6 past-session browser. It reads the durable
+// directory — NOT the live session map — so an ended (or post-restart) session
+// still lists, replays, and verifies. It requires a durable sink implementing
+// trace.Historian (the in-memory F3.1 sink does not); an unsupported sink is a
+// legible ErrNotFound.
+func (m *Manager) TraceHistory(_ context.Context) ([]trace.SessionMeta, error) {
+	if m.trace == nil {
+		return nil, fmt.Errorf("%w: tracing is not enabled on this daemon", ErrNotFound)
+	}
+	h, ok := m.trace.(trace.Historian)
+	if !ok {
+		return nil, fmt.Errorf("%w: trace sink does not support history listing", ErrNotFound)
+	}
+	return h.History()
+}
+
 // TraceStream opens a live tail of a session's trace for the F3.2 local SSE
 // endpoint: it returns the backfill (events with seq >= fromSeq) plus a channel of
 // subsequently-appended events and a cancel func the caller MUST invoke. It
