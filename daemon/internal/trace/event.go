@@ -63,6 +63,14 @@ const (
 	TypeApprovalRequested EventType = "approval.requested"
 	// TypeCredResolve is RESERVED for P5 (broker). Known-but-unemitted in P3.
 	TypeCredResolve EventType = "cred.resolve"
+	// TypeEgressAnomaly is RESERVED for P5 (F5.2 L7 egress proxy). The proxy emits
+	// it when an outbound sandbox body trips a bound — an upload byte cap or a
+	// high-entropy score (an exfil signal). Payload:
+	// {host, method, path, reason, bytes, entropy, capped} — DELIBERATELY carries
+	// NO body content and NO injected credential, only the non-secret signal.
+	// Like the other reserved P4/P5 types it is known-but-unemitted before P5, so a
+	// future daemon adds it without a schema bump.
+	TypeEgressAnomaly EventType = "egress.anomaly"
 )
 
 // Event is one link in a session's hash chain. The shape is fixed

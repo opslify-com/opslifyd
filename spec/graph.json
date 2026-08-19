@@ -513,7 +513,7 @@
       "id": "F5.2",
       "phase": "P5",
       "title": "L7 egress proxy (credential-blind HTTP injection)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.1"
