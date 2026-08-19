@@ -115,6 +115,17 @@ func run() error {
 	credInjector, credStop := buildCredInjection(brk, log)
 	defer credStop()
 
+	// Wire the F5.4 Tier-2 OAuth2 adapter. Validate every per-service config
+	// FAIL-CLOSED (a bad service aborts startup, never serves a broken adapter),
+	// then register the single generic adapter for all configured services.
+	if err := cfg.ValidateOAuth2(); err != nil {
+		return err
+	}
+	if len(cfg.OAuth2) > 0 {
+		credInjector.RegisterOAuth2Adapters(cfg.OAuth2, nil)
+		log.Info("F5.4 oauth2 adapter active", "services", len(cfg.OAuth2))
+	}
+
 	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector)
 	if err != nil {
 		return err

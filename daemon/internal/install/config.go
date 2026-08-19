@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"gopkg.in/yaml.v3"
 )
@@ -70,6 +71,13 @@ type Config struct {
 	// key from the OPSLIFY_VAULT_KEY env. The vault holds NO plaintext at rest and
 	// its master key is NEVER a plaintext file beside the db.
 	Vault VaultConfig `yaml:"vault,omitempty"`
+	// OAuth2 configures the F5.4 Tier-2 OAuth2 services, keyed by service name
+	// (e.g. "github"). One generic adapter serves them all; adding a service is a
+	// config entry here plus `opslify creds add <service>` (device flow). The map
+	// holds NO secret — only public {auth_url, token_url, device_url, scopes,
+	// client_id}; the durable refresh token lives encrypted in the vault. Each
+	// entry is validated fail-closed at daemon startup.
+	OAuth2 map[string]broker.OAuth2ServiceConfig `yaml:"oauth2,omitempty"`
 	// PolicyFile is the path to the daemon's trusted DEFAULT policy (F4.1). A
 	// per-session workspace policy may only NARROW it. Empty => the built-in
 	// policy.Default() (no grants; deny-by-default creds). The daemon fails to
@@ -147,6 +155,22 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("install: parse config %s: %w", path, err)
 	}
 	return c, nil
+}
+
+// ValidateOAuth2 checks every configured F5.4 OAuth2 service, FAILING CLOSED with
+// a legible error that names the offending service and field. The daemon calls
+// this at startup so a bad per-service config aborts rather than serving an
+// unusable/insecure adapter.
+func (c Config) ValidateOAuth2() error {
+	for name, svc := range c.OAuth2 {
+		if name == "" {
+			return fmt.Errorf("install: oauth2 service has an empty name")
+		}
+		if err := svc.Validate(); err != nil {
+			return fmt.Errorf("install: oauth2 service %q: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // MarshalConfig renders a Config as YAML bytes.

@@ -551,7 +551,7 @@
       "id": "F5.4",
       "phase": "P5",
       "title": "Tier-2 OAuth2 adapter",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.6"

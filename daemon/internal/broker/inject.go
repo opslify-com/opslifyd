@@ -179,6 +179,10 @@ type Injector struct {
 	now            func() time.Time
 	adapters       map[string]CredentialAdapter
 	defaultAdapter CredentialAdapter
+	// oauth2 is the single generic F5.4 OAuth2 adapter. Any grant whose provider
+	// is "oauth2" / "oauth2/<service>" routes here regardless of the service, so a
+	// new OAuth2 service is config-only (no new adapter registration per service).
+	oauth2 *OAuth2Adapter
 }
 
 // NewInjector wires the injector over a broker + creds endpoint. baseURL is the
@@ -248,10 +252,7 @@ func (in *Injector) InjectSession(ctx context.Context, rec *trace.Recorder, sess
 				ttl = d
 			}
 		}
-		adapter := in.defaultAdapter
-		if a, ok := in.adapters[grant.Provider]; ok {
-			adapter = a
-		}
+		adapter := in.adapterFor(grant)
 		inj, aerr := adapter.Inject(ctx, InjectContext{
 			SessionID:       sessionID,
 			EndpointBaseURL: endpointBase,
@@ -275,6 +276,32 @@ func (in *Injector) InjectSession(ctx context.Context, rec *trace.Recorder, sess
 		}
 	}
 	return si, nil
+}
+
+// adapterFor selects the adapter for a grant: the single generic OAuth2 adapter
+// for any "oauth2"/"oauth2/<service>" provider (F5.4), else a provider-registered
+// adapter (F5.1/F5.3), else the generic env fallback.
+func (in *Injector) adapterFor(grant policy.Cred) CredentialAdapter {
+	if in.oauth2 != nil && isOAuth2Provider(grant.Provider) {
+		return in.oauth2
+	}
+	if a, ok := in.adapters[grant.Provider]; ok {
+		return a
+	}
+	return in.defaultAdapter
+}
+
+// RegisterOAuth2Adapters installs the F5.4 generic OAuth2 adapter with the given
+// validated per-service config, so every "oauth2/<service>" grant mints a
+// per-request access token from its vaulted refresh token. Registering once wires
+// ALL configured services (config-only expansion); the injector and session
+// manager are untouched. A nil/empty config leaves the adapter unwired (no
+// oauth2 grant resolves — deny-by-default).
+func (in *Injector) RegisterOAuth2Adapters(services map[string]OAuth2ServiceConfig, doer httpDoer) {
+	if in == nil || len(services) == 0 {
+		return
+	}
+	in.oauth2 = NewOAuth2Adapter(services, doer)
 }
 
 // Release drops a session's endpoint credential on teardown (idempotent).
