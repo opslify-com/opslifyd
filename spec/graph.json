@@ -630,7 +630,7 @@
       "id": "F5.8",
       "phase": "P5",
       "title": "Sandbox\u2194broker reachability (bridge-gateway bind + source-IP scoping)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.1",

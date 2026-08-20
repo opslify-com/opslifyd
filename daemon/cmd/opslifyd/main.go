@@ -304,7 +304,12 @@ func buildVault(cfg install.Config, log *slog.Logger) (*broker.Vault, error) {
 // buildCredInjection stands up the F5.1 loopback credential endpoint and injector.
 // The endpoint serves each session a scoped, TTL-bounded credential body that the
 // AWS CLI/SDK fetches unmodified via AWS_CONTAINER_CREDENTIALS_FULL_URI, so the raw
-// secret is NEVER placed in the container env. It binds a pinned loopback address
+// secret is NEVER placed in the container env. Under F5.8 the session manager
+// stands up an ADDITIONAL per-session listener bound to the container's bridge
+// GATEWAY (source-scoped to the owning container) serving this same CredServer, so
+// the sandbox reaches the endpoint on a routable address; this loopback listener
+// remains the host-only fallback for runtimes that expose no NetworkInfo. It binds
+// a pinned loopback address
 // (never 0.0.0.0), so a host-network request cannot reach it; the in-sandbox→daemon
 // network reachability (egress allowlist to the bridge gateway) is INTEGRATION-
 // gated — the token/cross-session/expiry gates are unit-tested. If the listener

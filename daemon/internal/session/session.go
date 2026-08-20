@@ -115,6 +115,22 @@ type Session struct {
 	// (single-owner, before the session is visible) and closed on teardown, so the
 	// proxy/CA never outlive the session and are never reused across sessions.
 	egress *sessionEgress
+
+	// credEndpoint is the F5.8 per-session creds-endpoint listener: the F5.1
+	// CredServer served on a bridge-GATEWAY-bound, source-scoped listener the
+	// sandbox can reach (in place of the daemon loopback). Non-nil only when the
+	// runtime exposed a reachable gateway (NetworkInfo) and at least one AWS blind
+	// cred was injected. Set once at registerReady (single-owner) and closed on
+	// teardown so the listener never outlives the session.
+	credEndpoint *sessionCredEndpoint
+}
+
+// sessionCredEndpoint is one session's gateway-bound creds-endpoint listener (F5.8).
+type sessionCredEndpoint struct {
+	// addr is the sandbox-reachable base the AWS endpoint URI was advertised at
+	// (gateway host + bound port). Recorded for tracing/tests.
+	addr  string
+	close func()
 }
 
 // deadline is the instant after which an idle session is reaped.
