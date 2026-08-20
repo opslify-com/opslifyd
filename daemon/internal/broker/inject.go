@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -225,6 +226,24 @@ type SessionInjection struct {
 // an error only for an internal invariant break (token generation). A nil broker
 // or no grants yields an empty injection.
 func (in *Injector) InjectSession(ctx context.Context, rec *trace.Recorder, sessionID string, grants []policy.Cred) (SessionInjection, error) {
+	base := ""
+	if in != nil && in.server != nil {
+		base = in.baseURL
+	}
+	return in.InjectSessionEndpoint(ctx, rec, sessionID, grants, base)
+}
+
+// InjectSessionEndpoint is InjectSession with an EXPLICIT creds-endpoint base URL
+// (F5.8). The session manager calls it with a PER-SESSION base — the container-
+// reachable bridge-gateway address it bound a source-scoped listener to — so the
+// injected AWS_CONTAINER_CREDENTIALS_FULL_URI advertises the gateway the sandbox
+// can actually reach, not the daemon's loopback. endpointBase is honoured only
+// when this injector actually has a CredServer to serve the body (HasEndpoint);
+// an empty base (or no server) makes the AWS blind path fail closed rather than
+// leak the raw secret to the env. The served body is still registered in the
+// injector's single CredServer keyed by sessionID, which every per-session
+// listener serves.
+func (in *Injector) InjectSessionEndpoint(ctx context.Context, rec *trace.Recorder, sessionID string, grants []policy.Cred, endpointBase string) (SessionInjection, error) {
 	var si SessionInjection
 	if in == nil || in.broker == nil || len(grants) == 0 {
 		return si, nil
@@ -233,9 +252,8 @@ func (in *Injector) InjectSession(ctx context.Context, rec *trace.Recorder, sess
 	if err != nil {
 		return si, err
 	}
-	endpointBase := ""
-	if in.server != nil {
-		endpointBase = in.baseURL
+	if in.server == nil {
+		endpointBase = ""
 	}
 
 	for _, grant := range grants {
@@ -302,6 +320,24 @@ func (in *Injector) RegisterOAuth2Adapters(services map[string]OAuth2ServiceConf
 		return
 	}
 	in.oauth2 = NewOAuth2Adapter(services, doer)
+}
+
+// HasEndpoint reports whether this injector has a CredServer to serve the AWS
+// blind-path body. The session manager checks it before standing up a per-session
+// gateway-bound listener (F5.8) — with no server the blind path is unavailable and
+// injection fails closed rather than binding a listener that can serve nothing.
+func (in *Injector) HasEndpoint() bool { return in != nil && in.server != nil }
+
+// EndpointHandler returns the http.Handler that serves this injector's per-session
+// credential bodies (the F5.1 CredServer). The session manager mounts it on a
+// per-session, gateway-bound, source-scoped listener (F5.8). It is nil when no
+// endpoint is wired. The handler still enforces the per-session bearer-token gate;
+// the manager wraps it with the source-IP scope.
+func (in *Injector) EndpointHandler() http.Handler {
+	if in == nil || in.server == nil {
+		return nil
+	}
+	return in.server
 }
 
 // Release drops a session's endpoint credential on teardown (idempotent).

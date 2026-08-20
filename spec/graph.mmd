@@ -38,6 +38,7 @@ flowchart LR
         F5_5["F5.5<br/>Package registry proxy (supply-chain + checksum-safe path)"]
         F5_6["F5.6<br/>SecretBackend interface + local encrypted vault + audit"]
         F5_7["F5.7<br/>Broker egress integration (wire F5.2 into live sessions)"]
+        F5_8["F5.8<br/>Sandbox↔broker reachability (bridge-gateway bind + source-IP scoping)"]
     end
     subgraph P6
         F6_1["F6.1 ~<br/>Compliance evidence packs (MONETIZATION HERO)"]
@@ -85,6 +86,8 @@ flowchart LR
     F4_1 --> F5_6
     F5_2 --> F5_7
     F5_6 --> F5_7
+    F5_1 --> F5_8
+    F5_7 --> F5_8
     F4_1 --> F6_1
     F4_2 --> F6_1
     F4_3 --> F6_1
@@ -96,6 +99,7 @@ flowchart LR
     F5_5 --> F6_1
     F5_6 --> F6_1
     F5_7 --> F6_1
+    F5_8 --> F6_1
     F4_1 --> F6_2
     F4_2 --> F6_2
     F4_3 --> F6_2
@@ -107,6 +111,7 @@ flowchart LR
     F5_5 --> F6_2
     F5_6 --> F6_2
     F5_7 --> F6_2
+    F5_8 --> F6_2
     F4_1 --> F6_3
     F4_2 --> F6_3
     F4_3 --> F6_3
@@ -118,6 +123,7 @@ flowchart LR
     F5_5 --> F6_3
     F5_6 --> F6_3
     F5_7 --> F6_3
+    F5_8 --> F6_3
     F4_1 --> F6_4
     F4_2 --> F6_4
     F4_3 --> F6_4
@@ -129,6 +135,7 @@ flowchart LR
     F5_5 --> F6_4
     F5_6 --> F6_4
     F5_7 --> F6_4
+    F5_8 --> F6_4
     F4_1 --> F6_5
     F4_2 --> F6_5
     F4_3 --> F6_5
@@ -140,6 +147,7 @@ flowchart LR
     F5_5 --> F6_5
     F5_6 --> F6_5
     F5_7 --> F6_5
+    F5_8 --> F6_5
     F4_1 --> F6_6
     F4_2 --> F6_6
     F4_3 --> F6_6
@@ -151,5 +159,6 @@ flowchart LR
     F5_5 --> F6_6
     F5_6 --> F6_6
     F5_7 --> F6_6
+    F5_8 --> F6_6
 
 %% ~ marks a spec-level (inline) feature not yet split into a detailed file

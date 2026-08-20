@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -163,6 +165,14 @@ type Manager struct {
 	sandboxIP func(runtime.ContainerHandle) string
 	log       *slog.Logger
 
+	// listenTCP binds a per-session credential-injecting listener (F5.8): the
+	// bridge-gateway-bound F5.1 creds endpoint and F5.7 egress proxy. It mirrors
+	// net.Listen's signature; production uses net.Listen. Tests override it so
+	// they can assert the REQUESTED bind address (the gateway) without a real
+	// gateway interface on the test host — the guard is that this is only ever
+	// called with a gateway host that passed isBindableGateway (never 0.0.0.0).
+	listenTCP func(network, addr string) (net.Listener, error)
+
 	// trace is the F3.1 tamper-evident event sink (session.start/end, exec.*,
 	// file.write). nil disables tracing (existing lifecycle behavior unchanged);
 	// the daemon wires an in-memory sink signed by the daemon identity. redactor
@@ -293,6 +303,9 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 	if m.redactor == nil {
 		m.redactor = trace.NoopRedactor{}
+	}
+	if m.listenTCP == nil {
+		m.listenTCP = net.Listen
 	}
 	if m.resolve == nil {
 		m.resolve = runtime.ResolveRuntime
@@ -573,13 +586,21 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	// per-cred resolve/adapter failure injects nothing for that cred (no raw-secret
 	// fallback) and warns; the AWS blind path puts ONLY the endpoint URI + a
 	// per-session token in credEnv (the value is served by the token-gated endpoint).
-	m.injectCredentials(context.Background(), s)
+	// F5.8 reachability discovery. Before either credential-injecting listener is
+	// built, discover the container's bridge IP + gateway (via the optional
+	// NetworkInfo runtime capability) so the listeners can bind a CONTAINER-
+	// REACHABLE address (the gateway, never loopback/0.0.0.0) and source-scope to
+	// the owning container. When the runtime exposes no NetworkInfo the result is
+	// "capability absent" and both paths keep their prior (loopback) behavior; when
+	// it IS exposed but no gateway is discoverable, both paths FAIL CLOSED.
+	sn := m.discoverSessionNet(context.Background(), s)
+	m.injectCredentials(context.Background(), s, sn)
 	// F5.7 credential-blind HTTP egress. If the resolved policy lights up an
 	// egress-inject rule, build the per-session proxy + CA + listener and route the
 	// sandbox through it (adds HTTPS_PROXY + a daemon-written CA file to credEnv —
 	// never the token). Also single-owner here (no exec can observe s yet), so
 	// s.credEnv/s.egress are set without a lock.
-	m.injectEgressProxy(s)
+	m.injectEgressProxy(s, sn)
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -732,6 +753,54 @@ func (m *Manager) ResolveSecret(ctx context.Context, id, ref string) ([]byte, br
 	return m.broker.Resolve(ctx, rec, grants, ref)
 }
 
+// sessionNet is the F5.8 result of discovering a container's bridge network. It
+// distinguishes three cases the two listener paths key off:
+//   - known=false: the runtime exposes no NetworkInfo capability. Both listeners
+//     keep their prior LOOPBACK behavior (opt-in: no capability => no change —
+//     this is what every unit fake without NetworkInfo, and any runtime that
+//     cannot report it, gets).
+//   - known=true, ok=false: the capability IS present but no reachable gateway was
+//     discoverable (inspect error, or an empty/unbindable gateway). Both listeners
+//     FAIL CLOSED — no endpoint, no proxy env, no raw-secret fallback.
+//   - known=true, ok=true: bind the listeners to gatewayIP, source-scoped to
+//     containerIP, and advertise gatewayIP in the sandbox env.
+type sessionNet struct {
+	known       bool
+	ok          bool
+	containerIP string
+	gatewayIP   string
+}
+
+// discoverSessionNet probes the container's bridge IP + gateway through the
+// optional F5.8 NetworkInfo runtime capability. It never fails the session: a
+// discovery error downgrades to a fail-closed blind path (ok=false), and an
+// absent capability preserves prior behavior (known=false). The gateway is
+// validated with isBindableGateway so a wildcard/empty address can never reach a
+// bind call.
+func (m *Manager) discoverSessionNet(ctx context.Context, s *Session) sessionNet {
+	rt, err := m.resolve(s.Tier, s.Location)
+	if err != nil {
+		// Cannot even resolve the runtime — treat as capability absent (legacy).
+		return sessionNet{}
+	}
+	ni, has := rt.(runtime.NetworkInfo)
+	if !has {
+		return sessionNet{}
+	}
+	cip, gip, err := ni.NetworkInfo(ctx, s.Handle)
+	sn := sessionNet{known: true, containerIP: cip, gatewayIP: gip}
+	if err != nil {
+		m.log.Warn("network discovery failed; credential-blind listeners disabled (fail-closed)", "session", s.ID, "err", err)
+		return sn
+	}
+	if cip == "" || !isBindableGateway(gip) {
+		m.log.Warn("no reachable bridge gateway discovered; credential-blind listeners disabled (fail-closed)", "session", s.ID, "container_ip", cip, "gateway_ip", gip)
+		return sn
+	}
+	sn.ok = true
+	return sn
+}
+
 // injectCredentials runs F5.1 executor-side injection for a freshly-registered
 // session: it resolves the session's policy-granted creds through the broker
 // (deny-by-default + `cred.resolve` audit), builds a scoped TTL-bounded injection
@@ -740,7 +809,7 @@ func (m *Manager) ResolveSecret(ctx context.Context, id, ref string) ([]byte, br
 // exec. Every resolved plaintext is Zeroized inside the injector. It is called
 // before the session enters the live map, so s.credEnv is set without a lock
 // (no concurrent exec can observe the session yet). A nil injector is a no-op.
-func (m *Manager) injectCredentials(ctx context.Context, s *Session) {
+func (m *Manager) injectCredentials(ctx context.Context, s *Session, sn sessionNet) {
 	if m.credInjector == nil || len(s.policy.Creds) == 0 {
 		return
 	}
@@ -762,17 +831,79 @@ func (m *Manager) injectCredentials(ctx context.Context, s *Session) {
 			return
 		}
 	}
-	si, err := m.credInjector.InjectSession(ctx, s.rec, s.ID, grants)
+
+	// F5.8 endpoint binding. Decide WHERE the AWS blind-path creds endpoint the
+	// injected AWS_CONTAINER_CREDENTIALS_FULL_URI points at is served:
+	//   - capability absent (legacy): the injector's shared LOOPBACK endpoint
+	//     (unchanged behavior for unit tests / runtimes without NetworkInfo);
+	//   - capability present but no gateway: FAIL CLOSED — inject nothing;
+	//   - gateway discovered: a PER-SESSION listener bound to the gateway,
+	//     source-scoped to the container, advertised in the URI.
+	var si broker.SessionInjection
+	var err error
+	switch {
+	case !sn.known:
+		si, err = m.credInjector.InjectSession(ctx, s.rec, s.ID, grants)
+	case !sn.ok:
+		m.log.Warn("credential injection disabled: no reachable creds endpoint bind (fail-closed, no env fallback)", "session", s.ID)
+		return
+	default:
+		si, err = m.injectCredentialsGateway(ctx, s, sn, grants)
+		if err != nil {
+			m.log.Warn("credential endpoint bind failed; session runs without injected creds (fail-closed)", "session", s.ID, "err", err)
+			return
+		}
+	}
 	if err != nil {
 		// An internal invariant break (e.g. token generation) — fail closed: the
 		// session runs with NO injected creds rather than a partial/raw one.
 		m.log.Warn("credential injection failed; session runs without injected creds", "session", s.ID, "err", err)
 		return
 	}
-	s.credEnv = si.Env
+	s.credEnv = append(s.credEnv, si.Env...)
 	for _, w := range si.Warnings {
 		m.log.Warn("credential injection", "session", s.ID, "detail", w)
 	}
+}
+
+// injectCredentialsGateway stands up a PER-SESSION F5.1 creds endpoint bound to the
+// discovered bridge gateway (never loopback/0.0.0.0) and source-scoped to the
+// owning container's IP, then injects with the gateway address advertised in the
+// AWS endpoint URI (F5.8). It fails closed: with no CredServer to serve, or on a
+// bind failure, it returns an error and the caller injects nothing (no raw-secret
+// fallback). The started listener is recorded on the session for teardown.
+func (m *Manager) injectCredentialsGateway(ctx context.Context, s *Session, sn sessionNet, grants []policy.Cred) (broker.SessionInjection, error) {
+	if !m.credInjector.HasEndpoint() {
+		return broker.SessionInjection{}, fmt.Errorf("cred: no endpoint wired for the gateway-bound blind path")
+	}
+	// Defense-in-code: never bind a wildcard for this credential-injecting listener.
+	if !isBindableGateway(sn.gatewayIP) {
+		return broker.SessionInjection{}, fmt.Errorf("cred: refusing to bind creds endpoint to non-reachable host %q", sn.gatewayIP)
+	}
+	ln, err := m.listenTCP("tcp", net.JoinHostPort(sn.gatewayIP, "0"))
+	if err != nil {
+		return broker.SessionInjection{}, fmt.Errorf("cred: bind gateway creds endpoint: %w", err)
+	}
+	// Advertise the GATEWAY host with the actual bound port (the daemon-side Addr()
+	// may name a different host under a test listen seam).
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	base := "http://" + net.JoinHostPort(sn.gatewayIP, port)
+	handler := sourceScoped(m.credInjector.EndpointHandler(), sn.containerIP, m.log)
+	srv := &http.Server{Handler: handler}
+	go func() {
+		if serr := srv.Serve(ln); serr != nil && serr != http.ErrServerClosed {
+			m.log.Warn("creds endpoint listener stopped", "session", s.ID, "err", serr)
+		}
+	}()
+	s.credEndpoint = &sessionCredEndpoint{addr: base, close: func() { _ = srv.Close() }}
+	si, err := m.credInjector.InjectSessionEndpoint(ctx, s.rec, s.ID, grants, base)
+	if err != nil {
+		srv.Close()
+		s.credEndpoint = nil
+		return broker.SessionInjection{}, err
+	}
+	m.log.Info("F5.8 gateway-bound creds endpoint active", "session", s.ID, "base_url", base, "source_ip", sn.containerIP)
+	return si, nil
 }
 
 // injectEgressProxy runs F5.7 per-session egress-proxy wiring for a freshly
@@ -789,11 +920,27 @@ func (m *Manager) injectCredentials(ctx context.Context, s *Session) {
 // failure injects no proxy env and no raw-secret fallback. A nil injector, or a
 // session with no applicable rule, is a clean no-op (no env change). Called before
 // the session enters the live map, so s.credEnv/s.egress are set without a lock.
-func (m *Manager) injectEgressProxy(s *Session) {
+func (m *Manager) injectEgressProxy(s *Session, sn sessionNet) {
 	if m.egressInject == nil {
 		return
 	}
-	se, err := m.egressInject.buildForSession(s.ID, s.policy, s.rec)
+	// F5.8 reachable bind. When the runtime exposed a gateway, bind the proxy
+	// listener to it (source-scoped to the container) and advertise the gateway in
+	// HTTPS_PROXY; when the capability is present but no gateway is reachable, FAIL
+	// CLOSED; when the capability is absent, keep the legacy loopback bind.
+	var listen func() (net.Listener, error)
+	var sourceIP, advertiseHost string
+	if sn.known {
+		if !sn.ok {
+			m.log.Warn("egress proxy disabled: no reachable gateway bind (fail-closed)", "session", s.ID)
+			return
+		}
+		gwAddr := net.JoinHostPort(sn.gatewayIP, "0")
+		listen = func() (net.Listener, error) { return m.listenTCP("tcp", gwAddr) }
+		sourceIP = sn.containerIP
+		advertiseHost = sn.gatewayIP
+	}
+	se, err := m.egressInject.buildForSession(s.ID, s.policy, s.rec, listen, sourceIP, advertiseHost)
 	if err != nil {
 		// Fail-closed: the session runs with NO proxy env rather than a partial or
 		// insecure route. Non-HTTP egress stays under F1.4 default-deny regardless.
@@ -820,6 +967,12 @@ func (m *Manager) injectEgressProxy(s *Session) {
 	caSandboxPath := path.Join(sandboxWorkspaceMount, SandboxCAFileName)
 	proxyURL := "http://" + se.addr
 	noProxy := append([]string{"localhost", "127.0.0.1"}, m.egressInject.noProxy...)
+	// F5.8: the gateway-bound F5.1 creds endpoint lives on the SAME gateway host as
+	// this proxy. Exclude that host from NO_PROXY so the AWS SDK's creds fetch goes
+	// DIRECT to the endpoint rather than looping back through this proxy.
+	if sn.ok && sn.gatewayIP != "" {
+		noProxy = append(noProxy, sn.gatewayIP)
+	}
 	noProxyVal := strings.Join(noProxy, ",")
 	s.credEnv = append(s.credEnv,
 		"HTTPS_PROXY="+proxyURL,
@@ -935,6 +1088,13 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	// never fetch again after teardown (idempotent; safe on the reconcile path).
 	if m.credInjector != nil {
 		m.credInjector.Release(s.ID)
+	}
+	// F5.8: close the per-session gateway-bound creds-endpoint listener (if any) so
+	// it never outlives the session. Idempotent-safe on the reconcile path (an
+	// orphan carries no live endpoint handle).
+	if s.credEndpoint != nil {
+		s.credEndpoint.close()
+		s.credEndpoint = nil
 	}
 
 	// F5.7: tear down this session's egress proxy + listener. The per-session CA is

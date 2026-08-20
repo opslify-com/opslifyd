@@ -175,12 +175,31 @@ func (ei *EgressInjector) applicable(resolved policy.Resolved) []egressproxy.Inj
 //   - (se, nil) with a started listener + the per-session CA PEM on success;
 //   - (nil, err) on a proxy-build/listener failure — the manager then injects NO
 //     proxy env and NO raw-secret fallback (fail-closed).
-func (ei *EgressInjector) buildForSession(sessionID string, resolved policy.Resolved, rec *trace.Recorder) (*sessionEgress, error) {
+//
+// listen/sourceIP/advertiseHost carry the F5.8 reachable-bind wiring the manager
+// supplies once it has discovered the container's network:
+//   - listen (nil => ei.listen, the legacy loopback default used in unit tests
+//     and when the runtime exposes no NetworkInfo) binds the listener. The manager
+//     passes a bridge-GATEWAY listener so the sandbox can actually route to it.
+//   - sourceIP (empty => no scope, legacy loopback only) restricts the listener to
+//     the owning container's IP, on top of the proxy's own boundary — a neighbour
+//     container or LAN host is refused even off the bridge gateway.
+//   - advertiseHost (empty => the bound addr as-is) is the host advertised in the
+//     sandbox HTTPS_PROXY env: the gateway address, paired with the actual bound
+//     port, since the listener may be bound to an address the daemon-side Addr()
+//     does not name literally.
+func (ei *EgressInjector) buildForSession(sessionID string, resolved policy.Resolved, rec *trace.Recorder, listen func() (net.Listener, error), sourceIP, advertiseHost string) (*sessionEgress, error) {
 	if ei == nil || len(ei.rules) == 0 {
 		return nil, nil
 	}
 	if len(ei.applicable(resolved)) == 0 {
 		return nil, nil
+	}
+	// Guard: never advertise (hence bind) a wildcard for this credential-injecting
+	// listener. The manager only sets advertiseHost from a discovered gateway, but
+	// this is defense-in-code — a routable/world bind is a BLOCKING defect.
+	if advertiseHost != "" && !isBindableGateway(advertiseHost) {
+		return nil, fmt.Errorf("egress: refusing to bind proxy to non-reachable host %q", advertiseHost)
 	}
 	proxy, err := egressproxy.NewSessionProxy(sessionID, resolved, egressproxy.SessionConfig{
 		Rules:     ei.rules,
@@ -193,18 +212,27 @@ func (ei *EgressInjector) buildForSession(sessionID string, resolved policy.Reso
 	if len(caPEM) == 0 {
 		return nil, fmt.Errorf("egress: per-session proxy produced no CA cert")
 	}
-	ln, err := ei.listen()
+	if listen == nil {
+		listen = ei.listen
+	}
+	ln, err := listen()
 	if err != nil {
 		return nil, fmt.Errorf("egress: bind per-session proxy listener: %w", err)
 	}
-	srv := &http.Server{Handler: ei.proxyHandler(proxy)}
+	srv := &http.Server{Handler: sourceScoped(ei.proxyHandler(proxy), sourceIP, ei.log)}
 	go func() {
 		if serr := srv.Serve(ln); serr != nil && serr != http.ErrServerClosed {
 			ei.log.Warn("egress proxy listener stopped", "session", sessionID, "err", serr)
 		}
 	}()
+	addr := ln.Addr().String()
+	if advertiseHost != "" {
+		if _, port, perr := net.SplitHostPort(addr); perr == nil {
+			addr = net.JoinHostPort(advertiseHost, port)
+		}
+	}
 	return &sessionEgress{
-		addr:  ln.Addr().String(),
+		addr:  addr,
 		caPEM: caPEM,
 		close: func() {
 			_ = srv.Close()
