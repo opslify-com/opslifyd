@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -182,6 +183,17 @@ type Manager struct {
 	// exec. It is released on teardown.
 	credInjector *broker.Injector
 
+	// egressInject is the F5.7 per-session egress-proxy factory. nil disables the
+	// credential-blind HTTP path (opt-in: no egress_inject config => no proxy, no env
+	// change, no regression). At registerReady, if the resolved policy lights up an
+	// egress-inject rule, it builds a per-session egressproxy.Proxy (F5.2) + a fresh
+	// per-session CA + a sandbox-reachable listener, and the manager routes the
+	// sandbox through it (HTTPS_PROXY + a daemon-written CA file — NEVER the token).
+	// A cred designated for egress injection is EXCLUDED from the F5.1 env injector,
+	// so its secret is resolved only at the proxy boundary and never enters the env.
+	// The proxy + CA are torn down on session end.
+	egressInject *EgressInjector
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 
@@ -239,6 +251,10 @@ type Options struct {
 	// CredInjector is the F5.1 executor-side credential injector. nil disables
 	// injection — the daemon wires it over the broker + the loopback creds endpoint.
 	CredInjector *broker.Injector
+	// EgressInject is the F5.7 per-session egress-proxy factory. nil disables the
+	// credential-blind HTTP path (opt-in) — the daemon wires it only when the config
+	// carries at least one egress_inject rule.
+	EgressInject *EgressInjector
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -272,6 +288,7 @@ func NewManager(opts Options) (*Manager, error) {
 		redactor:     opts.Redactor,
 		broker:       opts.Broker,
 		credInjector: opts.CredInjector,
+		egressInject: opts.EgressInject,
 		sessions:     make(map[string]*Session),
 	}
 	if m.redactor == nil {
@@ -557,6 +574,12 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	// fallback) and warns; the AWS blind path puts ONLY the endpoint URI + a
 	// per-session token in credEnv (the value is served by the token-gated endpoint).
 	m.injectCredentials(context.Background(), s)
+	// F5.7 credential-blind HTTP egress. If the resolved policy lights up an
+	// egress-inject rule, build the per-session proxy + CA + listener and route the
+	// sandbox through it (adds HTTPS_PROXY + a daemon-written CA file to credEnv —
+	// never the token). Also single-owner here (no exec can observe s yet), so
+	// s.credEnv/s.egress are set without a lock.
+	m.injectEgressProxy(s)
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -721,7 +744,25 @@ func (m *Manager) injectCredentials(ctx context.Context, s *Session) {
 	if m.credInjector == nil || len(s.policy.Creds) == 0 {
 		return
 	}
-	si, err := m.credInjector.InjectSession(ctx, s.rec, s.ID, s.policy.Creds)
+	// F5.7: a cred designated for egress-boundary injection is resolved ONLY at the
+	// proxy (on the upstream leg) and must NEVER be placed in the sandbox env by the
+	// F5.1 env injector. Drop those refs before injecting — a durable secret meant
+	// for header injection can then never leak into the process env via the fallback.
+	grants := s.policy.Creds
+	if m.egressInject != nil {
+		filtered := grants[:0:0]
+		for _, c := range grants {
+			if m.egressInject.isEgressInjectRef(c.Name) {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		grants = filtered
+		if len(grants) == 0 {
+			return
+		}
+	}
+	si, err := m.credInjector.InjectSession(ctx, s.rec, s.ID, grants)
 	if err != nil {
 		// An internal invariant break (e.g. token generation) — fail closed: the
 		// session runs with NO injected creds rather than a partial/raw one.
@@ -732,6 +773,68 @@ func (m *Manager) injectCredentials(ctx context.Context, s *Session) {
 	for _, w := range si.Warnings {
 		m.log.Warn("credential injection", "session", s.ID, "detail", w)
 	}
+}
+
+// injectEgressProxy runs F5.7 per-session egress-proxy wiring for a freshly
+// registered session. When the resolved policy lights up an egress-inject rule it:
+//   - builds a per-session egressproxy.Proxy (F5.2) + a fresh per-session CA and
+//     starts a sandbox-reachable loopback listener (torn down on session end);
+//   - writes the per-session CA cert (public cert ONLY — never the key) to a
+//     daemon-controlled file in the session workspace, before first exec;
+//   - appends HTTPS_PROXY/HTTP_PROXY (+ NO_PROXY) and CURL_CA_BUNDLE/SSL_CERT_FILE/
+//     REQUESTS_CA_BUNDLE/GIT_SSL_CAINFO (pointing at the CA file) to s.credEnv.
+//
+// It injects the proxy ADDRESS + the CA PATH only — NEVER the token, which the
+// proxy adds on the upstream leg. It is FAIL-CLOSED: a build/listener/CA-write
+// failure injects no proxy env and no raw-secret fallback. A nil injector, or a
+// session with no applicable rule, is a clean no-op (no env change). Called before
+// the session enters the live map, so s.credEnv/s.egress are set without a lock.
+func (m *Manager) injectEgressProxy(s *Session) {
+	if m.egressInject == nil {
+		return
+	}
+	se, err := m.egressInject.buildForSession(s.ID, s.policy, s.rec)
+	if err != nil {
+		// Fail-closed: the session runs with NO proxy env rather than a partial or
+		// insecure route. Non-HTTP egress stays under F1.4 default-deny regardless.
+		m.log.Warn("egress proxy build failed; session runs without credential-blind HTTP egress", "session", s.ID, "err", err)
+		return
+	}
+	if se == nil {
+		return // no applicable egress-inject rule for this session (opt-in no-op)
+	}
+	// The CA file must live in the session's /workspace mount so the sandbox can read
+	// it. Without a workspace dir there is nowhere daemon-authoritative to write it —
+	// fail closed rather than route TLS the sandbox cannot validate.
+	if s.WorkspaceDir == "" {
+		se.close()
+		m.log.Warn("egress proxy disabled: no workspace dir to write the per-session CA", "session", s.ID)
+		return
+	}
+	caHostPath := filepath.Join(s.WorkspaceDir, SandboxCAFileName)
+	if err := os.WriteFile(caHostPath, se.caPEM, 0o644); err != nil {
+		se.close()
+		m.log.Warn("egress proxy disabled: cannot write per-session CA file", "session", s.ID, "err", err)
+		return
+	}
+	caSandboxPath := path.Join(sandboxWorkspaceMount, SandboxCAFileName)
+	proxyURL := "http://" + se.addr
+	noProxy := append([]string{"localhost", "127.0.0.1"}, m.egressInject.noProxy...)
+	noProxyVal := strings.Join(noProxy, ",")
+	s.credEnv = append(s.credEnv,
+		"HTTPS_PROXY="+proxyURL,
+		"https_proxy="+proxyURL,
+		"HTTP_PROXY="+proxyURL,
+		"http_proxy="+proxyURL,
+		"NO_PROXY="+noProxyVal,
+		"no_proxy="+noProxyVal,
+		"CURL_CA_BUNDLE="+caSandboxPath,
+		"SSL_CERT_FILE="+caSandboxPath,
+		"REQUESTS_CA_BUNDLE="+caSandboxPath,
+		"GIT_SSL_CAINFO="+caSandboxPath,
+	)
+	s.egress = se
+	m.log.Info("egress credential-blind HTTP path active", "session", s.ID, "proxy", proxyURL)
 }
 
 // runExec is the shared spawn+stream core used by the allow path (Exec) and the
@@ -832,6 +935,15 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	// never fetch again after teardown (idempotent; safe on the reconcile path).
 	if m.credInjector != nil {
 		m.credInjector.Release(s.ID)
+	}
+
+	// F5.7: tear down this session's egress proxy + listener. The per-session CA is
+	// scrapped with the proxy (no cross-session reuse); a second session gets a fresh
+	// CA/listener. Idempotent-safe on the reconcile path (an orphan carries no live
+	// egress handle).
+	if s.egress != nil {
+		s.egress.close()
+		s.egress = nil
 	}
 
 	// Close the trace chain: emit the terminal session.end, then seal (sign the

@@ -108,6 +108,13 @@ type Session struct {
 	// short-lived, agent-visible token. Set once at registerReady (under the Manager
 	// mutex) and read on the exec hot path under the same mutex.
 	credEnv []string
+
+	// egress is the F5.7 per-session credential-blind HTTP egress handle: the live
+	// egressproxy.Proxy's listener + its per-session CA. Non-nil only when the
+	// resolved policy lit up an egress-inject rule. It is set once at registerReady
+	// (single-owner, before the session is visible) and closed on teardown, so the
+	// proxy/CA never outlive the session and are never reused across sessions.
+	egress *sessionEgress
 }
 
 // deadline is the instant after which an idle session is reaped.
