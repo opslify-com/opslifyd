@@ -569,7 +569,7 @@
       "id": "F5.5",
       "phase": "P5",
       "title": "Package registry proxy (supply-chain + checksum-safe path)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.2"

@@ -78,6 +78,12 @@ type Config struct {
 	// client_id}; the durable refresh token lives encrypted in the vault. Each
 	// entry is validated fail-closed at daemon startup.
 	OAuth2 map[string]broker.OAuth2ServiceConfig `yaml:"oauth2,omitempty"`
+	// RegistryProxy configures the F5.5 caching package registry proxy (pip/npm/go).
+	// An absent section => the proxy is OFF (no behavior change): the daemon does not
+	// stand one up and nothing is routed through it. When present it is entirely
+	// daemon-authoritative (upstreams, allowlist, attestation policy); a workspace
+	// can never introduce or widen it.
+	RegistryProxy RegistryProxyConfig `yaml:"registry_proxy,omitempty"`
 	// PolicyFile is the path to the daemon's trusted DEFAULT policy (F4.1). A
 	// per-session workspace policy may only NARROW it. Empty => the built-in
 	// policy.Default() (no grants; deny-by-default creds). The daemon fails to
@@ -109,6 +115,45 @@ type VaultConfig struct {
 	// from. Empty => broker.DefaultVaultKeyEnv (OPSLIFY_VAULT_KEY). The key is NEVER
 	// stored in config or in a plaintext file beside the db.
 	KeyEnv string `yaml:"key_env,omitempty"`
+}
+
+// RegistryProxyConfig is the operator-facing F5.5 knob set for the caching package
+// registry proxy. It holds NO secret — only routing, the fail-closed package
+// allowlist, and the attestation policy; a private-registry credential is a `creds`
+// REF (resolved through the F5.6 broker at fetch time), never a value here.
+type RegistryProxyConfig struct {
+	// CacheDir is the on-disk artifact cache root (daemon-owned, outside any sandbox
+	// mount). Empty => caching is off (each fetch goes upstream). Entries are
+	// content-addressed, so a crafted package path can never traverse out of it.
+	CacheDir string `yaml:"cache_dir,omitempty"`
+	// Upstreams maps each served ecosystem (pypi|npm|go) to its real registry.
+	Upstreams []RegistryUpstream `yaml:"upstreams"`
+	// Allow is the fail-closed package allowlist. An empty allowlist resolves NOTHING
+	// (deny-by-default) — the proxy never fails open.
+	Allow []RegistryAllowEntry `yaml:"allow"`
+}
+
+// RegistryUpstream is one ecosystem's real registry (config face of
+// regproxy.Upstream). CredRef is a `creds` ref (never a secret value).
+type RegistryUpstream struct {
+	Ecosystem          string `yaml:"ecosystem"`
+	BaseURL            string `yaml:"base_url"`
+	CredRef            string `yaml:"cred_ref,omitempty"`
+	HeaderName         string `yaml:"header_name,omitempty"`
+	HeaderFormat       string `yaml:"header_format,omitempty"`
+	RequireAttestation bool   `yaml:"require_attestation,omitempty"`
+}
+
+// RegistryAllowEntry is one allowlisted package (config face of regproxy.AllowEntry).
+type RegistryAllowEntry struct {
+	Ecosystem string `yaml:"ecosystem"`
+	Name      string `yaml:"name"`
+}
+
+// Enabled reports whether the registry proxy should be stood up: it is opt-in on
+// the presence of at least one configured upstream.
+func (r RegistryProxyConfig) Enabled() bool {
+	return len(r.Upstreams) > 0
 }
 
 // RedactionConfig is the operator-facing F3.3 knob set. Fields left unset take

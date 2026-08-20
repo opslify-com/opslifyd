@@ -21,6 +21,7 @@ import (
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/regproxy"
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
@@ -126,6 +127,16 @@ func run() error {
 		log.Info("F5.4 oauth2 adapter active", "services", len(cfg.OAuth2))
 	}
 
+	// Wire the F5.5 caching package registry proxy (opt-in). It is validated
+	// FAIL-CLOSED here (a bad upstream/allowlist aborts startup rather than serving a
+	// misconfigured, potentially fail-open registry). An absent section is a clean
+	// no-op. The per-session routing (pip/npm/go pointed at the proxy) and real
+	// Sigstore attestation are integration-gated; startup validation + the proxy
+	// logic are what ships here.
+	if err := buildRegistryProxy(cfg, log); err != nil {
+		return err
+	}
+
 	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector)
 	if err != nil {
 		return err
@@ -162,6 +173,43 @@ func run() error {
 	defer mgr.Shutdown(context.Background())
 
 	return d.Run(ctx)
+}
+
+// buildRegistryProxy validates the F5.5 registry-proxy config FAIL-CLOSED and, when
+// enabled, logs it active. It translates the operator-facing install.Config face
+// into the regproxy.Config and runs regproxy.BuildConfig, so a bad upstream URL or
+// an allow entry for an unknown ecosystem aborts startup rather than silently
+// serving. When no upstream is configured the proxy is OFF (no behavior change).
+//
+// HONEST SCOPE: this stands up + validates the daemon-authoritative config. The
+// per-session Proxy (which binds the session's resolved `creds` grants + trace
+// recorder) is constructed by the session manager at session create, and the real
+// in-sandbox routing (index-url / npm registry / GOPROXY pointed at the proxy) plus
+// real Sigstore/cosign attestation are INTEGRATION-gated.
+func buildRegistryProxy(cfg install.Config, log *slog.Logger) error {
+	rp := cfg.RegistryProxy
+	if !rp.Enabled() {
+		return nil
+	}
+	rc := regproxy.Config{CacheDir: rp.CacheDir}
+	for _, u := range rp.Upstreams {
+		rc.Upstreams = append(rc.Upstreams, regproxy.Upstream{
+			Ecosystem:          regproxy.Ecosystem(u.Ecosystem),
+			BaseURL:            u.BaseURL,
+			CredRef:            u.CredRef,
+			HeaderName:         u.HeaderName,
+			HeaderFormat:       u.HeaderFormat,
+			RequireAttestation: u.RequireAttestation,
+		})
+	}
+	for _, a := range rp.Allow {
+		rc.Allow = append(rc.Allow, regproxy.AllowEntry{Ecosystem: regproxy.Ecosystem(a.Ecosystem), Name: a.Name})
+	}
+	if _, err := regproxy.BuildConfig(rc); err != nil {
+		return fmt.Errorf("opslifyd: registry proxy: %w", err)
+	}
+	log.Info("F5.5 registry proxy config valid", "upstreams", len(rc.Upstreams), "allowlisted", len(rc.Allow), "cache_dir", rp.CacheDir)
+	return nil
 }
 
 // buildSessionManager wires the F1.2 session manager from config. It applies the

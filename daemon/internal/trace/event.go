@@ -71,6 +71,15 @@ const (
 	// Like the other reserved P4/P5 types it is known-but-unemitted before P5, so a
 	// future daemon adds it without a schema bump.
 	TypeEgressAnomaly EventType = "egress.anomaly"
+	// TypePkgInstall is RESERVED for P5 (F5.5 registry proxy). The daemon-side
+	// caching registry proxy emits it once per fetched/installed package with the
+	// supply-chain evidence: {ecosystem, name, version, sha256, registry, attested}
+	// — the sha256 is over the REAL fetched artifact bytes (the same bytes served to
+	// the client, so its own checksum/signature verification is unaffected). It
+	// DELIBERATELY carries NO registry credential and NO artifact body, only the
+	// non-secret supply-chain descriptors. Like the other reserved P4/P5 types it is
+	// known-but-unemitted before P5, so a future daemon adds it without a schema bump.
+	TypePkgInstall EventType = "pkg.install"
 )
 
 // Event is one link in a session's hash chain. The shape is fixed
