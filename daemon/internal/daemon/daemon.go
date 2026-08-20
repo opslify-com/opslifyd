@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/install"
 )
 
@@ -67,6 +68,11 @@ type Options struct {
 	// keeps the daemon at its F1.1 surface (health only) — the routes 404 —
 	// which is what F1.1-scope tests rely on.
 	Sessions SessionService
+	// Secrets is the F5.6 secret MANAGEMENT surface (Put/List/Delete — the narrow
+	// broker.SecretManager, which has NO Get). nil keeps the /v1/secrets routes
+	// 404. There is deliberately no route that returns a secret value — Get is
+	// daemon-internal (session.Manager.ResolveSecret), not part of this surface.
+	Secrets broker.SecretManager
 }
 
 // Daemon is the running service. Construct with New; drive with Run (or the
@@ -80,6 +86,7 @@ type Daemon struct {
 	ready        func()
 	log          *slog.Logger
 	sessions     SessionService
+	secrets      broker.SecretManager
 
 	version  string
 	tier     string
@@ -108,6 +115,7 @@ func New(opts Options) (*Daemon, error) {
 		ready:        opts.Ready,
 		log:          opts.Logger,
 		sessions:     opts.Sessions,
+		secrets:      opts.Secrets,
 		version:      orDefault(opts.Version, "dev"),
 		tier:         opts.Config.Tier,
 	}

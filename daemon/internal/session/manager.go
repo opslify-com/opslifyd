@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
@@ -168,6 +169,19 @@ type Manager struct {
 	trace    trace.TraceSink
 	redactor trace.Redactor
 
+	// broker is the F5.6 credential broker. nil disables secret resolution (an
+	// unwired daemon never resolves a secret). It gates a resolve on the session's
+	// resolved-policy `creds` grants (deny-by-default) and audits every resolve.
+	broker *broker.Broker
+
+	// credInjector is the F5.1 executor-side credential injector. nil disables
+	// injection (a session runs with no injected creds). At registerReady it
+	// resolves every policy-granted cred through the broker, builds a scoped,
+	// TTL-bounded injection (AWS container-credentials endpoint, or the GCP/Azure v1
+	// env fallback), and stores the resulting env on the session — merged into every
+	// exec. It is released on teardown.
+	credInjector *broker.Injector
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 
@@ -219,6 +233,12 @@ type Options struct {
 	// Redactor is the F3.3 payload-scrub seam, applied before events are hashed.
 	// nil => trace.NoopRedactor (no redaction in F3.1).
 	Redactor trace.Redactor
+	// Broker is the F5.6 credential broker backing ResolveSecret. nil disables
+	// secret resolution — the daemon wires a broker over the local encrypted vault.
+	Broker *broker.Broker
+	// CredInjector is the F5.1 executor-side credential injector. nil disables
+	// injection — the daemon wires it over the broker + the loopback creds endpoint.
+	CredInjector *broker.Injector
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -240,17 +260,19 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:       cfg,
-		approvals: make(map[string]*approval),
-		resolve:   opts.Resolve,
-		clock:     opts.Clock,
-		store:     opts.Store,
-		egress:    opts.Egress,
-		sandboxIP: opts.SandboxIP,
-		log:       opts.Logger,
-		trace:     opts.Trace,
-		redactor:  opts.Redactor,
-		sessions:  make(map[string]*Session),
+		cfg:          cfg,
+		approvals:    make(map[string]*approval),
+		resolve:      opts.Resolve,
+		clock:        opts.Clock,
+		store:        opts.Store,
+		egress:       opts.Egress,
+		sandboxIP:    opts.SandboxIP,
+		log:          opts.Logger,
+		trace:        opts.Trace,
+		redactor:     opts.Redactor,
+		broker:       opts.Broker,
+		credInjector: opts.CredInjector,
+		sessions:     make(map[string]*Session),
 	}
 	if m.redactor == nil {
 		m.redactor = trace.NoopRedactor{}
@@ -528,6 +550,13 @@ func (m *Manager) registerReady(s *Session, origin string) {
 			m.log.Warn("trace session.start emit failed", "session", s.ID, "err", err)
 		}
 	}
+	// F5.1 executor-side credential injection. Resolve every policy-granted cred and
+	// build the scoped, TTL-bounded injection BEFORE the session is visible in the
+	// live map, so no exec can run before its creds are wired. It is fail-closed: a
+	// per-cred resolve/adapter failure injects nothing for that cred (no raw-secret
+	// fallback) and warns; the AWS blind path puts ONLY the endpoint URI + a
+	// per-session token in credEnv (the value is served by the token-gated endpoint).
+	m.injectCredentials(context.Background(), s)
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -653,6 +682,58 @@ func (m *Manager) Exec(ctx context.Context, id string, opts ExecOptions, sink Ex
 	return m.runExec(ctx, id, rt, handle, rec, opts, sink)
 }
 
+// ResolveSecret is the DAEMON-INTERNAL F5.6 credential resolution entrypoint — the
+// seam F5.1 injection will consume. It looks up the session, gates the resolve on
+// the session's RESOLVED policy `creds` grants (deny-by-default), fetches the value
+// via the broker's internal backend, and emits a chained+redacted `cred.resolve`
+// audit event under the session's trace. It returns the plaintext value ONLY to
+// this internal caller; it is NEVER reachable from a REST/CLI/UI route (there is no
+// handler that calls it). The caller SHOULD broker.Zeroize the value after use.
+//
+// It fails CLOSED: an unwired broker, an unknown session, an ungranted ref, or any
+// backend error returns an error and NO value — and (except for an unknown session,
+// which has no recorder) audits the denial.
+func (m *Manager) ResolveSecret(ctx context.Context, id, ref string) ([]byte, broker.SecretMeta, error) {
+	if m.broker == nil {
+		return nil, broker.SecretMeta{}, fmt.Errorf("%w: credential broker is not enabled on this daemon", ErrNotFound)
+	}
+	m.mu.Lock()
+	s, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return nil, broker.SecretMeta{}, fmt.Errorf("%w: session %s", ErrNotFound, id)
+	}
+	rec := s.rec
+	grants := s.policy.Creds
+	m.mu.Unlock()
+	return m.broker.Resolve(ctx, rec, grants, ref)
+}
+
+// injectCredentials runs F5.1 executor-side injection for a freshly-registered
+// session: it resolves the session's policy-granted creds through the broker
+// (deny-by-default + `cred.resolve` audit), builds a scoped TTL-bounded injection
+// per provider (AWS container-credentials endpoint, or the GCP/Azure v1 env
+// fallback), and records the resulting env on the session for merge into every
+// exec. Every resolved plaintext is Zeroized inside the injector. It is called
+// before the session enters the live map, so s.credEnv is set without a lock
+// (no concurrent exec can observe the session yet). A nil injector is a no-op.
+func (m *Manager) injectCredentials(ctx context.Context, s *Session) {
+	if m.credInjector == nil || len(s.policy.Creds) == 0 {
+		return
+	}
+	si, err := m.credInjector.InjectSession(ctx, s.rec, s.ID, s.policy.Creds)
+	if err != nil {
+		// An internal invariant break (e.g. token generation) — fail closed: the
+		// session runs with NO injected creds rather than a partial/raw one.
+		m.log.Warn("credential injection failed; session runs without injected creds", "session", s.ID, "err", err)
+		return
+	}
+	s.credEnv = si.Env
+	for _, w := range si.Warnings {
+		m.log.Warn("credential injection", "session", s.ID, "detail", w)
+	}
+}
+
 // runExec is the shared spawn+stream core used by the allow path (Exec) and the
 // approved path (ResolveApproval): it emits exec.start, runs the command via the
 // F0.3 Runtime, streams bounded output through the trace-wrapping sink, and emits
@@ -667,9 +748,25 @@ func (m *Manager) runExec(ctx context.Context, id string, rt runtime.Runtime, ha
 		})
 	}
 
+	// F5.1: merge the session's injected credential env into this exec. credEnv holds
+	// only scoped, TTL-bounded artifacts (AWS endpoint URI + per-session token, or a
+	// short-lived GCP/Azure token) — never a raw durable secret. Caller env comes
+	// first so a session's injected creds are authoritative and cannot be shadowed by
+	// a caller-supplied duplicate key.
+	m.mu.Lock()
+	var credEnv []string
+	if cur, ok := m.sessions[id]; ok {
+		credEnv = cur.credEnv
+	}
+	m.mu.Unlock()
+	env := opts.Env
+	if len(credEnv) > 0 {
+		env = append(append([]string(nil), opts.Env...), credEnv...)
+	}
+
 	req := runtime.ExecRequest{
 		Argv:    opts.Argv,
-		Env:     opts.Env,
+		Env:     env,
 		Workdir: opts.Cwd,
 	}
 	es, err := rt.Exec(ctx, handle, req)
@@ -730,6 +827,12 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	// into the chain BEFORE the terminal session.end below, so no pending state is
 	// leaked and the audit trail is complete.
 	m.cancelSessionApprovals(ctx, s, "session_end")
+
+	// F5.1: drop this session's endpoint credential so its per-session token can
+	// never fetch again after teardown (idempotent; safe on the reconcile path).
+	if m.credInjector != nil {
+		m.credInjector.Release(s.ID)
+	}
 
 	// Close the trace chain: emit the terminal session.end, then seal (sign the
 	// final hash with the daemon identity). A nil recorder (tracing unwired, or an

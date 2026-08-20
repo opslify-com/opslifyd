@@ -491,127 +491,119 @@
     {
       "id": "F5.1",
       "phase": "P5",
-      "title": "Executor-side credential injection (primary model)",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P4"
+      "title": "Executor-side credential injection (primary credential-blind model)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F5.6"
       ],
-      "blocks": [],
+      "depends_on_phases": [],
+      "blocks": [
+        "F5.2",
+        "F5.3"
+      ],
       "blocks_phases": [],
-      "source": "spec/phases/p5-broker/README.md",
-      "detailed": false,
+      "source": "spec/phases/p5-broker/features/F5.1-executor-injection.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F4.1",
-        "F4.2",
-        "F4.3",
-        "F4.4"
+        "F5.6"
       ]
     },
     {
       "id": "F5.2",
       "phase": "P5",
-      "title": "L7 egress proxy (Rust) \u2014 *research-flagged as hardest*",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P4"
+      "title": "L7 egress proxy (credential-blind HTTP injection)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F5.1"
       ],
-      "blocks": [],
+      "depends_on_phases": [],
+      "blocks": [
+        "F5.5"
+      ],
       "blocks_phases": [],
-      "source": "spec/phases/p5-broker/README.md",
-      "detailed": false,
+      "source": "spec/phases/p5-broker/features/F5.2-l7-egress-proxy.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F4.1",
-        "F4.2",
-        "F4.3",
-        "F4.4"
+        "F5.1"
       ]
     },
     {
       "id": "F5.3",
       "phase": "P5",
-      "title": "Tier 1 adapters",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P4"
+      "title": "Tier-1 cloud adapters (AWS / GCP / Azure scope-down)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F5.1"
       ],
+      "depends_on_phases": [],
       "blocks": [],
       "blocks_phases": [],
-      "source": "spec/phases/p5-broker/README.md",
-      "detailed": false,
+      "source": "spec/phases/p5-broker/features/F5.3-cloud-adapters.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F4.1",
-        "F4.2",
-        "F4.3",
-        "F4.4"
+        "F5.1"
       ]
     },
     {
       "id": "F5.4",
       "phase": "P5",
-      "title": "Tier 2 OAuth2",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P4"
+      "title": "Tier-2 OAuth2 adapter",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F5.6"
       ],
+      "depends_on_phases": [],
       "blocks": [],
       "blocks_phases": [],
-      "source": "spec/phases/p5-broker/README.md",
-      "detailed": false,
+      "source": "spec/phases/p5-broker/features/F5.4-oauth2-adapter.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F4.1",
-        "F4.2",
-        "F4.3",
-        "F4.4"
+        "F5.6"
       ]
     },
     {
       "id": "F5.5",
       "phase": "P5",
-      "title": "Tier 3 vault + package registry proxy",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P4"
+      "title": "Package registry proxy (supply-chain + checksum-safe path)",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F5.2"
       ],
+      "depends_on_phases": [],
       "blocks": [],
       "blocks_phases": [],
-      "source": "spec/phases/p5-broker/README.md",
-      "detailed": false,
+      "source": "spec/phases/p5-broker/features/F5.5-registry-proxy.md",
+      "detailed": true,
       "depends_on_resolved": [
-        "F4.1",
-        "F4.2",
-        "F4.3",
-        "F4.4"
+        "F5.2"
       ]
     },
     {
       "id": "F5.6",
       "phase": "P5",
-      "title": "SecretBackend interface + audit",
-      "status": "spec-level",
-      "owner": "",
-      "depends_on": [],
-      "depends_on_phases": [
-        "P4"
-      ],
-      "blocks": [],
-      "blocks_phases": [],
-      "source": "spec/phases/p5-broker/README.md",
-      "detailed": false,
-      "depends_on_resolved": [
+      "title": "SecretBackend interface + local encrypted vault + audit",
+      "status": "approved",
+      "owner": "Builder (Go)",
+      "depends_on": [
         "F4.1",
-        "F4.2",
-        "F4.3",
-        "F4.4"
+        "F3.1"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F5.1",
+        "F5.4"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/features/F5.6-secret-backend-vault.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F3.1",
+        "F4.1"
       ]
     },
     {
@@ -901,99 +893,31 @@
       "to": "F4.4"
     },
     {
-      "from": "F4.1",
+      "from": "F5.6",
       "to": "F5.1"
     },
     {
-      "from": "F4.2",
-      "to": "F5.1"
-    },
-    {
-      "from": "F4.3",
-      "to": "F5.1"
-    },
-    {
-      "from": "F4.4",
-      "to": "F5.1"
-    },
-    {
-      "from": "F4.1",
+      "from": "F5.1",
       "to": "F5.2"
     },
     {
-      "from": "F4.2",
-      "to": "F5.2"
-    },
-    {
-      "from": "F4.3",
-      "to": "F5.2"
-    },
-    {
-      "from": "F4.4",
-      "to": "F5.2"
-    },
-    {
-      "from": "F4.1",
+      "from": "F5.1",
       "to": "F5.3"
     },
     {
-      "from": "F4.2",
-      "to": "F5.3"
-    },
-    {
-      "from": "F4.3",
-      "to": "F5.3"
-    },
-    {
-      "from": "F4.4",
-      "to": "F5.3"
-    },
-    {
-      "from": "F4.1",
+      "from": "F5.6",
       "to": "F5.4"
     },
     {
-      "from": "F4.2",
-      "to": "F5.4"
-    },
-    {
-      "from": "F4.3",
-      "to": "F5.4"
-    },
-    {
-      "from": "F4.4",
-      "to": "F5.4"
-    },
-    {
-      "from": "F4.1",
+      "from": "F5.2",
       "to": "F5.5"
     },
     {
-      "from": "F4.2",
-      "to": "F5.5"
-    },
-    {
-      "from": "F4.3",
-      "to": "F5.5"
-    },
-    {
-      "from": "F4.4",
-      "to": "F5.5"
-    },
-    {
-      "from": "F4.1",
+      "from": "F3.1",
       "to": "F5.6"
     },
     {
-      "from": "F4.2",
-      "to": "F5.6"
-    },
-    {
-      "from": "F4.3",
-      "to": "F5.6"
-    },
-    {
-      "from": "F4.4",
+      "from": "F4.1",
       "to": "F5.6"
     },
     {
@@ -1254,17 +1178,17 @@
     "F2.3",
     "F3.2",
     "F4.2",
+    "F5.6",
     "F3.4",
     "F3.5",
     "F4.3",
-    "F4.4",
-    "F3.6",
     "F5.1",
+    "F5.4",
+    "F4.4",
     "F5.2",
     "F5.3",
-    "F5.4",
+    "F3.6",
     "F5.5",
-    "F5.6",
     "F6.1",
     "F6.2",
     "F6.3",

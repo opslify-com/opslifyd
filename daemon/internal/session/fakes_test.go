@@ -52,6 +52,7 @@ type fakeRuntime struct {
 	removed      []string   // images deleted via RemoveImage (ImageRemover)
 	execCount    int        // number of Exec calls (F4.2: assert deny never spawns)
 	execArgvs    [][]string // argv of every Exec call, in order (F4.4 preview/approve checks)
+	execEnvs     [][]string // env of every Exec call, in order (F5.1 injection checks)
 	planContent  []byte     // bytes a simulated `terraform plan -out` writes (F4.4 pin)
 	nextExec     runtime.ExecStream
 }
@@ -87,6 +88,7 @@ func (f *fakeRuntime) Exec(_ context.Context, _ runtime.ContainerHandle, req run
 	defer f.mu.Unlock()
 	f.execCount++
 	f.execArgvs = append(f.execArgvs, append([]string(nil), req.Argv...))
+	f.execEnvs = append(f.execEnvs, append([]string(nil), req.Env...))
 	// Simulate `terraform plan -out=/workspace/<rel>` writing a plan file, so the
 	// F4.4 saved-plan hash-pin (which reads the host workspace daemon-side) has a
 	// real artifact to hash. Maps the container /workspace prefix to the host dir.
@@ -108,6 +110,17 @@ func (f *fakeRuntime) Exec(_ context.Context, _ runtime.ContainerHandle, req run
 }
 
 func (f *fakeRuntime) execCalls() int { f.mu.Lock(); defer f.mu.Unlock(); return f.execCount }
+
+// lastExecEnv returns the env of the most recent Exec (nil if none) — the F5.1
+// hook to assert what credential env was injected into the spawned process.
+func (f *fakeRuntime) lastExecEnv() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.execEnvs) == 0 {
+		return nil
+	}
+	return f.execEnvs[len(f.execEnvs)-1]
+}
 
 // lastExecArgv returns the argv of the most recent Exec (nil if none since the
 // last reset) — the F4.4 hook to assert the preview / approved command.

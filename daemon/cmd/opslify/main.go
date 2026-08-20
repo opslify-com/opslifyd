@@ -61,6 +61,8 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(approvalsCmd())
 	root.AddCommand(approveCmd())
 	root.AddCommand(denyCmd())
+	root.AddCommand(secretsCmd())
+	root.AddCommand(credsCmd())
 	return root
 }
 

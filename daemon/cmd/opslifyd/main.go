@@ -9,16 +9,19 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/regproxy"
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
@@ -96,7 +99,45 @@ func run() error {
 	}
 	defer traceStop()
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink)
+	// Wire the F5.6 local encrypted vault (the default broker backend). It fails
+	// CLOSED: a missing/short master key aborts startup rather than serving without a
+	// vault. The vault is the value store; the broker gates + audits every resolve.
+	vault, err := buildVault(cfg, log)
+	if err != nil {
+		return err
+	}
+	brk := broker.NewBroker(vault)
+
+	// Wire the F5.1 executor-side credential injection: a loopback creds endpoint
+	// (the fully credential-blind AWS container-credentials path) + the injector that
+	// resolves granted creds and injects a scoped, TTL-bounded credential at exec.
+	// The endpoint fails safe: if it cannot bind, the injector runs with no endpoint
+	// and the AWS blind path fails closed (no raw-secret env fallback).
+	credInjector, credStop := buildCredInjection(brk, log)
+	defer credStop()
+
+	// Wire the F5.4 Tier-2 OAuth2 adapter. Validate every per-service config
+	// FAIL-CLOSED (a bad service aborts startup, never serves a broken adapter),
+	// then register the single generic adapter for all configured services.
+	if err := cfg.ValidateOAuth2(); err != nil {
+		return err
+	}
+	if len(cfg.OAuth2) > 0 {
+		credInjector.RegisterOAuth2Adapters(cfg.OAuth2, nil)
+		log.Info("F5.4 oauth2 adapter active", "services", len(cfg.OAuth2))
+	}
+
+	// Wire the F5.5 caching package registry proxy (opt-in). It is validated
+	// FAIL-CLOSED here (a bad upstream/allowlist aborts startup rather than serving a
+	// misconfigured, potentially fail-open registry). An absent section is a clean
+	// no-op. The per-session routing (pip/npm/go pointed at the proxy) and real
+	// Sigstore attestation are integration-gated; startup validation + the proxy
+	// logic are what ships here.
+	if err := buildRegistryProxy(cfg, log); err != nil {
+		return err
+	}
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector)
 	if err != nil {
 		return err
 	}
@@ -107,6 +148,7 @@ func run() error {
 		SocketGroup: *socketGroup,
 		Verifier:    verifier,
 		Sessions:    mgr,
+		Secrets:     vault, // narrow management surface (Put/List/Delete — no Get)
 		Ready:       sdNotifyReady,
 		Version:     version,
 		Logger:      log,
@@ -131,6 +173,43 @@ func run() error {
 	defer mgr.Shutdown(context.Background())
 
 	return d.Run(ctx)
+}
+
+// buildRegistryProxy validates the F5.5 registry-proxy config FAIL-CLOSED and, when
+// enabled, logs it active. It translates the operator-facing install.Config face
+// into the regproxy.Config and runs regproxy.BuildConfig, so a bad upstream URL or
+// an allow entry for an unknown ecosystem aborts startup rather than silently
+// serving. When no upstream is configured the proxy is OFF (no behavior change).
+//
+// HONEST SCOPE: this stands up + validates the daemon-authoritative config. The
+// per-session Proxy (which binds the session's resolved `creds` grants + trace
+// recorder) is constructed by the session manager at session create, and the real
+// in-sandbox routing (index-url / npm registry / GOPROXY pointed at the proxy) plus
+// real Sigstore/cosign attestation are INTEGRATION-gated.
+func buildRegistryProxy(cfg install.Config, log *slog.Logger) error {
+	rp := cfg.RegistryProxy
+	if !rp.Enabled() {
+		return nil
+	}
+	rc := regproxy.Config{CacheDir: rp.CacheDir}
+	for _, u := range rp.Upstreams {
+		rc.Upstreams = append(rc.Upstreams, regproxy.Upstream{
+			Ecosystem:          regproxy.Ecosystem(u.Ecosystem),
+			BaseURL:            u.BaseURL,
+			CredRef:            u.CredRef,
+			HeaderName:         u.HeaderName,
+			HeaderFormat:       u.HeaderFormat,
+			RequireAttestation: u.RequireAttestation,
+		})
+	}
+	for _, a := range rp.Allow {
+		rc.Allow = append(rc.Allow, regproxy.AllowEntry{Ecosystem: regproxy.Ecosystem(a.Ecosystem), Name: a.Name})
+	}
+	if _, err := regproxy.BuildConfig(rc); err != nil {
+		return fmt.Errorf("opslifyd: registry proxy: %w", err)
+	}
+	log.Info("F5.5 registry proxy config valid", "upstreams", len(rc.Upstreams), "allowlisted", len(rc.Allow), "cache_dir", rp.CacheDir)
+	return nil
 }
 
 // buildSessionManager wires the F1.2 session manager from config. It applies the
@@ -188,7 +267,64 @@ func buildTraceSink(cfg install.Config, log *slog.Logger) (trace.TraceSink, func
 	return sink, stop, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink) (*session.Manager, error) {
+// buildVault opens the F5.6 local encrypted vault. It fails CLOSED: an absent or
+// wrong-length master key (env OPSLIFY_VAULT_KEY / configured key_env), an
+// insecure-perms vault file, or a malformed db aborts startup — the daemon never
+// serves a broken or unencryptable vault. The master key is read from the env, so
+// it is never written to config or to a plaintext file beside the db.
+func buildVault(cfg install.Config, log *slog.Logger) (*broker.Vault, error) {
+	path := cfg.Vault.Path
+	if path == "" {
+		path = broker.DefaultVaultPath
+	}
+	keyEnv := cfg.Vault.KeyEnv
+	if keyEnv == "" {
+		keyEnv = broker.DefaultVaultKeyEnv
+	}
+	v, err := broker.OpenVault(path, broker.EnvKeySource{Var: keyEnv})
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: open secret vault: %w (set %s to a 32-byte hex/base64 master key)", err, keyEnv)
+	}
+	log.Info("secret vault active", "path", path, "key_env", keyEnv)
+	return v, nil
+}
+
+// buildCredInjection stands up the F5.1 loopback credential endpoint and injector.
+// The endpoint serves each session a scoped, TTL-bounded credential body that the
+// AWS CLI/SDK fetches unmodified via AWS_CONTAINER_CREDENTIALS_FULL_URI, so the raw
+// secret is NEVER placed in the container env. It binds a pinned loopback address
+// (never 0.0.0.0), so a host-network request cannot reach it; the in-sandbox→daemon
+// network reachability (egress allowlist to the bridge gateway) is INTEGRATION-
+// gated — the token/cross-session/expiry gates are unit-tested. If the listener
+// cannot bind, injection runs WITHOUT an endpoint (the AWS blind path then fails
+// closed), never falling back to a raw-secret env injection.
+func buildCredInjection(brk *broker.Broker, log *slog.Logger) (*broker.Injector, func()) {
+	server := broker.NewCredServer(time.Now)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		log.Warn("F5.1 creds endpoint unavailable; AWS credential-blind path disabled (fail-closed, no env fallback)", "err", err)
+		return broker.NewInjector(brk, nil, "", 0, time.Now), func() {}
+	}
+	baseURL := "http://" + ln.Addr().String()
+	mux := http.NewServeMux()
+	mux.Handle(broker.CredPath, server)
+	srv := &http.Server{Handler: mux}
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Warn("F5.1 creds endpoint serve stopped", "err", err)
+		}
+	}()
+	log.Info("F5.1 creds endpoint active", "base_url", baseURL)
+	injector := broker.NewInjector(brk, server, baseURL, 0, time.Now)
+	stop := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}
+	return injector, stop
+}
+
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -223,10 +359,12 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			DefaultPolicy:       defaultPolicy,
 			DryRun:              true, // F4.4: preview destructive ops before the approval pause
 		},
-		Egress:   egressCtl,
-		Logger:   log,
-		Trace:    traceSink,
-		Redactor: buildRedactor(cfg), // F3.3: config-driven secret scrubber
+		Egress:       egressCtl,
+		Logger:       log,
+		Trace:        traceSink,
+		Redactor:     buildRedactor(cfg), // F3.3: config-driven secret scrubber
+		Broker:       brk,                // F5.6: policy-gated, audited secret resolution
+		CredInjector: credInjector,       // F5.1: executor-side credential injection
 	})
 }
 
