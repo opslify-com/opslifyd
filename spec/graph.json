@@ -610,7 +610,7 @@
       "id": "F5.7",
       "phase": "P5",
       "title": "Broker egress integration (wire F5.2 into live sessions)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.2",

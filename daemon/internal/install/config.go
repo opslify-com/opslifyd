@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
@@ -84,6 +85,16 @@ type Config struct {
 	// daemon-authoritative (upstreams, allowlist, attestation policy); a workspace
 	// can never introduce or widen it.
 	RegistryProxy RegistryProxyConfig `yaml:"registry_proxy,omitempty"`
+	// EgressInject is the F5.7 daemon-authoritative list mapping an egress host to a
+	// vaulted secret + an auth header the L7 proxy (F5.2) injects at the network
+	// boundary for that host — so a granted `curl https://<host>/...` inside the
+	// sandbox reaches the real host with the token added AFTER traffic leaves the
+	// sandbox (the agent never sees it). It is entirely daemon-owned: a workspace can
+	// never introduce or widen a host here (F4.1), and a rule only lights up when the
+	// session's RESOLVED policy both grants the cred and egress-allows the host. An
+	// absent section => no proxy is built and no proxy env is injected (opt-in, no
+	// regression). Validated FAIL-CLOSED at startup (ValidateEgressInject).
+	EgressInject []EgressInjectRule `yaml:"egress_inject,omitempty"`
 	// PolicyFile is the path to the daemon's trusted DEFAULT policy (F4.1). A
 	// per-session workspace policy may only NARROW it. Empty => the built-in
 	// policy.Default() (no grants; deny-by-default creds). The daemon fails to
@@ -154,6 +165,55 @@ type RegistryAllowEntry struct {
 // the presence of at least one configured upstream.
 func (r RegistryProxyConfig) Enabled() bool {
 	return len(r.Upstreams) > 0
+}
+
+// EgressInjectRule is one F5.7 host→secret→header mapping. It holds NO secret —
+// SecretRef is a `creds` REF resolved through the F5.6 broker at the network
+// boundary; the token never appears in this config, the sandbox env, or the trace.
+type EgressInjectRule struct {
+	// Host is the exact egress host (no port) the rule injects for, e.g. "gitlab.com".
+	Host string `yaml:"host"`
+	// SecretRef is the `creds` ref the L7 proxy resolves for this host. It must be a
+	// cred the session's resolved policy grants, or the rule is dropped fail-closed.
+	SecretRef string `yaml:"secret_ref"`
+	// HeaderName is the auth header the proxy sets on the forwarded upstream request,
+	// e.g. "PRIVATE-TOKEN" or "Authorization".
+	HeaderName string `yaml:"header_name"`
+	// HeaderFormat is a single-%s template applied to the resolved secret, e.g.
+	// "Bearer %s" or "%s". Empty => the raw secret is the header value.
+	HeaderFormat string `yaml:"header_format,omitempty"`
+}
+
+// ValidateEgressInject checks every F5.7 egress-inject rule, FAILING CLOSED with a
+// legible error naming the offending host/field. The daemon calls this at startup
+// so a malformed rule aborts rather than silently serving a broken injection path.
+func (c Config) ValidateEgressInject() error {
+	seen := map[string]struct{}{}
+	for i, r := range c.EgressInject {
+		if r.Host == "" {
+			return fmt.Errorf("install: egress_inject[%d]: host is required", i)
+		}
+		if strings.ContainsAny(r.Host, "/: ") {
+			return fmt.Errorf("install: egress_inject[%d]: host %q must be a bare hostname (no scheme, port, or path)", i, r.Host)
+		}
+		host := strings.ToLower(r.Host)
+		if _, dup := seen[host]; dup {
+			return fmt.Errorf("install: egress_inject: duplicate host %q", r.Host)
+		}
+		seen[host] = struct{}{}
+		if r.SecretRef == "" {
+			return fmt.Errorf("install: egress_inject[%d] (%s): secret_ref is required", i, r.Host)
+		}
+		if r.HeaderName == "" {
+			return fmt.Errorf("install: egress_inject[%d] (%s): header_name is required", i, r.Host)
+		}
+		if r.HeaderFormat != "" {
+			if n := strings.Count(r.HeaderFormat, "%"); n != strings.Count(r.HeaderFormat, "%s") || n != 1 {
+				return fmt.Errorf("install: egress_inject[%d] (%s): header_format %q must contain exactly one %%s and no other verbs", i, r.Host, r.HeaderFormat)
+			}
+		}
+	}
+	return nil
 }
 
 // RedactionConfig is the operator-facing F3.3 knob set. Fields left unset take

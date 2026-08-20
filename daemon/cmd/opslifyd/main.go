@@ -18,6 +18,7 @@ import (
 
 	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/daemon"
+	"github.com/opslify-com/opslifyd/internal/egressproxy"
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/policy"
@@ -137,7 +138,18 @@ func run() error {
 		return err
 	}
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector)
+	// Wire the F5.7 credential-blind HTTP egress path (opt-in). It validates every
+	// egress_inject rule FAIL-CLOSED (a malformed rule aborts startup rather than
+	// serving a broken injection path) and, when present, builds the per-session
+	// egress-proxy factory. An absent section => nil => no proxy is built and no
+	// proxy env is injected (no regression). The real in-sandbox→proxy reachability
+	// (podman/gVisor networking + the daemon→host egress leg) is INTEGRATION-gated.
+	egressInject, err := buildEgressInject(cfg, brk, log)
+	if err != nil {
+		return err
+	}
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject)
 	if err != nil {
 		return err
 	}
@@ -324,7 +336,48 @@ func buildCredInjection(brk *broker.Broker, log *slog.Logger) (*broker.Injector,
 	return injector, stop
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector) (*session.Manager, error) {
+// buildEgressInject wires the F5.7 per-session egress-proxy factory from config. It
+// is OPT-IN: an absent egress_inject section returns (nil, nil) and no proxy is ever
+// built (no env change, no regression). When present it validates every rule
+// FAIL-CLOSED (a bad host/secret_ref/header aborts startup) and maps each
+// daemon-authoritative {host, secret_ref, header_name, header_format} to an
+// egressproxy.InjectRule. The rules are DAEMON-OWNED — a workspace can never
+// introduce or widen one (the per-session BuildConfig additionally drops any rule
+// the resolved policy does not both grant and egress-allow).
+//
+// HONEST SCOPE: this stands up the factory + the daemon-authoritative rules. The
+// per-session Proxy + CA + listener are built by the session manager at session
+// create; the real in-sandbox routing (HTTPS_PROXY reachability, the daemon→host
+// egress leg) is INTEGRATION-gated on a live host.
+func buildEgressInject(cfg install.Config, brk *broker.Broker, log *slog.Logger) (*session.EgressInjector, error) {
+	if len(cfg.EgressInject) == 0 {
+		return nil, nil
+	}
+	if err := cfg.ValidateEgressInject(); err != nil {
+		return nil, fmt.Errorf("opslifyd: egress inject: %w", err)
+	}
+	rules := make([]egressproxy.InjectRule, 0, len(cfg.EgressInject))
+	for _, r := range cfg.EgressInject {
+		rules = append(rules, egressproxy.InjectRule{
+			Host:         r.Host,
+			CredRef:      r.SecretRef,
+			HeaderName:   r.HeaderName,
+			HeaderFormat: r.HeaderFormat,
+		})
+	}
+	ei := session.NewEgressInjector(session.EgressInjectConfig{
+		Rules:  rules,
+		Broker: brk,
+		// Keep the F5.1 creds endpoint / cloud metadata off the egress-proxy route so
+		// the blind AWS path still fetches directly.
+		NoProxy: []string{"169.254.169.254"},
+		Logger:  log,
+	})
+	log.Info("F5.7 credential-blind egress inject active", "rules", len(rules))
+	return ei, nil
+}
+
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -365,6 +418,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 		Redactor:     buildRedactor(cfg), // F3.3: config-driven secret scrubber
 		Broker:       brk,                // F5.6: policy-gated, audited secret resolution
 		CredInjector: credInjector,       // F5.1: executor-side credential injection
+		EgressInject: egressInject,       // F5.7: credential-blind HTTP egress path
 	})
 }
 
