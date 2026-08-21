@@ -49,6 +49,7 @@ type fakeManager struct {
 	lastExec    session.ExecOptions
 	uploaded    []byte
 	downloaded  []byte
+	manifest    []session.ManifestEntry
 	fileErr     error
 	workspaces  []session.WorkspaceView
 	wsRemoved   []string
@@ -168,6 +169,13 @@ func (f *fakeManager) ReadFile(_ context.Context, _ string, _ string) ([]byte, e
 		return nil, f.fileErr
 	}
 	return f.downloaded, nil
+}
+
+func (f *fakeManager) Manifest(_ context.Context, _ string) ([]session.ManifestEntry, error) {
+	if f.fileErr != nil {
+		return nil, f.fileErr
+	}
+	return f.manifest, nil
 }
 
 // mustPost/mustGet issue a request and fail the test on a transport error, so

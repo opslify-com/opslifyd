@@ -54,6 +54,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(runCmd())
 	root.AddCommand(sessionCmd())
 	root.AddCommand(wsCmd())
+	root.AddCommand(workspaceCmd())
 	root.AddCommand(verifyCmd())
 	root.AddCommand(policyCmd())
 	root.AddCommand(uiCmd())
