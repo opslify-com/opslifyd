@@ -126,7 +126,19 @@ type VaultConfig struct {
 	// from. Empty => broker.DefaultVaultKeyEnv (OPSLIFY_VAULT_KEY). The key is NEVER
 	// stored in config or in a plaintext file beside the db.
 	KeyEnv string `yaml:"key_env,omitempty"`
+	// KeyFile is the path to the F7.2 0600 root-owned master-key file — SEPARATE
+	// from Path (the key must never sit beside the ciphertext). Empty =>
+	// DefaultVaultKeyFilePath (/etc/opslify/vault.key). It is the daemon's automatic
+	// key source so a fresh `opslify init` box starts without OPSLIFY_VAULT_KEY set;
+	// the env still overrides it (documented precedence: env → file).
+	KeyFile string `yaml:"key_file,omitempty"`
 }
+
+// DefaultVaultKeyFilePath is the production F7.2 master-key file. It sits under
+// /etc/opslify (0600, root/daemon-owned), DELIBERATELY NOT beside the vault db
+// (broker.DefaultVaultPath) — a key file next to the ciphertext would defeat
+// encryption at rest. `opslify init` writes it; the daemon reads it at startup.
+const DefaultVaultKeyFilePath = "/etc/opslify/vault.key"
 
 // RegistryProxyConfig is the operator-facing F5.5 knob set for the caching package
 // registry proxy. It holds NO secret — only routing, the fail-closed package

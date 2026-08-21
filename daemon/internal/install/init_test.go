@@ -50,15 +50,16 @@ func newTestOpts(t *testing.T, projectDir string, p Prompter, b env.EnvBuilder) 
 	root := t.TempDir()
 	buf := &bytes.Buffer{}
 	return InitOptions{
-		TargetDir:       projectDir,
-		ConfigPath:      filepath.Join(root, "etc", "config.yaml"),
-		IdentityKeyPath: filepath.Join(root, "etc", "identity.key"),
-		SystemdUnitPath: filepath.Join(root, "etc", "opslifyd.service"),
-		BaseImageDigest: "repo@sha256:base",
-		Prompter:        p,
-		Builder:         b,
-		Probe:           func() Capabilities { return Capabilities{Podman: true, Runsc: true, Runc: true} },
-		Out:             buf,
+		TargetDir:        projectDir,
+		ConfigPath:       filepath.Join(root, "etc", "config.yaml"),
+		IdentityKeyPath:  filepath.Join(root, "etc", "identity.key"),
+		VaultKeyFilePath: filepath.Join(root, "etc", "vault.key"),
+		SystemdUnitPath:  filepath.Join(root, "etc", "opslifyd.service"),
+		BaseImageDigest:  "repo@sha256:base",
+		Prompter:         p,
+		Builder:          b,
+		Probe:            func() Capabilities { return Capabilities{Podman: true, Runsc: true, Runc: true} },
+		Out:              buf,
 	}, buf
 }
 

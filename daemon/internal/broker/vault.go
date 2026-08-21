@@ -61,7 +61,9 @@ func (e EnvKeySource) MasterKey() ([]byte, error) {
 	}
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
-		return nil, fmt.Errorf("%w: vault master key env %s is unset (set it to 32 bytes as hex or base64)", ErrInvalidInput, name)
+		// Absent (not broken): wrap ErrKeyAbsent so a resolution chain falls through
+		// to the next source rather than failing closed on the override being unset.
+		return nil, fmt.Errorf("%w: vault master key env %s is unset (set it to 32 bytes as hex or base64)", ErrKeyAbsent, name)
 	}
 	key, err := decodeKey(raw)
 	if err != nil {

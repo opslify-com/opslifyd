@@ -858,7 +858,7 @@
       "id": "F7.2",
       "phase": "P7",
       "title": "Key UX (auto-generate + safe storage + one-time reveal)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.6"

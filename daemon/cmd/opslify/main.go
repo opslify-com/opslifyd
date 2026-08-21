@@ -63,6 +63,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(denyCmd())
 	root.AddCommand(secretsCmd())
 	root.AddCommand(credsCmd())
+	root.AddCommand(vaultCmd())
 	return root
 }
 
@@ -70,6 +71,7 @@ func initCmd() *cobra.Command {
 	var (
 		configPath     string
 		keyPath        string
+		vaultKeyPath   string
 		unitPath       string
 		baseImage      string
 		force          bool
@@ -91,14 +93,15 @@ func initCmd() *cobra.Command {
 				prompter = install.ScriptedPrompter{}
 			}
 			opts := install.InitOptions{
-				TargetDir:       dir,
-				ConfigPath:      configPath,
-				IdentityKeyPath: keyPath,
-				SystemdUnitPath: unitPath,
-				BaseImageDigest: baseImage,
-				Prompter:        prompter,
-				Force:           force,
-				Out:             cmd.OutOrStdout(),
+				TargetDir:        dir,
+				ConfigPath:       configPath,
+				IdentityKeyPath:  keyPath,
+				VaultKeyFilePath: vaultKeyPath,
+				SystemdUnitPath:  unitPath,
+				BaseImageDigest:  baseImage,
+				Prompter:         prompter,
+				Force:            force,
+				Out:              cmd.OutOrStdout(),
 			}
 			res, err := install.Run(context.Background(), opts)
 			if err != nil {
@@ -111,6 +114,7 @@ func initCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "daemon config path (default /etc/opslify/config.yaml)")
 	cmd.Flags().StringVar(&keyPath, "identity-key", "", "daemon Ed25519 identity key path (default /etc/opslify/identity.key)")
+	cmd.Flags().StringVar(&vaultKeyPath, "vault-key-file", "", "vault master-key file path (default /etc/opslify/vault.key)")
 	cmd.Flags().StringVar(&unitPath, "systemd-unit", "", "write the systemd unit to this path (default: print it)")
 	cmd.Flags().StringVar(&baseImage, "base-image", "", "digest-pinned base image (repo@sha256:...)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing files without prompting")
