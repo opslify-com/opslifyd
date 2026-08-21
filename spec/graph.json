@@ -876,7 +876,7 @@
       "id": "F7.3",
       "phase": "P7",
       "title": "Host-linked workspaces + auto bidirectional sync",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F2.2",

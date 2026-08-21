@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -160,6 +162,90 @@ func (c *client) removeWorkspace(ctx context.Context, name string) error {
 type createResp struct {
 	SessionID string `json:"session_id"`
 	State     string `json:"state"`
+}
+
+// manifestEntry mirrors session.ManifestEntry — one /workspace file's path,
+// size, mtime and content hash, for host↔sandbox diffing (F7.3).
+type manifestEntry struct {
+	RelPath string `json:"rel_path"`
+	Size    int64  `json:"size"`
+	ModUnix int64  `json:"mod_unix"`
+	SHA256  string `json:"sha256"`
+}
+
+type uploadFileReq struct {
+	Path       string `json:"path"`
+	ContentB64 string `json:"content_b64"`
+}
+
+type downloadFileResp struct {
+	ContentB64 string `json:"content_b64"`
+}
+
+// fetchManifest GETs /v1/sessions/{id}/manifest — the F7.3 workspace manifest.
+func (c *client) fetchManifest(ctx context.Context, id string) ([]manifestEntry, error) {
+	u := c.baseURL + "/v1/sessions/" + id + "/manifest"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []manifestEntry
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// uploadFile PUTs a /workspace-confined file into a session (F2.1 transfer,
+// reused by the F7.3 sync engine for host→sandbox writes).
+func (c *client) uploadFile(ctx context.Context, id, relPath string, content []byte) error {
+	body, _ := json.Marshal(uploadFileReq{Path: relPath, ContentB64: base64.StdEncoding.EncodeToString(content)})
+	u := c.baseURL + "/v1/sessions/" + id + "/files"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}
+
+// downloadFile GETs a /workspace-confined file from a session (F2.1 transfer,
+// reused by the F7.3 sync engine for sandbox→host writes).
+func (c *client) downloadFile(ctx context.Context, id, relPath string) ([]byte, error) {
+	u := c.baseURL + "/v1/sessions/" + id + "/files?path=" + url.QueryEscape(relPath)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out downloadFileResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(out.ContentB64)
 }
 
 type execReq struct {

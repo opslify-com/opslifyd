@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/go-containerregistry v0.21.9
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/spf13/cobra v1.10.2

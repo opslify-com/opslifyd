@@ -28,6 +28,10 @@ type SessionService interface {
 	// are confined to the session's /workspace and size-bounded in the Manager.
 	WriteFile(ctx context.Context, id, path string, content []byte) error
 	ReadFile(ctx context.Context, id, path string) ([]byte, error)
+	// Manifest is the F7.3 read-only workspace manifest: path+size+mtime+hash
+	// for each /workspace file, path-guarded and secret-excluded, so the CLI
+	// sync engine can diff host vs sandbox without downloading everything.
+	Manifest(ctx context.Context, id string) ([]session.ManifestEntry, error)
 	// ListWorkspaces / RemoveWorkspace back the F2.2 `opslify ws ls|rm` surface.
 	ListWorkspaces() ([]session.WorkspaceView, error)
 	RemoveWorkspace(ctx context.Context, name string) error
@@ -111,6 +115,10 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	// F2.1 mediated file transfer, confined to the session's /workspace.
 	mux.HandleFunc("PUT /"+APIVersion+"/sessions/{id}/files", d.handleFileUpload)
 	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/files", d.handleFileDownload)
+	// F7.3 host-linked workspaces: read-only workspace manifest for host↔sandbox
+	// diffing. It reuses the same /workspace path guard + secret deny-list; it
+	// never lists an excluded or out-of-root path.
+	mux.HandleFunc("GET /"+APIVersion+"/sessions/{id}/manifest", d.handleSessionManifest)
 	// F2.2 workspace management.
 	mux.HandleFunc("GET /"+APIVersion+"/workspaces", d.handleWorkspaceList)
 	mux.HandleFunc("DELETE /"+APIVersion+"/workspaces/{name}", d.handleWorkspaceDelete)
@@ -428,6 +436,23 @@ func (d *Daemon) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSessionManifest returns the F7.3 workspace manifest (path+size+mtime+
+// hash per file). It is READ-ONLY and path-guarded in the Manager; a hostile
+// workspace cannot escape /workspace, exceed the file cap, or surface an
+// excluded secret path here.
+func (d *Daemon) handleSessionManifest(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	entries, err := d.sessions.Manifest(r.Context(), id)
+	if err != nil {
+		writeSessionError(w, err)
+		return
+	}
+	if entries == nil {
+		entries = []session.ManifestEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 // handleFileDownload reads a /workspace-confined path and returns it base64.
