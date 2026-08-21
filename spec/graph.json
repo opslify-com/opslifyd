@@ -871,6 +871,26 @@
       "depends_on_resolved": [
         "F5.6"
       ]
+    },
+    {
+      "id": "F7.3",
+      "phase": "P7",
+      "title": "Host-linked workspaces + auto bidirectional sync",
+      "status": "in-progress",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F2.2",
+        "F3.3"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p7-dx/features/F7.3-host-linked-workspaces.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F2.2",
+        "F3.3"
+      ]
     }
   ],
   "edges": [
@@ -1329,6 +1349,14 @@
     {
       "from": "F5.6",
       "to": "F7.2"
+    },
+    {
+      "from": "F2.2",
+      "to": "F7.3"
+    },
+    {
+      "from": "F3.3",
+      "to": "F7.3"
     }
   ],
   "topological_order": [
@@ -1347,6 +1375,7 @@
     "F4.1",
     "F2.3",
     "F3.2",
+    "F7.3",
     "F4.2",
     "F5.6",
     "F3.4",
