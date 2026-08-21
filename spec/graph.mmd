@@ -52,6 +52,7 @@ flowchart LR
         F7_1["F7.1<br/>UI launch-token auth (the enabler)"]
         F7_2["F7.2<br/>Key UX (auto-generate + safe storage + one-time reveal)"]
         F7_3["F7.3<br/>Host-linked workspaces + auto bidirectional sync"]
+        F7_4["F7.4<br/>Full UI parity (browser can do what the CLI does, safely)"]
     end
     F0_2 --> F0_1
     F0_1 --> F1_1
@@ -169,5 +170,7 @@ flowchart LR
     F5_6 --> F7_2
     F2_2 --> F7_3
     F3_3 --> F7_3
+    F7_1 --> F7_4
+    F7_3 --> F7_4
 
 %% ~ marks a spec-level (inline) feature not yet split into a detailed file

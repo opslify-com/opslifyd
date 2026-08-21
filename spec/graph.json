@@ -891,6 +891,26 @@
         "F2.2",
         "F3.3"
       ]
+    },
+    {
+      "id": "F7.4",
+      "phase": "P7",
+      "title": "Full UI parity (browser can do what the CLI does, safely)",
+      "status": "in-progress",
+      "owner": "Builder (Go + SPA)",
+      "depends_on": [
+        "F7.1",
+        "F7.3"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p7-dx/features/F7.4-full-ui-parity.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F7.1",
+        "F7.3"
+      ]
     }
   ],
   "edges": [
@@ -1357,6 +1377,14 @@
     {
       "from": "F3.3",
       "to": "F7.3"
+    },
+    {
+      "from": "F7.1",
+      "to": "F7.4"
+    },
+    {
+      "from": "F7.3",
+      "to": "F7.4"
     }
   ],
   "topological_order": [
@@ -1388,6 +1416,7 @@
     "F4.4",
     "F5.2",
     "F5.3",
+    "F7.4",
     "F3.6",
     "F5.5",
     "F5.7",
