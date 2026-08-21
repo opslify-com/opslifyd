@@ -840,7 +840,7 @@
       "id": "F7.1",
       "phase": "P7",
       "title": "UI launch-token auth (the enabler)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F3.5"

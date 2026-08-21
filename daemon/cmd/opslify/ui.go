@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net"
@@ -18,6 +21,89 @@ import (
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/spf13/cobra"
 )
+
+// uiTokenCookie is the name of the HttpOnly cookie the server sets from a valid
+// ?token= launch URL so the SPA's same-origin fetches carry the token
+// automatically — the token never has to live in JS.
+const uiTokenCookie = "opslify_ui_token"
+
+// uiTokenHeader is the header alternative to the cookie, for curl/tests and any
+// non-browser client that cannot round-trip a Set-Cookie.
+const uiTokenHeader = "X-Opslify-UI-Token"
+
+// mintUIToken generates a fresh, cryptographically-random per-launch token
+// (256-bit, hex-encoded). It is a DISPOSABLE secret — unrelated to the daemon's
+// durable audit key, which is never loaded or used in the UI path.
+func mintUIToken() (string, error) {
+	b := make([]byte, 32) // 256 bits of entropy
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("ui: mint launch token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// tokenMatches compares a presented token against the launch token in constant
+// time, so a network attacker cannot recover it byte-by-byte via timing. Empty
+// values never match.
+func tokenMatches(want, got string) bool {
+	if want == "" || got == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
+}
+
+// presentedToken extracts a candidate token from the request, in preference
+// order: the ?token= query (the launch-URL bootstrap), the X-Opslify-UI-Token
+// header (curl/tests), an Authorization: Bearer header, then the auth cookie
+// (what the browser sends on every same-origin request after bootstrap). The
+// bool reports whether the token arrived via the ?token= query, which is the
+// only case where the server (re)sets the HttpOnly cookie.
+func presentedToken(r *http.Request) (tok string, fromQuery bool) {
+	if q := r.URL.Query().Get("token"); q != "" {
+		return q, true
+	}
+	if h := r.Header.Get(uiTokenHeader); h != "" {
+		return h, false
+	}
+	if a := r.Header.Get("Authorization"); a != "" {
+		if v, ok := strings.CutPrefix(a, "Bearer "); ok && v != "" {
+			return v, false
+		}
+	}
+	if c, err := r.Cookie(uiTokenCookie); err == nil {
+		return c.Value, false
+	}
+	return "", false
+}
+
+// tokenAuthGuard requires a valid per-launch token on EVERY route — the SPA
+// index, static assets, and all /v1/* proxy routes alike. A request presenting
+// no token or a wrong token gets 401. When the token arrives via the ?token=
+// launch URL and is valid, the server sets an HttpOnly, SameSite=Strict,
+// Path=/ cookie so subsequent same-origin requests authenticate automatically
+// without any token handling in JS. This is the gap the Host-guard alone left:
+// a DNS-rebind page has a loopback Host but never the token, so it is refused.
+func tokenAuthGuard(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		presented, fromQuery := presentedToken(r)
+		if !tokenMatches(token, presented) {
+			http.Error(w, "opslify ui: missing or invalid launch token (open the ?token= URL printed by `opslify ui`)", http.StatusUnauthorized)
+			return
+		}
+		if fromQuery {
+			// Bootstrap: stamp the token into an HttpOnly cookie so the browser
+			// carries it on every later fetch and it never touches JS.
+			http.SetCookie(w, &http.Cookie{
+				Name:     uiTokenCookie,
+				Value:    token,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			})
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // webuiFS holds the self-contained SPA served by `opslify ui`. Everything the
 // browser loads (HTML/CSS/JS) is embedded here — no CDN, font, image, or script
@@ -49,7 +135,13 @@ func uiCmd() *cobra.Command {
 			if err := assertLoopbackHost(host); err != nil {
 				return err
 			}
-			handler, err := newUIServer(socket)
+			// Mint a fresh per-launch token; a new `opslify ui` run mints a new one.
+			// It is a disposable same-machine secret — NOT the durable audit key.
+			token, err := mintUIToken()
+			if err != nil {
+				return err
+			}
+			handler, err := newUIServer(socket, token)
 			if err != nil {
 				return err
 			}
@@ -66,12 +158,17 @@ func uiCmd() *cobra.Command {
 			}
 
 			uiURL := "http://" + ln.Addr().String() + "/"
+			// The launch URL carries the token; the browser (or operator) that
+			// opens it authenticates. The token is printed ONLY here (CLI stdout)
+			// and never logged or traced.
+			tokenURL := uiURL + "?token=" + token
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "opslify ui listening on %s (localhost-only, no auth — local operator trust boundary)\n", uiURL)
+			fmt.Fprintf(out, "opslify ui listening on %s (localhost-only, per-launch token auth)\n", uiURL)
+			fmt.Fprintf(out, "open this URL (carries the launch token): %s\n", tokenURL)
 			fmt.Fprintf(out, "proxying /v1/* to daemon socket %s\n", socket)
 
 			if !noOpen {
-				openBrowser(uiURL) // best-effort; never a hard dependency
+				openBrowser(tokenURL) // best-effort; never a hard dependency
 			}
 
 			srv := &http.Server{Handler: handler}
@@ -103,7 +200,7 @@ func uiCmd() *cobra.Command {
 // streaming reverse proxy on /v1/* to the daemon's Unix socket. It introduces NO
 // route beyond the existing /v1/* API surface, so the UI adds no new mutation
 // path — it can only reach what the CLI already can (read + the existing Kill).
-func newUIServer(socketPath string) (http.Handler, error) {
+func newUIServer(socketPath, token string) (http.Handler, error) {
 	sub, err := fs.Sub(webuiFS, "webui")
 	if err != nil {
 		return nil, fmt.Errorf("ui: embed subtree: %w", err)
@@ -122,6 +219,14 @@ func newUIServer(socketPath string) (http.Handler, error) {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
 			pr.Out.Host = target.Host
+			// Defense in depth: never forward the UI launch token to the daemon.
+			// The SPA authenticates via the HttpOnly cookie and never puts ?token=
+			// on a /v1 call, but a hand-crafted client could — strip it so the token
+			// can't ride the outbound query into the daemon side.
+			if q := pr.Out.URL.Query(); q.Has("token") {
+				q.Del("token")
+				pr.Out.URL.RawQuery = q.Encode()
+			}
 		},
 		Transport: transport,
 		// FlushInterval < 0 flushes each write immediately, so the SSE trace
@@ -149,11 +254,14 @@ func newUIServer(socketPath string) (http.Handler, error) {
 	mux.Handle("/v1/", guardedProxy)
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
-	// Wrap everything in a Host-header allowlist: the bind is loopback, but a
-	// malicious web page could still target 127.0.0.1:<port> via DNS-rebinding
-	// (the rebound request carries the attacker's hostname in Host). Requiring a
-	// loopback Host defeats that without auth, matching the localhost trust model.
-	return loopbackHostGuard(mux), nil
+	// Compose two additive guards, outermost first:
+	//   1. loopbackHostGuard — a non-loopback Host header is refused (403) as a
+	//      DNS-rebinding defense (checked first, so a foreign Host is a 403, not a
+	//      token 401).
+	//   2. tokenAuthGuard — every route (SPA, assets, /v1/*) requires the valid
+	//      per-launch token or gets 401. This closes the gap the Host-guard alone
+	//      left: a DNS-rebind page has a loopback Host but never the token.
+	return loopbackHostGuard(tokenAuthGuard(token, mux)), nil
 }
 
 // allowedProxyRoute is the browser-reachable /v1 allowlist. It permits only:
