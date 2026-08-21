@@ -21,6 +21,10 @@ type InitOptions struct {
 	ConfigPath string
 	// IdentityKeyPath overrides DefaultIdentityKeyPath.
 	IdentityKeyPath string
+	// VaultKeyFilePath overrides DefaultVaultKeyFilePath — the 0600 master-key file
+	// `opslify init` generates when no key resolves yet (F7.2). Overridable so tests
+	// write to a temp dir and never need root.
+	VaultKeyFilePath string
 	// SystemdUnitPath, when non-empty, is where the rendered unit is written. A
 	// blank path prints the unit to Out instead of writing it (non-root path).
 	SystemdUnitPath string
@@ -82,6 +86,9 @@ func Run(ctx context.Context, opts InitOptions) (InitResult, error) {
 	}
 	if opts.IdentityKeyPath == "" {
 		opts.IdentityKeyPath = DefaultIdentityKeyPath
+	}
+	if opts.VaultKeyFilePath == "" {
+		opts.VaultKeyFilePath = DefaultVaultKeyFilePath
 	}
 	if opts.Probe == nil {
 		opts.Probe = ProbeCapabilities
@@ -146,6 +153,7 @@ func Run(ctx context.Context, opts InitOptions) (InitResult, error) {
 	cfg.Image = opts.BaseImageDigest
 	cfg.Tier = string(tier)
 	cfg.IdentityKey = opts.IdentityKeyPath
+	cfg.Vault.KeyFile = opts.VaultKeyFilePath
 
 	// 7. Generate the daemon Ed25519 identity (0600) — idempotent.
 	if fileExists(opts.IdentityKeyPath) && !opts.Force {
@@ -167,6 +175,13 @@ func Run(ctx context.Context, opts InitOptions) (InitResult, error) {
 	}
 	if res.Identity.Fingerprint != "" {
 		fmt.Fprintf(w, "Daemon identity fingerprint: %s (key: %s, perms 0600)\n", res.Identity.Fingerprint, opts.IdentityKeyPath)
+	}
+
+	// 7b. F7.2: generate + store + ONE-TIME reveal the vault master key. Idempotent
+	//     — a key that already resolves (env override or an existing 0600 file) is
+	//     neither regenerated nor re-revealed. Distinct from the identity key above.
+	if _, err = EnsureVaultKey(w, cfg.Vault.KeyEnv, opts.VaultKeyFilePath); err != nil {
+		return res, err
 	}
 
 	// 8. Drive F0.2: Compose + Bake the signed toolchain layer, if a builder is

@@ -279,11 +279,13 @@ func buildTraceSink(cfg install.Config, log *slog.Logger) (trace.TraceSink, func
 	return sink, stop, nil
 }
 
-// buildVault opens the F5.6 local encrypted vault. It fails CLOSED: an absent or
-// wrong-length master key (env OPSLIFY_VAULT_KEY / configured key_env), an
-// insecure-perms vault file, or a malformed db aborts startup — the daemon never
-// serves a broken or unencryptable vault. The master key is read from the env, so
-// it is never written to config or to a plaintext file beside the db.
+// buildVault opens the F5.6 local encrypted vault, resolving the master key (KEK)
+// from the F7.2 chain in documented precedence order: OPSLIFY_VAULT_KEY env
+// (override) → the 0600 key file (key_file, written by `opslify init`, SEPARATE
+// from the vault db). It fails CLOSED: the missing-key fatal fires ONLY when NO
+// source resolves; a present-but-broken source (bad key, loose-perms key file),
+// an insecure-perms vault file, or a malformed db also aborts startup — the daemon
+// never serves a broken or unencryptable vault. The KEK is never logged or traced.
 func buildVault(cfg install.Config, log *slog.Logger) (*broker.Vault, error) {
 	path := cfg.Vault.Path
 	if path == "" {
@@ -293,11 +295,15 @@ func buildVault(cfg install.Config, log *slog.Logger) (*broker.Vault, error) {
 	if keyEnv == "" {
 		keyEnv = broker.DefaultVaultKeyEnv
 	}
-	v, err := broker.OpenVault(path, broker.EnvKeySource{Var: keyEnv})
-	if err != nil {
-		return nil, fmt.Errorf("opslifyd: open secret vault: %w (set %s to a 32-byte hex/base64 master key)", err, keyEnv)
+	keyFile := cfg.Vault.KeyFile
+	if keyFile == "" {
+		keyFile = install.DefaultVaultKeyFilePath
 	}
-	log.Info("secret vault active", "path", path, "key_env", keyEnv)
+	v, err := broker.OpenVault(path, broker.ResolveKeySource(keyEnv, keyFile))
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: open secret vault: %w (run `opslify init` to generate the key file, or set %s to a 32-byte hex/base64 master key)", err, keyEnv)
+	}
+	log.Info("secret vault active", "path", path, "key_env", keyEnv, "key_file", keyFile)
 	return v, nil
 }
 

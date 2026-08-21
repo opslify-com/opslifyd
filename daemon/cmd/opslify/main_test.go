@@ -28,6 +28,7 @@ func TestInitCmdNonInteractive(t *testing.T) {
 		"--yes",
 		"--config", filepath.Join(root, "etc", "config.yaml"),
 		"--identity-key", filepath.Join(root, "etc", "identity.key"),
+		"--vault-key-file", filepath.Join(root, "etc", "vault.key"),
 		"--systemd-unit", filepath.Join(root, "etc", "opslifyd.service"),
 	})
 	if err := cmd.Execute(); err != nil {
