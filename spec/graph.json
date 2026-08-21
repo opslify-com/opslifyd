@@ -62,6 +62,16 @@
         "P4"
       ],
       "source": "spec/phases/p6-compliance/README.md"
+    },
+    "P7": {
+      "phase": "P7",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P3",
+        "P4",
+        "P5"
+      ],
+      "source": "spec/phases/p7-dx/README.md"
     }
   },
   "nodes": [
@@ -825,6 +835,24 @@
         "F5.7",
         "F5.8"
       ]
+    },
+    {
+      "id": "F7.1",
+      "phase": "P7",
+      "title": "UI launch-token auth (the enabler)",
+      "status": "in-progress",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F3.5"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p7-dx/features/F7.1-ui-launch-token-auth.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F3.5"
+      ]
     }
   ],
   "edges": [
@@ -1275,6 +1303,10 @@
     {
       "from": "F5.8",
       "to": "F6.6"
+    },
+    {
+      "from": "F3.5",
+      "to": "F7.1"
     }
   ],
   "topological_order": [
@@ -1300,6 +1332,7 @@
     "F4.3",
     "F5.1",
     "F5.4",
+    "F7.1",
     "F4.4",
     "F5.2",
     "F5.3",

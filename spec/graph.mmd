@@ -48,6 +48,9 @@ flowchart LR
         F6_5["F6.5 ~<br/>Docs & threat-model whitepaper"]
         F6_6["F6.6 ~<br/>Beta"]
     end
+    subgraph P7
+        F7_1["F7.1<br/>UI launch-token auth (the enabler)"]
+    end
     F0_2 --> F0_1
     F0_1 --> F1_1
     F0_2 --> F1_1
@@ -160,5 +163,6 @@ flowchart LR
     F5_6 --> F6_6
     F5_7 --> F6_6
     F5_8 --> F6_6
+    F3_5 --> F7_1
 
 %% ~ marks a spec-level (inline) feature not yet split into a detailed file
