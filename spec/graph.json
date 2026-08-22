@@ -660,7 +660,7 @@
       "id": "F5.9",
       "phase": "P5",
       "title": "Credential-blind reachability on a real host (bridge network + host_input hole)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.8"
