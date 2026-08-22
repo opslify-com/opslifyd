@@ -344,54 +344,68 @@ func TestUIProxyAllowlistBlocksMutations(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	// These pre-existing daemon routes must NOT be reachable through the UI bridge.
+	// These daemon routes must NOT be reachable through the UI bridge even after
+	// the F7.4 widening — the raw-file hole and every non-allowlisted verb/path.
 	blocked := []struct{ method, path string }{
-		{http.MethodPost, "/v1/sessions"},                   // create a session
-		{http.MethodPost, "/v1/sessions/s1/exec"},           // run a command
-		{http.MethodPut, "/v1/sessions/s1/files"},           // upload a file
-		{http.MethodDelete, "/v1/workspaces/proj"},          // delete a workspace
-		{http.MethodDelete, "/v1/sessions/s1/whatever"},     // mutation sub-path
-		{http.MethodPost, "/v1/sessions/s1/approvals"},      // approvals list path (not resolve) — not a POST target
-		{http.MethodPost, "/v1/sessions/s1/approvals/e1/x"}, // over-long approvals path
+		{http.MethodPut, "/v1/sessions/s1/files"},           // upload a file (raw transfer)
 		{http.MethodPost, "/v1/sessions/s1/files"},          // POST file path
-		{http.MethodPut, "/v1/sessions/s1/approvals/e1"},    // PUT is not the resolve verb
 		{http.MethodGet, "/v1/sessions/s1/files"},           // RAW /workspace download — must NOT be browser-reachable
+		{http.MethodDelete, "/v1/sessions/s1/whatever"},     // mutation sub-path (not Kill)
+		{http.MethodPost, "/v1/sessions/s1/approvals"},      // approvals list path (not resolve)
+		{http.MethodPost, "/v1/sessions/s1/approvals/e1/x"}, // over-long approvals path
+		{http.MethodPut, "/v1/sessions/s1/approvals/e1"},    // PUT is not the resolve verb
+		{http.MethodPost, "/v1/sessions/s1/exec/x"},         // over-long exec path
 		{http.MethodGet, "/v1/sessions/s1"},                 // single-session GET not needed by the UI — kept closed
+		{http.MethodPut, "/v1/secrets/foo"},                 // PUT is not a secrets verb
+		{http.MethodDelete, "/v1/secrets"},                  // DELETE needs a ref
+		{http.MethodPost, "/v1/workspaces"},                 // workspaces is ls/rm only
+		{http.MethodDelete, "/v1/workspaces/a/b"},           // workspace name is single-segment
+		{http.MethodPost, "/v1/policy"},                     // policy is read-only
 	}
 	for _, b := range blocked {
 		resp := doTok(t, b.method, srv.URL+b.path, tok, nil)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("%s %s must be 403 (read+kill only), got %d", b.method, b.path, resp.StatusCode)
+			t.Errorf("%s %s must be 403 (not on the F7.4 allowlist), got %d", b.method, b.path, resp.StatusCode)
 		}
 	}
 	if daemonHit {
-		t.Error("a blocked mutation route reached the daemon — the UI must be read + Kill only")
+		t.Error("a blocked route reached the daemon — the UI allowlist must gate it")
 	}
 
-	// And the allowed routes pass the allowlist: the exact read + Kill +
-	// history/verify GETs + the single approvals-resolve POST — nothing more.
+	// And the allowed routes pass the allowlist: full CLI parity behind the token.
 	for _, a := range []struct{ method, path string }{
 		{http.MethodGet, "/v1/sessions"},                  // live list
+		{http.MethodPost, "/v1/sessions"},                 // F7.4 create
 		{http.MethodGet, "/v1/sessions/history"},          // F3.6 history list
 		{http.MethodGet, "/v1/sessions/s1/trace"},         // trace read / SSE replay
 		{http.MethodGet, "/v1/sessions/s1/verify"},        // F3.6 verify verdict
 		{http.MethodGet, "/v1/sessions/s1/approvals/e1"},  // F4.3 approval view poll (redacted)
 		{http.MethodPost, "/v1/sessions/s1/approvals/e1"}, // F4.3 approve/deny
+		{http.MethodPost, "/v1/sessions/s1/exec"},         // F7.4 exec (SAME F4 path as the CLI)
 		{http.MethodDelete, "/v1/sessions/s1"},            // Kill
+		{http.MethodGet, "/v1/secrets"},                   // F5.6 list NAMES
+		{http.MethodPost, "/v1/secrets"},                  // F5.6 add
+		{http.MethodDelete, "/v1/secrets/aws/deploy"},     // F5.6 remove by ref (slash in ref)
+		{http.MethodGet, "/v1/workspaces"},                // F2.2 ls
+		{http.MethodDelete, "/v1/workspaces/proj"},        // F2.2 rm
+		{http.MethodGet, "/v1/policy"},                    // F4.1 active-policy view
 	} {
 		if !allowedProxyRoute(a.method, a.path) {
 			t.Errorf("allowed route %s %s wrongly blocked", a.method, a.path)
 		}
 	}
 
-	// The blocked POST/PUT targets + the raw-file GET must also fail the predicate.
+	// The refused targets must also fail the predicate directly.
 	for _, b := range []struct{ method, path string }{
-		{http.MethodPost, "/v1/sessions"},
-		{http.MethodPost, "/v1/sessions/s1/exec"},
+		{http.MethodGet, "/v1/sessions/s1/files"}, // raw workspace download — closed
+		{http.MethodPut, "/v1/sessions/s1/files"}, // raw upload — closed
 		{http.MethodPost, "/v1/sessions/s1/approvals"},
 		{http.MethodPost, "/v1/sessions/s1/approvals/e1/x"},
-		{http.MethodGet, "/v1/sessions/s1/files"}, // raw workspace download — closed
+		{http.MethodPost, "/v1/sessions/s1/exec/x"},
+		{http.MethodDelete, "/v1/secrets"},  // needs a ref
+		{http.MethodPost, "/v1/workspaces"}, // ls/rm only
+		{http.MethodPost, "/v1/policy"},     // read only
 	} {
 		if allowedProxyRoute(b.method, b.path) {
 			t.Errorf("blocked route %s %s wrongly allowed", b.method, b.path)

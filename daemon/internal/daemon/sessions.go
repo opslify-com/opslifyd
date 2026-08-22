@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
@@ -53,6 +54,10 @@ type SessionService interface {
 	ResolveApproval(ctx context.Context, sessionID, execID string, decision session.ApprovalDecision, comment string) (session.ApprovalView, error)
 	GetApproval(ctx context.Context, sessionID, execID string) (session.ApprovalView, error)
 	ListApprovals() []session.ApprovalView
+	// ActivePolicy returns the daemon's resolved baseline policy (F4.1) — the
+	// read-only view behind GET /v1/policy. It carries NO secret value (creds are
+	// refs/metadata only), so it is safe to surface to the F7.4 browser UI.
+	ActivePolicy() policy.Resolved
 }
 
 // traceResponse is the GET /v1/sessions/{id}/trace body: the event chain plus the
@@ -122,6 +127,10 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	// F2.2 workspace management.
 	mux.HandleFunc("GET /"+APIVersion+"/workspaces", d.handleWorkspaceList)
 	mux.HandleFunc("DELETE /"+APIVersion+"/workspaces/{name}", d.handleWorkspaceDelete)
+	// F4.1/F7.4 active-policy view: the daemon's resolved baseline policy, read
+	// only, metadata only (no secret values). Backs `opslify policy` and the F7.4
+	// browser policy pane.
+	mux.HandleFunc("GET /"+APIVersion+"/policy", d.handlePolicyGet)
 	// F4.3 human approval gates. The resolve route is a PRIVILEGED control action:
 	// it inherits the localhost/socket trust boundary (no auth in v1, like F3.5) and
 	// is deliberately NOT part of the agent-facing MCP tool surface — the agent
@@ -196,6 +205,14 @@ func (d *Daemon) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handlePolicyGet returns the daemon's resolved baseline policy (F4.1) as JSON —
+// the read-only view behind `GET /v1/policy`. The resolved policy carries only
+// allow/egress/approval/cred REFERENCES and limits; no secret value is ever part
+// of it, so it is safe to surface to the F7.4 browser UI.
+func (d *Daemon) handlePolicyGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, d.sessions.ActivePolicy())
 }
 
 func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {

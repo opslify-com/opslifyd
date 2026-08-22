@@ -896,7 +896,7 @@
       "id": "F7.4",
       "phase": "P7",
       "title": "Full UI parity (browser can do what the CLI does, safely)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go + SPA)",
       "depends_on": [
         "F7.1",

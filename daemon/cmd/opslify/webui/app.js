@@ -434,4 +434,246 @@ function cssEsc(s) {
   return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/["\\]/g, "\\$&");
 }
 
+// ================= F7.4: full CLI parity panes =================
+//
+// Every call below is same-origin, so the F7.1 HttpOnly auth cookie authenticates
+// automatically — no token is ever read or stored in JS. Each maps to a widened
+// allowlist route (create/exec/secrets/workspaces/policy) or the host-side
+// /ui/link endpoint. No secret VALUE is ever fetched back: the secrets pane lists
+// names/metadata only and the value input is write-only.
+
+// ---- screen navigation ----
+const screens = document.querySelectorAll(".screen");
+const navBtns = document.querySelectorAll("#nav button");
+function showScreen(name) {
+  navBtns.forEach((b) => b.classList.toggle("active", b.dataset.screen === name));
+  screens.forEach((s) => s.classList.toggle("active", s.dataset.screen === name));
+  if (name === "secrets") loadSecrets();
+  if (name === "workspaces") loadWorkspaces();
+  if (name === "policy") loadPolicy();
+  if (name === "link") loadLinks();
+}
+navBtns.forEach((b) => (b.onclick = () => showScreen(b.dataset.screen)));
+
+function setNote(el, msg, kind) {
+  el.className = "note" + (kind ? " " + kind : "");
+  el.textContent = msg || "";
+}
+
+// ---- create session ----
+$("#cs-go").onclick = async () => {
+  const note = $("#cs-note");
+  const body = {
+    mode: $("#cs-mode").value,
+    name: $("#cs-name").value || undefined,
+    tier: $("#cs-tier").value || undefined,
+    ttl: $("#cs-ttl").value || undefined,
+  };
+  setNote(note, "creating…");
+  try {
+    const r = await fetch("/v1/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const txt = await r.text();
+    if (!r.ok) { setNote(note, `create failed: HTTP ${r.status} ${txt}`, "err"); return; }
+    let j = {}; try { j = JSON.parse(txt); } catch {}
+    setNote(note, `created ${j.session_id || ""} (${j.state || "?"})`, "ok");
+    $("#ex-id").value = j.session_id || $("#ex-id").value;
+    $("#lk-id").value = j.session_id || $("#lk-id").value;
+  } catch (e) { setNote(note, "create failed: " + e.message, "err"); }
+};
+
+// ---- exec runner (streams the daemon's NDJSON frames) ----
+$("#ex-go").onclick = async () => {
+  const note = $("#ex-note"), out = $("#ex-out");
+  const id = $("#ex-id").value.trim();
+  const argv = $("#ex-argv").value.trim().split(/\s+/).filter(Boolean);
+  if (!id || argv.length === 0) { setNote(note, "need a session id and a command", "err"); return; }
+  out.textContent = "";
+  setNote(note, "running…");
+  try {
+    const r = await fetch(`/v1/sessions/${encodeURIComponent(id)}/exec`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ argv }),
+    });
+    if (!r.ok) { setNote(note, `exec failed: HTTP ${r.status} ${await r.text()}`, "err"); return; }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (line.trim()) handleExecFrame(line, note, out);
+      }
+    }
+    if (buf.trim()) handleExecFrame(buf, note, out);
+  } catch (e) { setNote(note, "exec failed: " + e.message, "err"); }
+};
+
+function handleExecFrame(line, note, out) {
+  let f; try { f = JSON.parse(line); } catch { return; }
+  if (f.status === "pending") {
+    // Gated by the F4 approval path — NOT a bypass. Approve it in the Sessions view.
+    setNote(note, `pending approval (rule ${f.rule || "?"}, exec ${f.exec_id || "?"}) — approve in the Sessions view`, "err");
+    return;
+  }
+  if (f.error) { setNote(note, "runtime error: " + f.error, "err"); return; }
+  if (f.truncated) { out.textContent += `\n[opslify: ${f.stream || "stdout"} output truncated]\n`; return; }
+  if (typeof f.exit_code === "number") { setNote(note, `exit ${f.exit_code}`, f.exit_code === 0 ? "ok" : "err"); return; }
+  if (typeof f.data === "string") out.textContent += stripAnsi(f.data);
+}
+
+// ---- secrets (names only) ----
+async function loadSecrets() {
+  const rows = $("#sec-rows");
+  try {
+    const r = await fetch("/v1/secrets", { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const list = await r.json();
+    if (!list || list.length === 0) { rows.innerHTML = `<tr><td colspan="5" class="empty">no secrets</td></tr>`; return; }
+    rows.innerHTML = "";
+    for (const s of list) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td class="mono">${esc(s.ref)}</td><td>${esc(s.provider || "")}</td>` +
+        `<td>${esc(s.scope || "")}</td><td>${esc(s.created_at || "")}</td>` +
+        `<td><button class="danger">Remove</button></td>`;
+      tr.querySelector("button").onclick = () => removeSecret(s.ref);
+      rows.appendChild(tr);
+    }
+  } catch (e) { rows.innerHTML = `<tr><td colspan="5" class="empty">unavailable: ${esc(e.message)}</td></tr>`; }
+}
+
+$("#sec-add").onclick = async () => {
+  const note = $("#sec-note");
+  const ref = $("#sec-ref").value.trim();
+  const value = $("#sec-value").value;
+  if (!ref || !value) { setNote(note, "need a ref and a value", "err"); return; }
+  // The value travels IN once (base64) and is never returned; clear it immediately.
+  const value_b64 = btoa(unescape(encodeURIComponent(value)));
+  try {
+    const r = await fetch("/v1/secrets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref, provider: $("#sec-provider").value || undefined, value_b64 }),
+    });
+    if (!r.ok) { setNote(note, `add failed: HTTP ${r.status} ${await r.text()}`, "err"); return; }
+    $("#sec-value").value = ""; $("#sec-ref").value = ""; $("#sec-provider").value = "";
+    setNote(note, `added ${ref}`, "ok");
+    loadSecrets();
+  } catch (e) { setNote(note, "add failed: " + e.message, "err"); }
+};
+
+async function removeSecret(ref) {
+  const note = $("#sec-note");
+  if (!confirm(`Remove secret ${ref}?`)) return;
+  try {
+    const r = await fetch(`/v1/secrets/${ref.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
+    if (!r.ok && r.status !== 404) { setNote(note, `remove failed: HTTP ${r.status}`, "err"); return; }
+    setNote(note, `removed ${ref}`, "ok");
+    loadSecrets();
+  } catch (e) { setNote(note, "remove failed: " + e.message, "err"); }
+}
+
+// ---- workspaces ls/rm ----
+async function loadWorkspaces() {
+  const rows = $("#ws-rows");
+  try {
+    const r = await fetch("/v1/workspaces", { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const list = await r.json();
+    if (!list || list.length === 0) { rows.innerHTML = `<tr><td colspan="4" class="empty">no workspaces</td></tr>`; return; }
+    rows.innerHTML = "";
+    for (const wsp of list) {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        `<td class="mono">${esc(wsp.name)}</td><td>${wsp.snapshots | 0}</td>` +
+        `<td>${esc(wsp.latest_time || String(wsp.latest_tag || ""))}</td>` +
+        `<td><button class="danger">Remove</button></td>`;
+      tr.querySelector("button").onclick = () => removeWorkspace(wsp.name);
+      rows.appendChild(tr);
+    }
+  } catch (e) { rows.innerHTML = `<tr><td colspan="4" class="empty">unavailable: ${esc(e.message)}</td></tr>`; }
+}
+
+async function removeWorkspace(name) {
+  const note = $("#ws-note");
+  if (!confirm(`Remove workspace ${name}? This deletes its snapshots.`)) return;
+  try {
+    const r = await fetch(`/v1/workspaces/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok && r.status !== 404) { setNote(note, `remove failed: HTTP ${r.status} ${await r.text()}`, "err"); return; }
+    setNote(note, `removed ${name}`, "ok");
+    loadWorkspaces();
+  } catch (e) { setNote(note, "remove failed: " + e.message, "err"); }
+}
+
+// ---- active policy view ----
+async function loadPolicy() {
+  const out = $("#pol-out");
+  try {
+    const r = await fetch("/v1/policy", { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    out.textContent = JSON.stringify(await r.json(), null, 2);
+  } catch (e) { out.textContent = "policy unavailable: " + e.message; }
+}
+
+// ---- link a host dir + toggle F7.3 sync (host process) ----
+$("#lk-on").onclick = () => setLink(true);
+$("#lk-off").onclick = () => setLink(false);
+
+async function setLink(on) {
+  const note = $("#lk-note");
+  const session_id = $("#lk-id").value.trim();
+  const dir = $("#lk-dir").value.trim();
+  if (!session_id || (on && !dir)) { setNote(note, "need a session id" + (on ? " and a host dir" : ""), "err"); return; }
+  try {
+    const r = await fetch("/ui/link", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id, dir, on }),
+    });
+    const txt = await r.text();
+    if (!r.ok) { setNote(note, txt || `HTTP ${r.status}`, "err"); return; }
+    setNote(note, on ? "linked + syncing" : "sync stopped", "ok");
+    loadLinks();
+  } catch (e) { setNote(note, "link failed: " + e.message, "err"); }
+}
+
+let linkTimer = null;
+async function loadLinks() {
+  const rows = $("#lk-rows"), log = $("#lk-log");
+  if (linkTimer) clearTimeout(linkTimer);
+  try {
+    const r = await fetch("/ui/link/status", { headers: { Accept: "application/json" } });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const list = await r.json();
+    if (!list || list.length === 0) { rows.innerHTML = `<tr><td colspan="4" class="empty">no linked directories</td></tr>`; log.textContent = ""; }
+    else {
+      rows.innerHTML = "";
+      let lines = [];
+      for (const l of list) {
+        const tr = document.createElement("tr");
+        const sync = l.running ? `<span class="badge ok">on</span>` : `<span class="badge">off</span>`;
+        tr.innerHTML =
+          `<td class="mono">${esc(shortId(l.session_id))}</td><td class="mono">${esc(l.dir)}</td>` +
+          `<td>${sync}</td><td>${l.conflicts | 0}${l.error ? ` <span class="badge bad" title="${esc(l.error)}">err</span>` : ""}</td>`;
+        rows.appendChild(tr);
+        if (l.recent) lines = lines.concat(l.recent);
+      }
+      log.textContent = lines.slice(-100).join("\n");
+    }
+  } catch (e) { rows.innerHTML = `<tr><td colspan="4" class="empty">status unavailable: ${esc(e.message)}</td></tr>`; }
+  // Poll while the link screen is visible so status/conflicts stay live.
+  if ($(".screen[data-screen=link]").classList.contains("active")) {
+    linkTimer = setTimeout(loadLinks, 2000);
+  }
+}
+
 pollSessions();

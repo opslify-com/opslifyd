@@ -23,7 +23,7 @@
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   header .tag { color: var(--muted); font-size: 12px; }
   header .airgap { margin-left: auto; color: var(--ok); font-size: 12px; }
-  main { display: grid; grid-template-columns: 340px 1fr; height: calc(100vh - 43px); }
+  main { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
   .sidebar { border-right: 1px solid var(--border); overflow-y: auto; background: var(--panel); }
   .content { display: flex; flex-direction: column; overflow: hidden; }
   table { width: 100%; border-collapse: collapse; }
@@ -82,6 +82,32 @@
   .approval button.approve { border-color: #2a4a37; color: var(--ok); }
   .approval button.approve:hover { background: #16281e; }
   .approval .resolved { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  /* F7.4 parity panes */
+  .pane { padding: 14px; max-width: 760px; }
+  .pane h2 { font-size: 13px; margin: 0 0 10px; color: var(--fg); font-weight: 600; }
+  .pane .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  .field { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .field label { color: var(--muted); font-size: 12px; min-width: 82px; }
+  .field input, .field select { background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 5px; padding: 6px 8px; font-size: 12px; font-family: var(--mono); flex: 1; min-width: 140px; }
+  .field input[type=checkbox] { flex: none; min-width: 0; }
+  .rows { width: 100%; }
+  .rows td .mono, .mono { font-family: var(--mono); }
+  .note { font-size: 12px; margin: 8px 0; color: var(--muted); word-break: break-word; }
+  .note.err { color: var(--danger); }
+  .note.ok { color: var(--ok); }
+  pre.out { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 10px; margin: 8px 0;
+    max-height: 320px; overflow: auto; }
+  pre.policy { font-family: var(--mono); font-size: 12px; white-space: pre; overflow: auto;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 10px; }
+  .navtabs { display: flex; gap: 2px; flex-wrap: wrap; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .navtabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 10px; color: var(--muted); }
+  .navtabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+  .screen { display: none; height: 100%; overflow: auto; }
+  .screen.active { display: block; }
+  #screens { height: calc(100vh - 43px - 37px); }
+  .screen[data-screen="sessions"] { overflow: hidden; }
 </style>
 </head>
 <body>
@@ -90,6 +116,17 @@
   <span class="tag">local session UI · localhost-only · no cloud</span>
   <span class="airgap" id="conn">● live</span>
 </header>
+<nav class="navtabs" id="nav">
+  <button data-screen="sessions" class="active">Sessions</button>
+  <button data-screen="create">New session</button>
+  <button data-screen="exec">Exec</button>
+  <button data-screen="secrets">Secrets</button>
+  <button data-screen="workspaces">Workspaces</button>
+  <button data-screen="policy">Policy</button>
+  <button data-screen="link">Link dir</button>
+</nav>
+<div id="screens">
+<section class="screen active" data-screen="sessions">
 <main>
   <div class="sidebar">
     <div class="sidemode">
@@ -125,6 +162,89 @@
     <div class="approvals" id="approvals"></div>
   </div>
 </main>
+</section>
+
+<!-- F7.4: create a session (POST /v1/sessions) -->
+<section class="screen" data-screen="create">
+  <div class="pane">
+    <h2>New session</h2>
+    <p class="hint">Create a sandbox session — the same POST /v1/sessions the CLI uses.</p>
+    <div class="field"><label>mode</label>
+      <select id="cs-mode"><option value="scratch">scratch</option><option value="workspace">workspace</option></select></div>
+    <div class="field"><label>name</label><input id="cs-name" placeholder="(workspace mode) name"></div>
+    <div class="field"><label>tier</label><input id="cs-tier" placeholder="(default)"></div>
+    <div class="field"><label>ttl</label><input id="cs-ttl" placeholder="e.g. 30m"></div>
+    <div class="field"><button id="cs-go">Create session</button></div>
+    <div class="note" id="cs-note"></div>
+  </div>
+</section>
+
+<!-- F7.4: exec runner (POST /v1/sessions/{id}/exec — same F4 policy/approval path) -->
+<section class="screen" data-screen="exec">
+  <div class="pane">
+    <h2>Exec</h2>
+    <p class="hint">Runs through the SAME classifier + approval gate as the CLI. A gated command surfaces as pending in the Sessions view (approve it there).</p>
+    <div class="field"><label>session</label><input id="ex-id" placeholder="session id"></div>
+    <div class="field"><label>command</label><input id="ex-argv" placeholder="e.g. ls -la /workspace"></div>
+    <div class="field"><button id="ex-go">Run</button></div>
+    <div class="note" id="ex-note"></div>
+    <pre class="out" id="ex-out"></pre>
+  </div>
+</section>
+
+<!-- F7.4: secrets — NAMES only (no value ever returned) -->
+<section class="screen" data-screen="secrets">
+  <div class="pane">
+    <h2>Secrets</h2>
+    <p class="hint">Names / metadata only — a secret value is never returned to the browser. Add sends a value once over the token-authed loopback.</p>
+    <table class="rows"><thead><tr><th>REF</th><th>PROVIDER</th><th>SCOPE</th><th>CREATED</th><th></th></tr></thead>
+      <tbody id="sec-rows"><tr><td colspan="5" class="empty">loading…</td></tr></tbody></table>
+    <h2 style="margin-top:16px">Add secret</h2>
+    <div class="field"><label>ref</label><input id="sec-ref" placeholder="e.g. aws/deploy"></div>
+    <div class="field"><label>provider</label><input id="sec-provider" placeholder="(optional)"></div>
+    <div class="field"><label>value</label><input id="sec-value" type="password" placeholder="sent once, never returned"></div>
+    <div class="field"><button id="sec-add">Add</button></div>
+    <div class="note" id="sec-note"></div>
+  </div>
+</section>
+
+<!-- F7.4: workspaces ls/rm (F2.2) -->
+<section class="screen" data-screen="workspaces">
+  <div class="pane">
+    <h2>Workspaces</h2>
+    <p class="hint">Persisted workspaces (GET/DELETE /v1/workspaces).</p>
+    <table class="rows"><thead><tr><th>NAME</th><th>SNAPSHOTS</th><th>LATEST</th><th></th></tr></thead>
+      <tbody id="ws-rows"><tr><td colspan="4" class="empty">loading…</td></tr></tbody></table>
+    <div class="note" id="ws-note"></div>
+  </div>
+</section>
+
+<!-- F7.4: active policy view (read-only) -->
+<section class="screen" data-screen="policy">
+  <div class="pane">
+    <h2>Active policy</h2>
+    <p class="hint">The daemon's resolved baseline policy (GET /v1/policy). Read only — no secret values.</p>
+    <pre class="policy" id="pol-out">loading…</pre>
+  </div>
+</section>
+
+<!-- F7.4: link a host dir + toggle F7.3 sync (host process, never the daemon) -->
+<section class="screen" data-screen="link">
+  <div class="pane">
+    <h2>Link host directory</h2>
+    <p class="hint">Drives F7.3 sync from the `opslify ui` host process (copy-not-bind, secrets excluded). The daemon never learns the host path. Sensitive dirs and path escapes are refused.</p>
+    <div class="field"><label>session</label><input id="lk-id" placeholder="session id"></div>
+    <div class="field"><label>host dir</label><input id="lk-dir" placeholder="/abs/path/to/project"></div>
+    <div class="field"><label>sync</label>
+      <button id="lk-on">Link + sync on</button>
+      <button id="lk-off" class="danger">Sync off</button></div>
+    <div class="note" id="lk-note"></div>
+    <table class="rows"><thead><tr><th>SESSION</th><th>DIR</th><th>SYNC</th><th>CONFLICTS</th></tr></thead>
+      <tbody id="lk-rows"><tr><td colspan="4" class="empty">no linked directories</td></tr></tbody></table>
+    <pre class="out" id="lk-log"></pre>
+  </div>
+</section>
+</div>
 <script type="module" src="app.js"></script>
 </body>
 </html>
