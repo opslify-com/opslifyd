@@ -123,6 +123,13 @@ type Session struct {
 	// cred was injected. Set once at registerReady (single-owner) and closed on
 	// teardown so the listener never outlives the session.
 	credEndpoint *sessionCredEndpoint
+
+	// registry is the F7.5 per-session registry-proxy handle: the live regproxy.Proxy's
+	// listener + the ecosystem routing env. Non-nil only when the F5.5 registry proxy
+	// is configured. It is set once at registerReady (single-owner, before the session
+	// is visible) and closed on teardown, so the proxy never outlives the session and
+	// is never reused across sessions.
+	registry *sessionRegistry
 }
 
 // sessionCredEndpoint is one session's gateway-bound creds-endpoint listener (F5.8).

@@ -70,6 +70,10 @@ type fakeManager struct {
 	getView     session.ApprovalView
 	getErr      error
 	lastResolve [3]string // sessionID, execID, decision
+	// F7.5 registry allowlist gate.
+	regConfigured bool
+	regAllowed    bool
+	regErr        error
 }
 
 func (f *fakeManager) ResolveApproval(_ context.Context, sessionID, execID string, decision session.ApprovalDecision, comment string) (session.ApprovalView, error) {
@@ -163,6 +167,10 @@ func (f *fakeManager) List() []session.View { return f.list }
 
 func (f *fakeManager) ActivePolicy() policy.Resolved {
 	return policy.ResolveDefault(f.policy)
+}
+
+func (f *fakeManager) RegistryAllowed(ecosystem, name string) (bool, bool, error) {
+	return f.regConfigured, f.regAllowed, f.regErr
 }
 
 func (f *fakeManager) WriteFile(_ context.Context, _ string, _ string, content []byte) error {

@@ -39,7 +39,7 @@ func workspaceCmd() *cobra.Command {
 		Use:   "workspace",
 		Short: "Link a host directory to a sandbox /workspace (sync, export)",
 	}
-	cmd.AddCommand(workspaceSyncCmd(), workspaceExportCmd())
+	cmd.AddCommand(workspaceSyncCmd(), workspaceExportCmd(), workspaceInstallCmd())
 	return cmd
 }
 
