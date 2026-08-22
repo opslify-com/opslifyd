@@ -121,6 +121,68 @@ func TestBuildApplyScript_HostInputBridgeScopedWhenNoIP(t *testing.T) {
 	mustContain(t, inputChain, "udp dport 53 drop")
 }
 
+// F5.8: when the credential-blind listener ports are known, host_input admits the
+// sandbox to reach ONLY those ports on ONLY the gateway, above the terminal drop —
+// scoped by daddr==gateway (and the saddr line already present). This is the narrow
+// hole that makes the proxy reachable without reopening host-local services or DNS.
+func TestBuildApplyScript_HostInputGatewayPortHole(t *testing.T) {
+	net := SessionNet{
+		SessionID:     "s1",
+		SandboxIP:     "10.89.0.6",
+		Bridge:        "opslify0",
+		GatewayIP:     "10.89.0.1",
+		LocalTCPPorts: []int{45307, 37371},
+	}
+	got := buildApplyScript(net, addrs(t, "8.8.8.8"))
+	inputChain := got[strings.Index(got, "chain host_input {"):]
+	// The accept names the gateway daddr + exactly the bound ports.
+	mustContain(t, inputChain, "ip daddr 10.89.0.1 tcp dport { 45307, 37371 } accept")
+	// It sits ABOVE the terminal drop (so the port is actually reachable) and BELOW
+	// the port-53 drop (so it can never reopen DNS).
+	mustContainInOrder(t, inputChain,
+		"tcp dport 53 drop",
+		"ip daddr 10.89.0.1 tcp dport { 45307, 37371 } accept",
+		"drop",
+	)
+	// The hole is on the INPUT path only — the forward (egress) chain is unaffected,
+	// so routed egress still obeys the pinned allowlist + default-deny.
+	fwd := got[strings.Index(got, "chain egress {"):strings.Index(got, "chain host_input {")]
+	if strings.Contains(fwd, "10.89.0.1 tcp dport") {
+		t.Fatalf("gateway-port hole must NOT appear in the forward chain, got:\n%s", fwd)
+	}
+}
+
+// No ports (blind path inactive / fail-closed) => NO hole: host_input stays fully
+// default-deny, identical to the pre-F5.8 posture. A fail-open here would be a hole.
+func TestBuildApplyScript_HostInputNoHoleWithoutPorts(t *testing.T) {
+	// gateway set but no ports:
+	got := buildApplyScript(SessionNet{SessionID: "s1", SandboxIP: "10.89.0.6", GatewayIP: "10.89.0.1"}, addrs(t, "8.8.8.8"))
+	inputChain := got[strings.Index(got, "chain host_input {"):]
+	if strings.Contains(inputChain, "tcp dport {") || strings.Contains(inputChain, "10.89.0.1 tcp dport") {
+		t.Fatalf("no ports must yield NO host_input hole, got:\n%s", inputChain)
+	}
+}
+
+// Defense-in-depth: port 53 can never be opened via the hole even if mis-passed, and
+// an unparseable gateway yields no rule (fail-safe).
+func TestBuildApplyScript_HostInputHoleExcludesDNSAndBadGateway(t *testing.T) {
+	got := buildApplyScript(SessionNet{
+		SessionID: "s1", SandboxIP: "10.89.0.6", GatewayIP: "10.89.0.1",
+		LocalTCPPorts: []int{53, 8080},
+	}, nil)
+	inputChain := got[strings.Index(got, "chain host_input {"):]
+	// 53 dropped from the set; 8080 kept.
+	mustContain(t, inputChain, "ip daddr 10.89.0.1 tcp dport { 8080 } accept")
+	if strings.Contains(inputChain, "{ 53") || strings.Contains(inputChain, "53, 8080") || strings.Contains(inputChain, "53 }") {
+		t.Fatalf("port 53 must be excluded from the host_input hole, got:\n%s", inputChain)
+	}
+	// Unparseable gateway => no hole at all.
+	bad := buildApplyScript(SessionNet{SessionID: "s2", GatewayIP: "not-an-ip", LocalTCPPorts: []int{8080}}, nil)
+	if strings.Contains(bad[strings.Index(bad, "chain host_input {"):], "tcp dport {") {
+		t.Fatalf("an unparseable gateway must yield no hole, got:\n%s", bad)
+	}
+}
+
 // No direct DNS: the port-53 drops MUST appear before the allowlist accepts so an
 // allowlisted resolver IP can never be used for DNS (closes the exfil channel).
 func TestBuildApplyScript_DNSBlockedAboveAllowlist(t *testing.T) {

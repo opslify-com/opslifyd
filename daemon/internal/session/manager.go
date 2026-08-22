@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +106,11 @@ type ManagerConfig struct {
 	// WorkspaceRoot is the host directory under which per-session /workspace
 	// dirs are created.
 	WorkspaceRoot string
+	// SandboxNetwork is the podman network sandboxes attach to (`--network`).
+	// Empty uses the engine default. Set a named netavark bridge network to give
+	// rootless containers a routable gateway so the F5.8 credential-blind
+	// listeners can bind (rootless-default pasta has no bridge gateway).
+	SandboxNetwork string
 	// StateDir persists session records for restart reconciliation.
 	StateDir string
 	// DefaultTier is the isolation rung used when a create omits tier.
@@ -505,6 +511,7 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		Workspace:       wsDir,
 		Limits:          m.cfg.Limits,
 		Name:            namePrefix + id,
+		Network:         m.cfg.SandboxNetwork,
 		// A long-lived idle entrypoint so the container stays up for mediated
 		// execs (the daemon spawns each command via Runtime.Exec).
 		Entrypoint: []string{"sleep", "infinity"},
@@ -622,6 +629,14 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	// routing env (PIP_INDEX_URL/NPM_CONFIG_REGISTRY/GOPROXY) so a later operator
 	// `workspace install` resolves through the proxy. No credential in the env.
 	m.injectRegistryProxy(s, sn)
+	// F5.8 host_input hole: the credential-blind listeners above bind the bridge
+	// GATEWAY IP, which the sandbox reaches via the kernel input hook — governed by
+	// the egress host_input chain, which is otherwise default-deny (F1.4). Now that
+	// the listener ports are known, re-program egress so the sandbox may reach ONLY
+	// those ports on ONLY the gateway. Without this the proxy is bound but the SYN
+	// is dropped and the blind path times out. Fail-open is impossible here: no
+	// ports (blind path inactive / fail-closed) => no hole, chain stays default-deny.
+	m.allowBlindPathPorts(context.Background(), s, sn)
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -820,6 +835,55 @@ func (m *Manager) discoverSessionNet(ctx context.Context, s *Session) sessionNet
 	}
 	sn.ok = true
 	return sn
+}
+
+// allowBlindPathPorts re-programs the session's egress rules to punch a narrow hole
+// in the host_input chain for the credential-blind listeners bound this round (the
+// F5.7 egress proxy, F5.1 creds endpoint, F7.5 registry proxy). Those listeners bind
+// the bridge gateway IP; the sandbox reaches them via the kernel input hook, which
+// the default-deny host_input chain would otherwise drop. It collects the bound
+// ports from the session handles and re-applies SetupSession with the gateway IP +
+// ports, so the hole is scoped to daddr==gateway, saddr==sandbox, and ONLY those
+// ports. It is a no-op unless the gateway path is live (sn.ok) and at least one
+// listener bound — so an inactive/fail-closed blind path never widens host_input.
+func (m *Manager) allowBlindPathPorts(ctx context.Context, s *Session, sn sessionNet) {
+	if !sn.ok {
+		return
+	}
+	var ports []int
+	addPort := func(addr string) {
+		if addr == "" {
+			return
+		}
+		_, p, err := net.SplitHostPort(strings.TrimPrefix(addr, "http://"))
+		if err != nil {
+			return
+		}
+		if n, err := strconv.Atoi(p); err == nil && n > 0 {
+			ports = append(ports, n)
+		}
+	}
+	if s.egress != nil {
+		addPort(s.egress.addr)
+	}
+	if s.credEndpoint != nil {
+		addPort(s.credEndpoint.addr)
+	}
+	if s.registry != nil {
+		addPort(s.registry.addr)
+	}
+	if len(ports) == 0 {
+		return
+	}
+	err := m.egress.SetupSession(ctx, egress.SessionNet{
+		SessionID:     s.ID,
+		SandboxIP:     sn.containerIP,
+		GatewayIP:     sn.gatewayIP,
+		LocalTCPPorts: ports,
+	})
+	if err != nil {
+		m.log.Warn("egress: could not open credential-blind listener ports; blind path may be unreachable", "session", s.ID, "err", err)
+	}
 }
 
 // injectCredentials runs F5.1 executor-side injection for a freshly-registered

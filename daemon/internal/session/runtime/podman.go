@@ -240,6 +240,13 @@ func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 	if spec.Name != "" {
 		args = append(args, "--name", spec.Name)
 	}
+	if spec.Network != "" {
+		// Attach to a named bridge network so the container has a routable gateway
+		// the F5.8 credential-blind listeners can bind (rootless-default pasta has
+		// none). The daemon operator provisions this network out-of-band; an empty
+		// value keeps the engine default.
+		args = append(args, "--network", spec.Network)
+	}
 	if spec.ToolchainDigest != "" {
 		// Signed F0.2 toolchain, mounted read-only. Never writable.
 		// podman --mount type=image expresses read-only as rw=false (it does NOT

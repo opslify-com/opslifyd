@@ -45,6 +45,16 @@ type SessionNet struct {
 	SandboxIP string
 	// Bridge is the host bridge name; empty => DefaultBridge.
 	Bridge string
+	// GatewayIP is the bridge gateway address the daemon binds the credential-blind
+	// listeners on (F5.7 egress proxy, F5.1 creds endpoint, F7.5 registry proxy).
+	// When set together with LocalTCPPorts, the host_input chain admits the sandbox
+	// to reach ONLY those ports on ONLY this address — the narrow hole the blind
+	// path needs, without reopening host-local services or the DNS/exfil channel.
+	GatewayIP string
+	// LocalTCPPorts are the gateway TCP ports the sandbox is allowed to reach (the
+	// bound credential-blind listener ports). Empty => the host_input chain stays
+	// fully default-deny (the pre-F5.8 posture). Scoped to GatewayIP + SandboxIP.
+	LocalTCPPorts []int
 }
 
 func (n SessionNet) bridge() string {

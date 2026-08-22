@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -158,6 +159,15 @@ func buildApplyScript(net SessionNet, ips []netip.Addr) string {
 	// No host-local resolver: block DNS to the host, matching the forward-path drop.
 	b.WriteString("\t\tudp dport 53 drop\n")
 	b.WriteString("\t\ttcp dport 53 drop\n")
+	// F5.8 credential-blind reachability: admit the sandbox to the daemon's
+	// per-session credential-injecting listeners (F5.7 egress proxy, F5.1 creds
+	// endpoint, F7.5 registry proxy), which bind the bridge GATEWAY IP and are
+	// delivered via this input hook. Scoped to daddr==gateway AND the specific bound
+	// ports (and, via writeSandboxScope above, saddr==this sandbox) — so it opens
+	// ONLY the blind-path ports on ONLY the gateway, never a general host-local hole
+	// and never port 53 (the DNS drop sits above this). No ports => no rule, so the
+	// chain stays fully default-deny when the blind path is inactive.
+	writeGatewayPortAllow(&b, net.GatewayIP, net.LocalTCPPorts)
 	// Default-deny host-local services generally (no fallback), mirroring egress.
 	b.WriteString("\t\tdrop\n")
 	b.WriteString("\t}\n")
@@ -184,6 +194,40 @@ func writeSandboxScope(b *strings.Builder, bridge, sandboxIP string) {
 	} else {
 		fmt.Fprintf(b, "\t\tip6 saddr != %s accept\n", ip.Unmap())
 	}
+}
+
+// writeGatewayPortAllow emits the F5.8 host_input accept for the credential-blind
+// listener ports: `ip[6] daddr <gateway> tcp dport { ports } accept`, scoped to the
+// gateway address so it can never admit traffic to any other host-local service. It
+// emits nothing when the gateway is unset/unparyable or no ports are given, keeping
+// the chain fully default-deny in the pre-F5.8 / blind-path-inactive case. Port 53
+// is defensively excluded (the DNS drop already sits above this line, but excluding
+// it here too means a mis-passed 53 can never reopen the resolver channel).
+func writeGatewayPortAllow(b *strings.Builder, gatewayIP string, ports []int) {
+	if gatewayIP == "" || len(ports) == 0 {
+		return
+	}
+	gw, err := netip.ParseAddr(gatewayIP)
+	if err != nil {
+		return
+	}
+	seen := map[int]bool{}
+	var list []string
+	for _, p := range ports {
+		if p <= 0 || p > 65535 || p == 53 || seen[p] {
+			continue
+		}
+		seen[p] = true
+		list = append(list, strconv.Itoa(p))
+	}
+	if len(list) == 0 {
+		return
+	}
+	fam := "ip"
+	if !gw.Unmap().Is4() {
+		fam = "ip6"
+	}
+	fmt.Fprintf(b, "\t\t%s daddr %s tcp dport { %s } accept\n", fam, gw.Unmap(), strings.Join(list, ", "))
 }
 
 // buildTeardownScript renders the `nft -f` script that removes a session's table.
