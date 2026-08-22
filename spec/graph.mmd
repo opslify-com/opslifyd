@@ -53,6 +53,7 @@ flowchart LR
         F7_2["F7.2<br/>Key UX (auto-generate + safe storage + one-time reveal)"]
         F7_3["F7.3<br/>Host-linked workspaces + auto bidirectional sync"]
         F7_4["F7.4<br/>Full UI parity (browser can do what the CLI does, safely)"]
+        F7_5["F7.5<br/>`opslify workspace install <pkg>` (gated, audited, project-local)"]
     end
     F0_2 --> F0_1
     F0_1 --> F1_1
@@ -172,5 +173,7 @@ flowchart LR
     F3_3 --> F7_3
     F7_1 --> F7_4
     F7_3 --> F7_4
+    F5_5 --> F7_5
+    F5_8 --> F7_5
 
 %% ~ marks a spec-level (inline) feature not yet split into a detailed file
