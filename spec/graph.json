@@ -916,7 +916,7 @@
       "id": "F7.5",
       "phase": "P7",
       "title": "`opslify workspace install <pkg>` (gated, audited, project-local)",
-      "status": "in-progress",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F5.5",

@@ -134,7 +134,8 @@ func run() error {
 	// no-op. The per-session routing (pip/npm/go pointed at the proxy) and real
 	// Sigstore attestation are integration-gated; startup validation + the proxy
 	// logic are what ships here.
-	if err := buildRegistryProxy(cfg, log); err != nil {
+	registryInject, err := buildRegistryInject(cfg, brk, log)
+	if err != nil {
 		return err
 	}
 
@@ -149,7 +150,7 @@ func run() error {
 		return err
 	}
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject)
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject)
 	if err != nil {
 		return err
 	}
@@ -187,21 +188,23 @@ func run() error {
 	return d.Run(ctx)
 }
 
-// buildRegistryProxy validates the F5.5 registry-proxy config FAIL-CLOSED and, when
+// buildRegistryInject validates the F5.5 registry-proxy config FAIL-CLOSED and, when
 // enabled, logs it active. It translates the operator-facing install.Config face
 // into the regproxy.Config and runs regproxy.BuildConfig, so a bad upstream URL or
 // an allow entry for an unknown ecosystem aborts startup rather than silently
 // serving. When no upstream is configured the proxy is OFF (no behavior change).
 //
-// HONEST SCOPE: this stands up + validates the daemon-authoritative config. The
-// per-session Proxy (which binds the session's resolved `creds` grants + trace
-// recorder) is constructed by the session manager at session create, and the real
-// in-sandbox routing (index-url / npm registry / GOPROXY pointed at the proxy) plus
-// real Sigstore/cosign attestation are INTEGRATION-gated.
-func buildRegistryProxy(cfg install.Config, log *slog.Logger) error {
+// It also builds the F7.5 per-session RegistryInjector over the validated config
+// (opt-in: an absent/empty upstream set yields nil => no proxy is ever built and no
+// routing env is injected). The per-session Proxy itself (bound to the session's
+// resolved creds + trace recorder + the F5.8 gateway listener) is constructed by the
+// session manager at session create; the real in-sandbox routing (pip/npm/go pointed
+// at the proxy over a real bridge) plus real Sigstore/cosign attestation are
+// INTEGRATION-gated.
+func buildRegistryInject(cfg install.Config, brk *broker.Broker, log *slog.Logger) (*session.RegistryInjector, error) {
 	rp := cfg.RegistryProxy
 	if !rp.Enabled() {
-		return nil
+		return nil, nil
 	}
 	rc := regproxy.Config{CacheDir: rp.CacheDir}
 	for _, u := range rp.Upstreams {
@@ -217,11 +220,19 @@ func buildRegistryProxy(cfg install.Config, log *slog.Logger) error {
 	for _, a := range rp.Allow {
 		rc.Allow = append(rc.Allow, regproxy.AllowEntry{Ecosystem: regproxy.Ecosystem(a.Ecosystem), Name: a.Name})
 	}
+	// Validate FAIL-CLOSED: a bad upstream URL / an allow entry for an unknown
+	// ecosystem aborts startup rather than serving a misconfigured, potentially
+	// fail-open registry.
 	if _, err := regproxy.BuildConfig(rc); err != nil {
-		return fmt.Errorf("opslifyd: registry proxy: %w", err)
+		return nil, fmt.Errorf("opslifyd: registry proxy: %w", err)
 	}
-	log.Info("F5.5 registry proxy config valid", "upstreams", len(rc.Upstreams), "allowlisted", len(rc.Allow), "cache_dir", rp.CacheDir)
-	return nil
+	ri := session.NewRegistryInjector(session.RegistryInjectConfig{
+		Config: rc,
+		Broker: brk,
+		Logger: log,
+	})
+	log.Info("F5.5 registry proxy config valid; F7.5 per-session install path active", "upstreams", len(rc.Upstreams), "allowlisted", len(rc.Allow), "cache_dir", rp.CacheDir)
+	return ri, nil
 }
 
 // buildSessionManager wires the F1.2 session manager from config. It applies the
@@ -388,7 +399,7 @@ func buildEgressInject(cfg install.Config, brk *broker.Broker, log *slog.Logger)
 	return ei, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector) (*session.Manager, error) {
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -423,13 +434,14 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			DefaultPolicy:       defaultPolicy,
 			DryRun:              true, // F4.4: preview destructive ops before the approval pause
 		},
-		Egress:       egressCtl,
-		Logger:       log,
-		Trace:        traceSink,
-		Redactor:     buildRedactor(cfg), // F3.3: config-driven secret scrubber
-		Broker:       brk,                // F5.6: policy-gated, audited secret resolution
-		CredInjector: credInjector,       // F5.1: executor-side credential injection
-		EgressInject: egressInject,       // F5.7: credential-blind HTTP egress path
+		Egress:         egressCtl,
+		Logger:         log,
+		Trace:          traceSink,
+		Redactor:       buildRedactor(cfg), // F3.3: config-driven secret scrubber
+		Broker:         brk,                // F5.6: policy-gated, audited secret resolution
+		CredInjector:   credInjector,       // F5.1: executor-side credential injection
+		EgressInject:   egressInject,       // F5.7: credential-blind HTTP egress path
+		RegistryInject: registryInject,     // F7.5: operator package-install path
 	})
 }
 

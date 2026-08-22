@@ -20,6 +20,7 @@ import (
 
 	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/regproxy"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
@@ -204,6 +205,16 @@ type Manager struct {
 	// The proxy + CA are torn down on session end.
 	egressInject *EgressInjector
 
+	// registryInject is the F7.5 per-session registry-proxy factory. nil disables
+	// the operator package-install path (opt-in: no registry_proxy config => no
+	// proxy, no routing env). At registerReady, when the proxy is configured, it
+	// builds a per-session regproxy.Proxy bound to the session's resolved creds +
+	// trace recorder + the F5.8 gateway listener, and the manager injects the
+	// ecosystem routing env (PIP_INDEX_URL/NPM_CONFIG_REGISTRY/GOPROXY) so an
+	// operator-initiated install resolves THROUGH the proxy (allowlist + attestation
+	// + pkg.install audit). NEVER a credential in the env. Torn down on session end.
+	registryInject *RegistryInjector
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 
@@ -265,6 +276,10 @@ type Options struct {
 	// credential-blind HTTP path (opt-in) — the daemon wires it only when the config
 	// carries at least one egress_inject rule.
 	EgressInject *EgressInjector
+	// RegistryInject is the F7.5 per-session registry-proxy factory. nil disables
+	// the operator install path (opt-in) — the daemon wires it only when the config
+	// carries a registry_proxy section with at least one upstream.
+	RegistryInject *RegistryInjector
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -286,20 +301,21 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:          cfg,
-		approvals:    make(map[string]*approval),
-		resolve:      opts.Resolve,
-		clock:        opts.Clock,
-		store:        opts.Store,
-		egress:       opts.Egress,
-		sandboxIP:    opts.SandboxIP,
-		log:          opts.Logger,
-		trace:        opts.Trace,
-		redactor:     opts.Redactor,
-		broker:       opts.Broker,
-		credInjector: opts.CredInjector,
-		egressInject: opts.EgressInject,
-		sessions:     make(map[string]*Session),
+		cfg:            cfg,
+		approvals:      make(map[string]*approval),
+		resolve:        opts.Resolve,
+		clock:          opts.Clock,
+		store:          opts.Store,
+		egress:         opts.Egress,
+		sandboxIP:      opts.SandboxIP,
+		log:            opts.Logger,
+		trace:          opts.Trace,
+		redactor:       opts.Redactor,
+		broker:         opts.Broker,
+		credInjector:   opts.CredInjector,
+		egressInject:   opts.EgressInject,
+		registryInject: opts.RegistryInject,
+		sessions:       make(map[string]*Session),
 	}
 	if m.redactor == nil {
 		m.redactor = trace.NoopRedactor{}
@@ -601,6 +617,11 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	// never the token). Also single-owner here (no exec can observe s yet), so
 	// s.credEnv/s.egress are set without a lock.
 	m.injectEgressProxy(s, sn)
+	// F7.5 operator package-install path. If the registry proxy is configured, build
+	// the per-session regproxy.Proxy + gateway listener and inject the ecosystem
+	// routing env (PIP_INDEX_URL/NPM_CONFIG_REGISTRY/GOPROXY) so a later operator
+	// `workspace install` resolves through the proxy. No credential in the env.
+	m.injectRegistryProxy(s, sn)
 	m.mu.Lock()
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
@@ -990,6 +1011,67 @@ func (m *Manager) injectEgressProxy(s *Session, sn sessionNet) {
 	m.log.Info("egress credential-blind HTTP path active", "session", s.ID, "proxy", proxyURL)
 }
 
+// injectRegistryProxy runs F7.5 per-session registry-proxy wiring for a freshly
+// registered session. When the F5.5 proxy is configured it builds a per-session
+// regproxy.Proxy (bound to the session's resolved creds + trace recorder), binds
+// its listener to the F5.8 bridge gateway (source-scoped, never 0.0.0.0), and
+// appends the ecosystem routing env (PIP_INDEX_URL/NPM_CONFIG_REGISTRY/GOPROXY ->
+// the gateway proxy URL) to s.credEnv — NEVER a credential (the proxy injects the
+// upstream credential server-side). It is FAIL-CLOSED: a build/listener failure, or
+// a NetworkInfo-capable runtime with no reachable gateway, injects NO routing env
+// and NO open-egress fallback. A nil injector / disabled proxy is a clean no-op.
+// Called before the session enters the live map, so s.credEnv/s.registry are set
+// without a lock.
+func (m *Manager) injectRegistryProxy(s *Session, sn sessionNet) {
+	if m.registryInject == nil || !m.registryInject.enabled {
+		return
+	}
+	// F5.8 reachable bind, mirroring the egress path: bind the credential-injecting
+	// proxy listener to the discovered gateway (source-scoped), fail closed when the
+	// capability is present but no gateway is reachable, and keep the legacy loopback
+	// bind when the capability is absent (unit tests / runtimes without NetworkInfo).
+	var listen func() (net.Listener, error)
+	var sourceIP, advertiseHost string
+	if sn.known {
+		if !sn.ok {
+			m.log.Warn("registry proxy disabled: no reachable gateway bind (fail-closed, no open-egress fallback)", "session", s.ID)
+			return
+		}
+		gwAddr := net.JoinHostPort(sn.gatewayIP, "0")
+		listen = func() (net.Listener, error) { return m.listenTCP("tcp", gwAddr) }
+		sourceIP = sn.containerIP
+		advertiseHost = sn.gatewayIP
+	}
+	sr, err := m.registryInject.buildForSession(s.ID, s.policy, s.rec, listen, sourceIP, advertiseHost)
+	if err != nil {
+		m.log.Warn("registry proxy build failed; session runs without the operator install path (fail-closed)", "session", s.ID, "err", err)
+		return
+	}
+	if sr == nil {
+		return // proxy not configured (opt-in no-op)
+	}
+	s.credEnv = append(s.credEnv, sr.env...)
+	s.registry = sr
+	m.log.Info("registry proxy path active", "session", s.ID, "proxy", "http://"+sr.addr)
+}
+
+// RegistryAllowed is the F7.5 pre-install allowlist gate the operator CLI hits via
+// the daemon before running an install. It reports whether the registry proxy is
+// configured at all (configured) and whether ecosystem+name is allowlisted
+// (allowed). A daemon with no registry proxy returns configured=false so the CLI
+// fails closed ("install unavailable") rather than ever running an open-egress
+// install. It resolves NOTHING and touches no session — it is a pure config query.
+func (m *Manager) RegistryAllowed(ecosystem, name string) (configured, allowed bool, err error) {
+	if m.registryInject == nil || !m.registryInject.enabled {
+		return false, false, nil
+	}
+	ok, aerr := m.registryInject.Allowed(regproxy.Ecosystem(ecosystem), name)
+	if aerr != nil {
+		return true, false, aerr
+	}
+	return true, ok, nil
+}
+
 // runExec is the shared spawn+stream core used by the allow path (Exec) and the
 // approved path (ResolveApproval): it emits exec.start, runs the command via the
 // F0.3 Runtime, streams bounded output through the trace-wrapping sink, and emits
@@ -1104,6 +1186,14 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	if s.egress != nil {
 		s.egress.close()
 		s.egress = nil
+	}
+
+	// F7.5: tear down this session's registry proxy + listener so the per-session
+	// proxy never outlives the session (no cross-session reuse). Idempotent-safe on
+	// the reconcile path (an orphan carries no live registry handle).
+	if s.registry != nil {
+		s.registry.close()
+		s.registry = nil
 	}
 
 	// Close the trace chain: emit the terminal session.end, then seal (sign the

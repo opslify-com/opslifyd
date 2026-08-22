@@ -142,6 +142,38 @@ func (c *client) listWorkspaces(ctx context.Context) ([]workspaceView, error) {
 	return out, nil
 }
 
+// registryAllowResp mirrors the daemon's GET /v1/registry/allow body (F7.5).
+type registryAllowResp struct {
+	Configured bool   `json:"configured"`
+	Allowed    bool   `json:"allowed"`
+	Ecosystem  string `json:"ecosystem"`
+	Name       string `json:"name"`
+}
+
+// registryAllowed GETs /v1/registry/allow — the F7.5 pre-install allowlist gate the
+// operator CLI checks BEFORE running an install, so a non-allowlisted package is
+// refused before any exec and an unconfigured proxy fails closed.
+func (c *client) registryAllowed(ctx context.Context, ecosystem, name string) (registryAllowResp, error) {
+	u := c.baseURL + "/v1/registry/allow?ecosystem=" + url.QueryEscape(ecosystem) + "&name=" + url.QueryEscape(name)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return registryAllowResp{}, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return registryAllowResp{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return registryAllowResp{}, c.decodeError(resp)
+	}
+	var out registryAllowResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return registryAllowResp{}, err
+	}
+	return out, nil
+}
+
 // removeWorkspace DELETEs /v1/workspaces/{name}.
 func (c *client) removeWorkspace(ctx context.Context, name string) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/workspaces/"+name, nil)

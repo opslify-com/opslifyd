@@ -158,6 +158,25 @@ func BuildConfig(cfg Config) (resolvedConfig, error) {
 	return rc, nil
 }
 
+// Allowed is the EXPORTED, pre-install allowlist gate (F7.5): it reports whether
+// ecosystem+name is on the daemon-authoritative allowlist so the operator CLI can
+// refuse a non-allowlisted package with a clear error BEFORE any install runs,
+// rather than only fail-closed at fetch time inside the sandbox. It validates the
+// config fail-closed (a misconfigured proxy is never treated as "allowed") and
+// applies the SAME normalization the fetch path uses, so the pre-check and the
+// fetch-time gate can never disagree. Deny-by-default: an unknown ecosystem, an
+// empty allowlist, or an unlisted name yields false.
+func (cfg Config) Allowed(eco Ecosystem, name string) (bool, error) {
+	if !knownEcosystems[eco] {
+		return false, fmt.Errorf("%w: unknown ecosystem %q", ErrDenied, eco)
+	}
+	rc, err := BuildConfig(cfg)
+	if err != nil {
+		return false, err
+	}
+	return rc.allowed(eco, name), nil
+}
+
 // allowed reports whether ecosystem+name is on the allowlist. Deny-by-default: an
 // unlisted package (or an empty allowlist) is never allowed.
 func (rc resolvedConfig) allowed(eco Ecosystem, name string) bool {

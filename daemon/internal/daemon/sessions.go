@@ -58,6 +58,12 @@ type SessionService interface {
 	// read-only view behind GET /v1/policy. It carries NO secret value (creds are
 	// refs/metadata only), so it is safe to surface to the F7.4 browser UI.
 	ActivePolicy() policy.Resolved
+	// RegistryAllowed is the F7.5 pre-install allowlist gate: it reports whether the
+	// F5.5 registry proxy is configured (configured) and whether ecosystem+name is on
+	// the daemon-authoritative allowlist (allowed). The operator CLI hits it BEFORE
+	// running an install, so a non-allowlisted package is refused before any exec and
+	// a daemon with no proxy fails closed ("install unavailable"), never open-egress.
+	RegistryAllowed(ecosystem, name string) (configured, allowed bool, err error)
 }
 
 // traceResponse is the GET /v1/sessions/{id}/trace body: the event chain plus the
@@ -131,6 +137,11 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	// only, metadata only (no secret values). Backs `opslify policy` and the F7.4
 	// browser policy pane.
 	mux.HandleFunc("GET /"+APIVersion+"/policy", d.handlePolicyGet)
+	// F7.5 pre-install allowlist gate: the operator CLI checks a package against the
+	// F5.5 registry allowlist BEFORE running an install (a non-allowlisted name is
+	// refused before any exec; an unconfigured proxy fails closed). Read-only; no
+	// secret. It is NOT an agent-facing MCP tool — install stays operator-only.
+	mux.HandleFunc("GET /"+APIVersion+"/registry/allow", d.handleRegistryAllow)
 	// F4.3 human approval gates. The resolve route is a PRIVILEGED control action:
 	// it inherits the localhost/socket trust boundary (no auth in v1, like F3.5) and
 	// is deliberately NOT part of the agent-facing MCP tool surface — the agent
@@ -213,6 +224,39 @@ func (d *Daemon) handleWorkspaceDelete(w http.ResponseWriter, r *http.Request) {
 // of it, so it is safe to surface to the F7.4 browser UI.
 func (d *Daemon) handlePolicyGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, d.sessions.ActivePolicy())
+}
+
+// registryAllowResponse is the GET /v1/registry/allow body (F7.5): whether the
+// registry proxy is configured and whether the queried package is allowlisted.
+type registryAllowResponse struct {
+	Configured bool   `json:"configured"`
+	Allowed    bool   `json:"allowed"`
+	Ecosystem  string `json:"ecosystem"`
+	Name       string `json:"name"`
+}
+
+// handleRegistryAllow answers the F7.5 pre-install allowlist gate. It returns
+// configured=false when no F5.5 registry proxy is wired (the CLI then fails closed —
+// install unavailable, never open-egress), and allowed=true only for a name on the
+// daemon-authoritative allowlist. A bad/unknown ecosystem is a 400 input error.
+func (d *Daemon) handleRegistryAllow(w http.ResponseWriter, r *http.Request) {
+	eco := r.URL.Query().Get("ecosystem")
+	name := r.URL.Query().Get("name")
+	if eco == "" || name == "" {
+		writeAPIError(w, http.StatusBadRequest, "input", "ecosystem and name are required")
+		return
+	}
+	configured, allowed, err := d.sessions.RegistryAllowed(eco, name)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, registryAllowResponse{
+		Configured: configured,
+		Allowed:    allowed,
+		Ecosystem:  eco,
+		Name:       name,
+	})
 }
 
 func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
