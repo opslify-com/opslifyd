@@ -657,6 +657,24 @@
       ]
     },
     {
+      "id": "F5.9",
+      "phase": "P5",
+      "title": "Credential-blind reachability on a real host (bridge network + host_input hole)",
+      "status": "in-progress",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F5.8"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p5-broker/features/F5.9-credential-blind-reachability.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F5.8"
+      ]
+    },
+    {
       "id": "F6.1",
       "phase": "P6",
       "title": "Compliance evidence packs (MONETIZATION HERO)",
@@ -683,7 +701,8 @@
         "F5.5",
         "F5.6",
         "F5.7",
-        "F5.8"
+        "F5.8",
+        "F5.9"
       ]
     },
     {
@@ -713,7 +732,8 @@
         "F5.5",
         "F5.6",
         "F5.7",
-        "F5.8"
+        "F5.8",
+        "F5.9"
       ]
     },
     {
@@ -743,7 +763,8 @@
         "F5.5",
         "F5.6",
         "F5.7",
-        "F5.8"
+        "F5.8",
+        "F5.9"
       ]
     },
     {
@@ -773,7 +794,8 @@
         "F5.5",
         "F5.6",
         "F5.7",
-        "F5.8"
+        "F5.8",
+        "F5.9"
       ]
     },
     {
@@ -803,7 +825,8 @@
         "F5.5",
         "F5.6",
         "F5.7",
-        "F5.8"
+        "F5.8",
+        "F5.9"
       ]
     },
     {
@@ -833,7 +856,8 @@
         "F5.5",
         "F5.6",
         "F5.7",
-        "F5.8"
+        "F5.8",
+        "F5.9"
       ]
     },
     {
@@ -1095,6 +1119,10 @@
       "to": "F5.8"
     },
     {
+      "from": "F5.8",
+      "to": "F5.9"
+    },
+    {
       "from": "F4.1",
       "to": "F6.1"
     },
@@ -1143,6 +1171,10 @@
       "to": "F6.1"
     },
     {
+      "from": "F5.9",
+      "to": "F6.1"
+    },
+    {
       "from": "F4.1",
       "to": "F6.2"
     },
@@ -1191,6 +1223,10 @@
       "to": "F6.2"
     },
     {
+      "from": "F5.9",
+      "to": "F6.2"
+    },
+    {
       "from": "F4.1",
       "to": "F6.3"
     },
@@ -1239,6 +1275,10 @@
       "to": "F6.3"
     },
     {
+      "from": "F5.9",
+      "to": "F6.3"
+    },
+    {
       "from": "F4.1",
       "to": "F6.4"
     },
@@ -1287,6 +1327,10 @@
       "to": "F6.4"
     },
     {
+      "from": "F5.9",
+      "to": "F6.4"
+    },
+    {
       "from": "F4.1",
       "to": "F6.5"
     },
@@ -1335,6 +1379,10 @@
       "to": "F6.5"
     },
     {
+      "from": "F5.9",
+      "to": "F6.5"
+    },
+    {
       "from": "F4.1",
       "to": "F6.6"
     },
@@ -1380,6 +1428,10 @@
     },
     {
       "from": "F5.8",
+      "to": "F6.6"
+    },
+    {
+      "from": "F5.9",
       "to": "F6.6"
     },
     {
@@ -1449,13 +1501,14 @@
     "F5.5",
     "F5.7",
     "F5.8",
+    "F5.9",
+    "F7.5",
     "F6.1",
     "F6.2",
     "F6.3",
     "F6.4",
     "F6.5",
-    "F6.6",
-    "F7.5"
+    "F6.6"
   ],
   "valid": true,
   "errors": [],

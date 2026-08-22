@@ -77,6 +77,14 @@ type SessionSpec struct {
 	// Entrypoint overrides the image entrypoint (e.g. a sleep loop for a warm
 	// container). Empty uses the image default.
 	Entrypoint []string
+	// Network is the podman network the container attaches to (`--network`).
+	// Empty uses the engine default (rootful: the `podman` bridge, which has a
+	// top-level gateway; rootless-default: pasta/slirp4netns, which has NO
+	// bridge gateway — so the F5.8 credential-blind listeners cannot bind and
+	// fail closed). Setting a named netavark bridge network gives a rootless
+	// container a real gateway (.NetworkSettings.Networks.<name>.Gateway) that
+	// NetworkInfo discovers, enabling the credential-blind path without root.
+	Network string
 }
 
 // ContainerHandle identifies a created container. It is opaque to callers apart

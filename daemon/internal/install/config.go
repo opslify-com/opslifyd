@@ -50,6 +50,12 @@ type Config struct {
 	EgressAllowlist []string `yaml:"egress_allowlist"`
 	// WorkspaceDir is the host root for per-session writable workspaces.
 	WorkspaceDir string `yaml:"workspace_dir"`
+	// SandboxNetwork is the podman network sandboxes attach to (`--network`).
+	// Empty uses the engine default. On rootless podman the default (pasta) has
+	// no bridge gateway, so the F5.8 credential-blind listeners cannot bind and
+	// fail closed; set a named netavark bridge network (with a gateway) to enable
+	// the credential-blind path without root.
+	SandboxNetwork string `yaml:"sandbox_network,omitempty"`
 	// Tier is the default isolation rung (D2). Defaults to local-hardened.
 	Tier string `yaml:"tier"`
 	// IdentityKey is the path to the daemon Ed25519 private key (perms 0600).

@@ -424,6 +424,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			Image:               cfg.Image,
 			ToolchainDigest:     cfg.ToolchainDigest,
 			WorkspaceRoot:       cfg.WorkspaceDir,
+			SandboxNetwork:      cfg.SandboxNetwork,
 			StateDir:            stateDir,
 			DefaultTier:         runtime.Tier(cfg.Tier),
 			DefaultTTL:          ttl,

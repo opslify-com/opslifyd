@@ -68,6 +68,70 @@ func newEgressManager(t *testing.T, rt runtime.Runtime, eg egress.Controller, ip
 	return m
 }
 
+// F5.8: once the credential-blind listeners bind, allowBlindPathPorts re-programs
+// egress with the gateway IP + the bound ports, so the host_input chain opens ONLY
+// those ports (the sandbox can then reach the proxy). Asserts the reprogram carries
+// the gateway + collected ports from every bound listener.
+func TestAllowBlindPathPorts_OpensBoundListenerPorts(t *testing.T) {
+	eg := &fakeEgress{}
+	m := newEgressManager(t, newFakeRuntime(), eg, nil)
+
+	s := &Session{ID: "sess1"}
+	s.credEndpoint = &sessionCredEndpoint{addr: "http://10.89.0.1:45307"}
+	s.egress = &sessionEgress{addr: "10.89.0.1:37011"}
+	s.registry = &sessionRegistry{addr: "10.89.0.1:34087"}
+
+	before := eg.setupCalls
+	m.allowBlindPathPorts(context.Background(), s, sessionNet{known: true, ok: true, containerIP: "10.89.0.6", gatewayIP: "10.89.0.1"})
+
+	if eg.setupCalls != before+1 {
+		t.Fatalf("want one reprogram, got %d extra", eg.setupCalls-before)
+	}
+	if eg.lastNet.GatewayIP != "10.89.0.1" || eg.lastNet.SandboxIP != "10.89.0.6" {
+		t.Fatalf("reprogram net missing gateway/sandbox scope: %+v", eg.lastNet)
+	}
+	for _, want := range []int{45307, 37011, 34087} {
+		found := false
+		for _, p := range eg.lastNet.LocalTCPPorts {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("port %d not opened; got %v", want, eg.lastNet.LocalTCPPorts)
+		}
+	}
+}
+
+// Fail-closed: no reachable gateway (sn.ok=false) => NO reprogram, so the host_input
+// chain is never widened. A blind path that could not bind must not open a hole.
+func TestAllowBlindPathPorts_NoGatewayNoReprogram(t *testing.T) {
+	eg := &fakeEgress{}
+	m := newEgressManager(t, newFakeRuntime(), eg, nil)
+	s := &Session{ID: "s"}
+	s.credEndpoint = &sessionCredEndpoint{addr: "http://10.89.0.1:45307"}
+
+	before := eg.setupCalls
+	m.allowBlindPathPorts(context.Background(), s, sessionNet{known: true, ok: false})
+	if eg.setupCalls != before {
+		t.Fatalf("no-gateway must NOT reprogram egress (fail-closed), got %d extra", eg.setupCalls-before)
+	}
+}
+
+// No listeners bound (no applicable rule) => no ports => no reprogram, even with a
+// live gateway. The hole only opens for actually-bound credential-blind listeners.
+func TestAllowBlindPathPorts_NoListenersNoReprogram(t *testing.T) {
+	eg := &fakeEgress{}
+	m := newEgressManager(t, newFakeRuntime(), eg, nil)
+	s := &Session{ID: "s"}
+
+	before := eg.setupCalls
+	m.allowBlindPathPorts(context.Background(), s, sessionNet{known: true, ok: true, containerIP: "10.89.0.6", gatewayIP: "10.89.0.1"})
+	if eg.setupCalls != before {
+		t.Fatalf("no bound listeners must NOT reprogram egress, got %d extra", eg.setupCalls-before)
+	}
+}
+
 // AC: egress rules are programmed on session create and torn down on destroy, with
 // no leak (setup count == teardown count after destroy).
 func TestEgress_ProgrammedOnCreateTornDownOnDestroy(t *testing.T) {
