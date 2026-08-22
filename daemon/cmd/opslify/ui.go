@@ -243,13 +243,21 @@ func newUIServer(socketPath, token string) (http.Handler, error) {
 	// though the daemon itself still serves those routes to the CLI.
 	guardedProxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !allowedProxyRoute(r.Method, r.URL.Path) {
-			http.Error(w, "opslify ui: endpoint not exposed by the local UI (read + kill + approve/deny only)", http.StatusForbidden)
+			http.Error(w, "opslify ui: endpoint not exposed by the local UI (see the F7.4 allowlist)", http.StatusForbidden)
 			return
 		}
 		proxy.ServeHTTP(w, r)
 	})
 
+	// F7.4 directory-linking lives on the UI HOST process, NOT the daemon: the ui
+	// server already runs host-side, so it hosts the F7.3 sync engine for a linked
+	// dir and the daemon never learns the host path. The /ui/* routes are served
+	// here directly and are NEVER proxied to the daemon.
+	links := newLinkManager(socketPath)
+
 	mux := http.NewServeMux()
+	// The host-side link control plane (never forwarded to the daemon).
+	mux.Handle("/ui/", links)
 	// Only the allowlisted /v1/* routes are proxied. Nothing else reaches the daemon.
 	mux.Handle("/v1/", guardedProxy)
 	mux.Handle("/", http.FileServer(http.FS(sub)))
@@ -264,23 +272,50 @@ func newUIServer(socketPath, token string) (http.Handler, error) {
 	return loopbackHostGuard(tokenAuthGuard(token, mux)), nil
 }
 
-// allowedProxyRoute is the browser-reachable /v1 allowlist. It permits only:
-//   - GET  /v1/sessions                         (live session list)
+// allowedProxyRoute is the browser-reachable /v1 allowlist. Since F7.4 it exposes
+// the operator's full CLI parity — BUT every route here is still reached only
+// behind the F7.1 tokenAuthGuard + loopbackHostGuard, so a random local page (or
+// a DNS-rebind attacker) holds none of it. It permits:
+//   - GET/POST /v1/sessions                     (live list; F7.4 create)
 //   - GET  /v1/sessions/history                 (F3.6 past-session list — read)
-//   - GET  /v1/sessions/<id>...                 (a session, its trace stream/replay,
-//     and the F3.6 verify verdict — all read, all already-redacted/derived data)
-//   - POST /v1/sessions/<id>/approvals/<exec_id> (F3.6/F4.3 approve|deny — the ONE
-//     privileged mutation, guarded by the loopback bind + DNS-rebind Host-guard)
-//   - DELETE /v1/sessions/<id>                  (Kill — the session resource itself only)
+//   - GET  /v1/sessions/<id>/{trace,verify}     (read — already-redacted/derived)
+//   - GET/POST /v1/sessions/<id>/approvals/<x>  (F3.6/F4.3 approval view + resolve)
+//   - POST /v1/sessions/<id>/exec               (F7.4 run — SAME F4 classifier +
+//     approval gate as the CLI; no bypass, no second exec path)
+//   - DELETE /v1/sessions/<id>                  (Kill — the session resource only)
+//   - GET/POST /v1/secrets, DELETE /v1/secrets/<ref…> (F5.6 list-NAMES/add/remove —
+//     the list is names/metadata only; no value ever returns to the browser)
+//   - GET /v1/workspaces, DELETE /v1/workspaces/<name> (F2.2 ls/rm)
+//   - GET /v1/policy                            (F4.1 active-policy view — read)
 //
-// Everything else (session create, exec, file upload, /v1/workspaces, any other
-// mutation sub-path) is refused, so the local UI is read + Kill + approve/deny.
+// The raw `GET /v1/sessions/<id>/files` (UNredacted /workspace bytes) stays
+// REFUSED — the F3.5/F3.6 raw-workspace-read hole must not reopen. File upload
+// (PUT/POST …/files) is likewise not exposed to the browser; host↔sandbox file
+// movement is driven only by the guarded `/ui/link` sync path, never a raw proxy.
 func allowedProxyRoute(method, p string) bool {
-	if method == http.MethodGet && p == "/v1/sessions" {
-		return true
+	// --- collection-level routes (exact path) ---
+	switch p {
+	case "/v1/sessions":
+		return method == http.MethodGet || method == http.MethodPost
+	case "/v1/policy":
+		return method == http.MethodGet
+	case "/v1/secrets":
+		// GET = list NAMES/metadata (never a value); POST = add a value once.
+		return method == http.MethodGet || method == http.MethodPost
+	case "/v1/workspaces":
+		return method == http.MethodGet
 	}
-	const pfx = "/v1/sessions/"
-	rest, ok := strings.CutPrefix(p, pfx)
+	// --- /v1/secrets/{ref…} : DELETE by ref (a ref may contain slashes) ---
+	if rest, ok := strings.CutPrefix(p, "/v1/secrets/"); ok {
+		return method == http.MethodDelete && strings.TrimSuffix(rest, "/") != ""
+	}
+	// --- /v1/workspaces/{name} : DELETE a single workspace (single segment) ---
+	if rest, ok := strings.CutPrefix(p, "/v1/workspaces/"); ok {
+		rest = strings.TrimSuffix(rest, "/")
+		return method == http.MethodDelete && rest != "" && !strings.Contains(rest, "/")
+	}
+	// --- /v1/sessions/{id}/… sub-paths ---
+	rest, ok := strings.CutPrefix(p, "/v1/sessions/")
 	if !ok || rest == "" {
 		return false
 	}
@@ -306,9 +341,15 @@ func allowedProxyRoute(method, p string) bool {
 		}
 		return false
 	case http.MethodPost:
-		// ONLY the F4.3 approvals-resolve action: /v1/sessions/{id}/approvals/{exec_id}.
-		// No other POST (create is not under this prefix; exec is refused here).
-		return isApprovalsResolvePath(rest)
+		// F4.3 approvals-resolve, OR the F7.4 exec runner. Exec goes to the SAME
+		// daemon handler as the CLI, so it flows through the F4 pre-spawn classifier
+		// and approval gate — there is no second, bypassing exec path. The raw file
+		// routes (…/files) are still not a POST target here.
+		if isApprovalsResolvePath(rest) {
+			return true
+		}
+		seg := strings.Split(strings.TrimSuffix(rest, "/"), "/")
+		return len(seg) == 2 && seg[0] != "" && seg[1] == "exec"
 	case http.MethodDelete:
 		// Kill only the session resource itself, never a mutation sub-path.
 		return !strings.Contains(strings.TrimSuffix(rest, "/"), "/")

@@ -1159,6 +1159,15 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	return nil
 }
 
+// ActivePolicy returns the daemon's resolved baseline policy (F4.1) — the
+// read-only view behind `GET /v1/policy`. It resolves the trusted DefaultPolicy
+// on its own (no per-session workspace narrowing), so it reports the daemon's
+// standing posture. The result carries only references/metadata, never a secret
+// value.
+func (m *Manager) ActivePolicy() policy.Resolved {
+	return policy.ResolveDefault(m.cfg.DefaultPolicy)
+}
+
 // resolveCreatePolicy resolves the F4.1 policy used for F4.2 spin-up enforcement,
 // BEFORE any container is built. A scratch session has an ephemeral, freshly
 // empty /workspace and therefore never carries a workspace policy file — it runs

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
@@ -46,6 +47,7 @@ type fakeManager struct {
 	destroyed   []string
 	destroyErr  error
 	list        []session.View
+	policy      policy.Policy
 	lastExec    session.ExecOptions
 	uploaded    []byte
 	downloaded  []byte
@@ -158,6 +160,10 @@ func (f *fakeManager) Destroy(_ context.Context, id string) error {
 }
 
 func (f *fakeManager) List() []session.View { return f.list }
+
+func (f *fakeManager) ActivePolicy() policy.Resolved {
+	return policy.ResolveDefault(f.policy)
+}
 
 func (f *fakeManager) WriteFile(_ context.Context, _ string, _ string, content []byte) error {
 	f.uploaded = content
