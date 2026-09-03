@@ -101,6 +101,7 @@ nav:
   - Reference:
       - CLI: reference/cli.md
       - Configuration: reference/config.md
+      - Keys & backup: reference/keys.md
       - Service management: reference/service.md
       - Troubleshooting: reference/troubleshooting.md
   - Security:
