@@ -92,6 +92,7 @@ nav:
       - Workspaces & host sync: guides/workspaces-sync.md
       - The dashboard: guides/dashboard.md
       - Use with AI agents (MCP): guides/ai-agents-mcp.md
+      - Authenticate any service: guides/authentication.md
       - Credential-blind API access: guides/credential-blind-gitlab.md
       - Install packages: guides/install-packages.md
       - Manage secrets: guides/secrets.md
