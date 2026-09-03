@@ -93,6 +93,7 @@ nav:
       - The dashboard: guides/dashboard.md
       - Use with AI agents (MCP): guides/ai-agents-mcp.md
       - Authenticate any service: guides/authentication.md
+      - Providers & secret managers: guides/providers.md
       - Credential-blind API access: guides/credential-blind-gitlab.md
       - Install packages: guides/install-packages.md
       - Manage secrets: guides/secrets.md
