@@ -49,6 +49,20 @@ mkdocs build         # static site into ./site
 Add a page by creating `docs/<section>/<page>.md` and adding it to `nav:` in `mkdocs.yml`.
 CI builds and deploys to GitHub Pages on merge to `main`.
 
+## Releases
+
+Binaries are published as GitHub Release assets by `.github/workflows/release.yml`
+(requires Actions enabled on the repo):
+
+- **push to `main`** → refreshes a rolling **`latest`** release, so
+  `curl -fsSL <site>/install.sh | sudo sh` (which defaults to `latest`) always downloads
+  fresh binaries;
+- **push a `vX.Y.Z` tag** → a pinned, versioned release (installable with
+  `OPSLIFY_VERSION=vX.Y.Z`).
+
+Each release carries `opslify-linux-amd64.tar.gz` and `opslify-linux-arm64.tar.gz` (each
+containing `opslify` + `opslifyd`) — the exact names `scripts/get-opslify.sh` downloads.
+
 ## Reporting security issues
 
 Report vulnerabilities privately via the repository's security policy, not a public issue.
