@@ -110,4 +110,5 @@ nav:
       - Security model: security/model.md
   - About:
       - Roadmap: about/roadmap.md
+      - Hosting the docs: about/hosting.md
       - Contributing: about/contributing.md
