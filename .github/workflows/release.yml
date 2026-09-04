@@ -1,0 +1,82 @@
+name: release
+
+# Build the opslify + opslifyd binaries and publish them as GitHub Release assets,
+# so the one-liner installer (curl … | sudo sh) can download them.
+#
+#   - push to main  -> refresh a rolling "latest" release (installer default works)
+#   - push a v* tag -> a pinned, versioned release
+#   - manual        -> workflow_dispatch
+#
+# Asset names match what scripts/get-opslify.sh expects:
+#   opslify-linux-amd64.tar.gz  /  opslify-linux-arm64.tar.gz  (each contains opslify + opslifyd)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "daemon/**"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build binaries (linux/${{ matrix.arch }})
+        working-directory: daemon
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p out dist
+          go build -trimpath -o out/opslify  ./cmd/opslify
+          go build -trimpath -o out/opslifyd ./cmd/opslifyd
+          tar -czf dist/opslify-linux-${{ matrix.arch }}.tar.gz -C out opslify opslifyd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opslify-linux-${{ matrix.arch }}
+          path: daemon/dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: List assets
+        run: ls -la dist
+
+      # Versioned release for a pushed v* tag.
+      - name: Versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
+          make_latest: "true"
+
+      # Rolling "latest" release on push to main, so `releases/latest/download/...`
+      # (the installer default) always has fresh binaries.
+      - name: Rolling latest release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: latest
+          body: "Rolling build from the latest commit on main."
+          files: dist/*.tar.gz
+          make_latest: "true"
