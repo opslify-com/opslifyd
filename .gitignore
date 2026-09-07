@@ -4,19 +4,48 @@
 .idea/
 .vscode/
 
-# Build artifacts (populated once code lands)
+# Build artifacts
 /bin/
 /dist/
 *.test
 
-# Local env / secrets — never commit
+# Secrets / keys — NEVER commit
 *.env
+.env
+.env.*
+!*.env.example
+*.key
+*.pem
+identity.key
+identity.key.pub
 vault.db
+*.vault
+cosign.key
+cosign.pub
+secrets.*.yaml
+
+# Local / generated toolchain manifests (produced by `opslify init`)
+/devbox.json
+/flake.nix
+/flake.lock
+/opslify.env.yaml
+
+# Documentation & specs live on the `docs-src` branch and the published site
+# (gh-pages) — not on the code branch. Kept out of `main` to keep it code-only.
+/docs/
+/spec/
+/mkdocs.yml
+/INSTALL.md
+/site/
+
+# Docs build venv
+/.venv/
 
 # Claude Code session state
 .claude/
 
-# Scratch / external-tool experiments (kept local, not part of opslifyd history)
+# Scratch / external-tool experiments
 cline-test/
-site/
-.venv/
+
+# spec-graph hook lives with the spec on docs-src
+/.githooks/
