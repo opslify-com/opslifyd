@@ -1,14 +1,18 @@
 # D2 — UI delivery: localhost browser app, not desktop, not cloud
 
-**Status:** decided · **Phase:** P8 · **Informs:** F8.8, F3.4
+**Status:** decided · **Phase:** P8 · **Informs:** F8.8, F3.4 · **Amended by:** D3
 
 ## The question
 The cockpit needs a delivery model. Three candidates: the existing **localhost browser SPA** served by
 the daemon, a **desktop app** (Electron/Tauri), or a **hosted cloud** control plane.
 
 ## Decision
-**Ship the cockpit as the localhost browser SPA served by the daemon** (extending F3.5/F7.1/F7.4).
+**Ship the cockpit as a localhost browser SPA** (extending F3.5/F7.1/F7.4).
 No desktop app in P8. No cloud dependency, ever, for core operation.
+
+> **Amended by D3:** the SPA is served by a **separate `opslify-tower` binary** that is a client of
+> the daemon API — not by `opslifyd` itself. Delivery model (localhost browser, SSH tunnel for remote)
+> is unchanged; only which process serves it. See `spec/decisions/D3-tower-binary-split.md`.
 
 ## Why
 
