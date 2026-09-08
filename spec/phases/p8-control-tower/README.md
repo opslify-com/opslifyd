@@ -13,6 +13,11 @@ Today opslifyd is a superb engine with a session-shaped surface: you create sand
 
 **2. Context is layered and provenanced, not a prompt.** What an agent is told is assembled from ordered layers — daemon house rules (locked), project instructions, environment overlay, per-tool skills, generated tool contracts. Later layers may add, never contradict an earlier one, and every Change records the exact instruction set it ran under **by hash**, so "why did it do that?" is answerable a year later against the rules it actually had, not the ones in the repo today.
 
+**3. Injected vs retrieved.** A rule the agent must *always* follow is a **skill** (F8.4) — small, curated, injected, hashed. A document it *might need to consult* is **memory** (F8.10) — a corpus, searched on demand, with per-retrieval provenance. Conflating them breaks at the first real project: a memory folder cannot be injected without exhausting the context budget.
+
+## Delivery model
+The cockpit ships as the **localhost browser SPA served by the daemon** — no desktop app, no cloud dependency. Zero install, zero version skew, and it reuses the F7.1 auth already built and QA'd; remote access is an SSH tunnel, which is how this audience administers servers anyway. Approval notifications use the browser Notification API plus an `opslify notify` webhook hook rather than an Electron client. See `spec/decisions/D2-ui-delivery-model.md`.
+
 ## Features (dependency order)
 
 - **F8.1 — Project & environment model** — the spine. `Project → Environment` owns workspace, policy, connections, instructions and agent binding; everything else in P8 hangs off it. Environments are separate layers (not headings in one file) so prod can narrow staging.
@@ -23,6 +28,7 @@ Today opslifyd is a superb engine with a session-shaped surface: you create sand
 - **F8.6 — Change as the unit of work** — promote the P4 approval gate into a first-class, addressable object: intent, preview/diff, policy decision, steps, blast radius, prepared inverse, signed trace. Everything the UI shows and every agent handoff is a Change.
 - **F8.7 — Policy editing as a Change** — create/update egress allowlists and gates from the UI/CLI. **Widening requires approval; narrowing does not.** Precedence daemon → project → environment → workspace, each only able to narrow; clamps recorded.
 - **F8.8 — Cockpit UI** — the three-pane operator surface (collapsible sidebar, tabbed work area, agent panel, trace drawer) plus the surfaces above, all behind F7.1 token auth.
+- **F8.10 — Project memory** — a per-project folder of the operator's own documents (architecture notes, runbooks, postmortems) that the agent **retrieves from on demand** rather than carrying in every context. Distinct from skills by mechanism: skills are injected, memory is searched. Lexical retrieval by default — no embedding service, no network.
 - **F8.9 — Reviewer agent (the multi-agent piece)** — a second agent adversarially reviews a proposed Change *before* a human sees it. The **Change is the handoff artifact**, so no context is lost between agents. Optional, per-environment, may use a different (cheaper or stronger) model than the operator agent.
 
 ## Deliberately NOT in this phase
@@ -31,6 +37,8 @@ Today opslifyd is a superb engine with a session-shaped surface: you create sand
 - Team/multi-user RBAC, shared retention, compliance export — the cloud plane (F3.4 / P6).
 - `database` and `network` connection kinds — interface declared in F8.2, implementations deferred.
 - A model runtime. opslify ships no model and never proxies one; it speaks MCP to whatever the operator points it at.
+- **Triggers and runbooks.** Webhook/cron/alert-driven Changes ("agent on-call") and saving a successful Change as a replayable runbook are the natural next phase — they need the Change (F8.6) to exist first, so they are P9, not scope creep here.
+- **A desktop app.** See `spec/decisions/D2-ui-delivery-model.md`; if one is ever built it is a thin shell around this same SPA, never a second frontend.
 
 ## Cross-cutting guardrails (every feature)
 
@@ -39,4 +47,5 @@ Today opslifyd is a superb engine with a session-shaped surface: you create sand
 - **Widening is gated, narrowing is not** — for policy (F8.7) and for connection scope (F8.2). A workspace file may never widen.
 - **Provenance or it did not happen.** Every Change records the policy hash, the instruction-set hash, the agent identity and model, and the connection refs used — by reference, never by value.
 - **The sandbox boundary does not move.** New surfaces, agents and connection kinds all reach infrastructure through the same guarded execution path; none of them gets a side door.
+- **Untrusted content stays data.** Workspace files, memory documents and skill text are written by humans and imported from anywhere; none of them may widen authority. Policy, gates and house rules live in the daemon and are unreachable from the repo.
 - **Honest limits stay documented.** Transport blindness does not stop exfiltration by *authorised read* (`vault kv get`, `kubectl get secret`, terraform state). Response-side filtering is the mitigation where we terminate the protocol, and the gap is stated where we do not.

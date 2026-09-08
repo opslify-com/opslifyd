@@ -58,6 +58,7 @@ flowchart LR
     end
     subgraph P8
         F8_1["F8.1<br/>Project & environment model"]
+        F8_10["F8.10<br/>Project memory (retrieved, not injected)"]
         F8_2["F8.2<br/>Connection broker (kinds beyond HTTP)"]
         F8_3["F8.3<br/>Secrets surface (the reference model)"]
         F8_4["F8.4<br/>Instructions & skills (layered agent context)"]
@@ -196,6 +197,8 @@ flowchart LR
     F5_8 --> F7_5
     F2_2 --> F8_1
     F4_1 --> F8_1
+    F8_1 --> F8_10
+    F8_4 --> F8_10
     F5_6 --> F8_2
     F5_7 --> F8_2
     F5_9 --> F8_2
@@ -215,6 +218,7 @@ flowchart LR
     F8_6 --> F8_7
     F7_1 --> F8_8
     F7_4 --> F8_8
+    F8_10 --> F8_8
     F8_2 --> F8_8
     F8_3 --> F8_8
     F8_4 --> F8_8

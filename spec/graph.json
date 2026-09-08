@@ -995,6 +995,28 @@
       ]
     },
     {
+      "id": "F8.10",
+      "phase": "P8",
+      "title": "Project memory (retrieved, not injected)",
+      "status": "planned",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F8.1",
+        "F8.4"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.8"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.10-project-memory.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F8.1",
+        "F8.4"
+      ]
+    },
+    {
       "id": "F8.2",
       "phase": "P8",
       "title": "Connection broker (kinds beyond HTTP)",
@@ -1154,7 +1176,8 @@
         "F8.3",
         "F8.4",
         "F8.6",
-        "F8.7"
+        "F8.7",
+        "F8.10"
       ],
       "depends_on_phases": [],
       "blocks": [],
@@ -1164,6 +1187,7 @@
       "depends_on_resolved": [
         "F7.1",
         "F7.4",
+        "F8.10",
         "F8.2",
         "F8.3",
         "F8.4",
@@ -1712,6 +1736,14 @@
       "to": "F8.1"
     },
     {
+      "from": "F8.1",
+      "to": "F8.10"
+    },
+    {
+      "from": "F8.4",
+      "to": "F8.10"
+    },
+    {
       "from": "F5.6",
       "to": "F8.2"
     },
@@ -1788,6 +1820,10 @@
       "to": "F8.8"
     },
     {
+      "from": "F8.10",
+      "to": "F8.8"
+    },
+    {
       "from": "F8.2",
       "to": "F8.8"
     },
@@ -1852,6 +1888,7 @@
     "F4.4",
     "F5.2",
     "F5.3",
+    "F8.10",
     "F8.5",
     "F7.4",
     "F3.6",
