@@ -56,6 +56,17 @@ flowchart LR
         F7_4["F7.4<br/>Full UI parity (browser can do what the CLI does, safely)"]
         F7_5["F7.5<br/>`opslify workspace install <pkg>` (gated, audited, project-local)"]
     end
+    subgraph P8
+        F8_1["F8.1<br/>Project & environment model"]
+        F8_2["F8.2<br/>Connection broker (kinds beyond HTTP)"]
+        F8_3["F8.3<br/>Secrets surface (the reference model)"]
+        F8_4["F8.4<br/>Instructions & skills (layered agent context)"]
+        F8_5["F8.5<br/>Agent registry (bring your own agent)"]
+        F8_6["F8.6<br/>Change as the unit of work"]
+        F8_7["F8.7<br/>Policy editing as a Change"]
+        F8_8["F8.8<br/>Cockpit UI"]
+        F8_9["F8.9<br/>Reviewer agent (adversarial review of a Change)"]
+    end
     F0_2 --> F0_1
     F0_1 --> F1_1
     F0_2 --> F1_1
@@ -183,5 +194,34 @@ flowchart LR
     F7_3 --> F7_4
     F5_5 --> F7_5
     F5_8 --> F7_5
+    F2_2 --> F8_1
+    F4_1 --> F8_1
+    F5_6 --> F8_2
+    F5_7 --> F8_2
+    F5_9 --> F8_2
+    F8_1 --> F8_2
+    F8_3 --> F8_2
+    F5_6 --> F8_3
+    F8_1 --> F8_3
+    F8_1 --> F8_4
+    F2_1 --> F8_5
+    F8_1 --> F8_5
+    F8_4 --> F8_5
+    F4_3 --> F8_6
+    F4_4 --> F8_6
+    F8_1 --> F8_6
+    F4_1 --> F8_7
+    F8_1 --> F8_7
+    F8_6 --> F8_7
+    F7_1 --> F8_8
+    F7_4 --> F8_8
+    F8_2 --> F8_8
+    F8_3 --> F8_8
+    F8_4 --> F8_8
+    F8_6 --> F8_8
+    F8_7 --> F8_8
+    F8_4 --> F8_9
+    F8_5 --> F8_9
+    F8_6 --> F8_9
 
 %% ~ marks a spec-level (inline) feature not yet split into a detailed file

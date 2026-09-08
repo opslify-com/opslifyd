@@ -72,6 +72,17 @@
         "P5"
       ],
       "source": "spec/phases/p7-dx/README.md"
+    },
+    "P8": {
+      "phase": "P8",
+      "depends_on": [],
+      "depends_on_phases": [
+        "P3",
+        "P4",
+        "P5",
+        "P7"
+      ],
+      "source": "spec/phases/p8-control-tower/README.md"
     }
   },
   "nodes": [
@@ -955,6 +966,232 @@
         "F5.5",
         "F5.8"
       ]
+    },
+    {
+      "id": "F8.1",
+      "phase": "P8",
+      "title": "Project & environment model",
+      "status": "planned",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F2.2",
+        "F4.1"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.2",
+        "F8.3",
+        "F8.4",
+        "F8.5",
+        "F8.6",
+        "F8.7"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.1-project-environment-model.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F2.2",
+        "F4.1"
+      ]
+    },
+    {
+      "id": "F8.2",
+      "phase": "P8",
+      "title": "Connection broker (kinds beyond HTTP)",
+      "status": "planned",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F5.6",
+        "F5.7",
+        "F5.9",
+        "F8.1",
+        "F8.3"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.8"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.2-connection-broker.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F5.6",
+        "F5.7",
+        "F5.9",
+        "F8.1",
+        "F8.3"
+      ]
+    },
+    {
+      "id": "F8.3",
+      "phase": "P8",
+      "title": "Secrets surface (the reference model)",
+      "status": "planned",
+      "owner": "Builder (Go + SPA)",
+      "depends_on": [
+        "F5.6",
+        "F8.1"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.2",
+        "F8.8"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.3-secrets-surface.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F5.6",
+        "F8.1"
+      ]
+    },
+    {
+      "id": "F8.4",
+      "phase": "P8",
+      "title": "Instructions & skills (layered agent context)",
+      "status": "planned",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F8.1"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.5",
+        "F8.8",
+        "F8.9"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.4-instructions-and-skills.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F8.1"
+      ]
+    },
+    {
+      "id": "F8.5",
+      "phase": "P8",
+      "title": "Agent registry (bring your own agent)",
+      "status": "planned",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F2.1",
+        "F8.1",
+        "F8.4"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.9"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.5-agent-registry.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F2.1",
+        "F8.1",
+        "F8.4"
+      ]
+    },
+    {
+      "id": "F8.6",
+      "phase": "P8",
+      "title": "Change as the unit of work",
+      "status": "planned",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F4.3",
+        "F4.4",
+        "F8.1"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.7",
+        "F8.8",
+        "F8.9"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.6-change-object.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F4.3",
+        "F4.4",
+        "F8.1"
+      ]
+    },
+    {
+      "id": "F8.7",
+      "phase": "P8",
+      "title": "Policy editing as a Change",
+      "status": "planned",
+      "owner": "Builder (Go + SPA)",
+      "depends_on": [
+        "F4.1",
+        "F8.1",
+        "F8.6"
+      ],
+      "depends_on_phases": [],
+      "blocks": [
+        "F8.8"
+      ],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.7-policy-as-change.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F4.1",
+        "F8.1",
+        "F8.6"
+      ]
+    },
+    {
+      "id": "F8.8",
+      "phase": "P8",
+      "title": "Cockpit UI",
+      "status": "planned",
+      "owner": "Builder (SPA)",
+      "depends_on": [
+        "F7.1",
+        "F7.4",
+        "F8.2",
+        "F8.3",
+        "F8.4",
+        "F8.6",
+        "F8.7"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.8-cockpit-ui.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F7.1",
+        "F7.4",
+        "F8.2",
+        "F8.3",
+        "F8.4",
+        "F8.6",
+        "F8.7"
+      ]
+    },
+    {
+      "id": "F8.9",
+      "phase": "P8",
+      "title": "Reviewer agent (adversarial review of a Change)",
+      "status": "planned",
+      "owner": "Builder (Go)",
+      "depends_on": [
+        "F8.4",
+        "F8.5",
+        "F8.6"
+      ],
+      "depends_on_phases": [],
+      "blocks": [],
+      "blocks_phases": [],
+      "source": "spec/phases/p8-control-tower/features/F8.9-reviewer-agent.md",
+      "detailed": true,
+      "depends_on_resolved": [
+        "F8.4",
+        "F8.5",
+        "F8.6"
+      ]
     }
   ],
   "edges": [
@@ -1465,6 +1702,122 @@
     {
       "from": "F5.8",
       "to": "F7.5"
+    },
+    {
+      "from": "F2.2",
+      "to": "F8.1"
+    },
+    {
+      "from": "F4.1",
+      "to": "F8.1"
+    },
+    {
+      "from": "F5.6",
+      "to": "F8.2"
+    },
+    {
+      "from": "F5.7",
+      "to": "F8.2"
+    },
+    {
+      "from": "F5.9",
+      "to": "F8.2"
+    },
+    {
+      "from": "F8.1",
+      "to": "F8.2"
+    },
+    {
+      "from": "F8.3",
+      "to": "F8.2"
+    },
+    {
+      "from": "F5.6",
+      "to": "F8.3"
+    },
+    {
+      "from": "F8.1",
+      "to": "F8.3"
+    },
+    {
+      "from": "F8.1",
+      "to": "F8.4"
+    },
+    {
+      "from": "F2.1",
+      "to": "F8.5"
+    },
+    {
+      "from": "F8.1",
+      "to": "F8.5"
+    },
+    {
+      "from": "F8.4",
+      "to": "F8.5"
+    },
+    {
+      "from": "F4.3",
+      "to": "F8.6"
+    },
+    {
+      "from": "F4.4",
+      "to": "F8.6"
+    },
+    {
+      "from": "F8.1",
+      "to": "F8.6"
+    },
+    {
+      "from": "F4.1",
+      "to": "F8.7"
+    },
+    {
+      "from": "F8.1",
+      "to": "F8.7"
+    },
+    {
+      "from": "F8.6",
+      "to": "F8.7"
+    },
+    {
+      "from": "F7.1",
+      "to": "F8.8"
+    },
+    {
+      "from": "F7.4",
+      "to": "F8.8"
+    },
+    {
+      "from": "F8.2",
+      "to": "F8.8"
+    },
+    {
+      "from": "F8.3",
+      "to": "F8.8"
+    },
+    {
+      "from": "F8.4",
+      "to": "F8.8"
+    },
+    {
+      "from": "F8.6",
+      "to": "F8.8"
+    },
+    {
+      "from": "F8.7",
+      "to": "F8.8"
+    },
+    {
+      "from": "F8.4",
+      "to": "F8.9"
+    },
+    {
+      "from": "F8.5",
+      "to": "F8.9"
+    },
+    {
+      "from": "F8.6",
+      "to": "F8.9"
     }
   ],
   "topological_order": [
@@ -1486,20 +1839,27 @@
     "F7.3",
     "F4.2",
     "F5.6",
+    "F8.1",
     "F3.4",
     "F3.5",
     "F4.3",
     "F5.1",
     "F5.4",
     "F7.2",
+    "F8.3",
+    "F8.4",
     "F7.1",
     "F4.4",
     "F5.2",
     "F5.3",
+    "F8.5",
     "F7.4",
     "F3.6",
+    "F8.6",
     "F5.5",
     "F5.7",
+    "F8.7",
+    "F8.9",
     "F5.8",
     "F5.9",
     "F7.5",
@@ -1508,7 +1868,9 @@
     "F6.3",
     "F6.4",
     "F6.5",
-    "F6.6"
+    "F6.6",
+    "F8.2",
+    "F8.8"
   ],
   "valid": true,
   "errors": [],
