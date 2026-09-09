@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/install"
+	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 )
 
@@ -99,3 +101,100 @@ func TestBuildEgressFailsClosedByDefault(t *testing.T) {
 		t.Fatalf("want nil controller on fail-closed, got %T", ctl)
 	}
 }
+
+// --- F8.3 composition root ---------------------------------------------------
+//
+// These tests exist because the wiring itself was the untested part: unwiring
+// SecretsSvc from the daemon's Options, or dropping the policy source from the
+// consumer index, left the in-use delete guard inoperative IN PRODUCTION with a
+// fully green suite. Unit tests over the service cannot see that.
+
+func secretsWiringConfig() install.Config {
+	return install.Config{
+		EgressInject: []install.EgressInjectRule{
+			{Host: "gitlab.example.com", SecretRef: "gitlab-token", HeaderName: "PRIVATE-TOKEN"},
+		},
+		RegistryProxy: install.RegistryProxyConfig{
+			Upstreams: []install.RegistryUpstream{{Ecosystem: "npm", CredRef: "npm-token"}},
+		},
+	}
+}
+
+// TestSecretsServiceIndexesConfigAndPolicyConsumers pins that buildSecretsService
+// registers BOTH sources. Dropping the policy source made every grant-only
+// credential look unused, so a delete of a secret a running policy still grants
+// was permitted without a warning.
+func TestSecretsServiceIndexesConfigAndPolicyConsumers(t *testing.T) {
+	base := policy.Policy{Creds: []policy.Cred{{Name: "grant-only-token", Provider: "azure"}}}
+	svc := buildSecretsService(secretsWiringConfig(), nil, nil, base)
+
+	for _, tc := range []struct {
+		ref  string
+		kind broker.ConsumerKind
+		why  string
+	}{
+		{"gitlab-token", broker.ConsumerEgressInject, "an egress-inject rule"},
+		{"npm-token", broker.ConsumerRegistryUpstream, "a registry upstream"},
+		{"grant-only-token", broker.ConsumerPolicyGrant, "a policy grant"},
+	} {
+		cs, err := svc.Consumers(tc.ref)
+		if err != nil {
+			t.Fatalf("Consumers(%s): %v", tc.ref, err)
+		}
+		if len(cs) == 0 {
+			t.Errorf("%s must be reported as a consumer of %q; the delete guard is blind to it otherwise", tc.why, tc.ref)
+			continue
+		}
+		if cs[0].Kind != tc.kind {
+			t.Errorf("Consumers(%s) kind = %q, want %q", tc.ref, cs[0].Kind, tc.kind)
+		}
+	}
+}
+
+// TestDaemonOptionsWireSecretsService pins that the binary's composition root
+// actually hands the service to the daemon. Without SecretsSvc the route falls
+// back to the unguarded delete path.
+func TestDaemonOptionsWireSecretsService(t *testing.T) {
+	cfg := secretsWiringConfig()
+	svc := buildSecretsService(cfg, nil, nil, policy.Policy{})
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, discardLog())
+
+	if opts.SecretsSvc == nil {
+		t.Fatal("daemon.Options.SecretsSvc is nil: the in-use delete guard is not wired into the running daemon")
+	}
+	if opts.SecretsSvc != svc {
+		t.Error("daemon.Options.SecretsSvc must be the service built from live config and policy")
+	}
+}
+
+// TestDaemonOptionsCarryEveryStatefulDependency guards the whole literal, not just
+// the field this feature added: a dependency dropped here disables a subsystem
+// silently at runtime.
+func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
+	cfg := secretsWiringConfig()
+	vault := &noopSecretManager{}
+	svc := buildSecretsService(cfg, vault, nil, policy.Policy{})
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, vault, svc, discardLog())
+
+	if opts.SocketPath != "/run/opslify/api.sock" {
+		t.Errorf("SocketPath = %q", opts.SocketPath)
+	}
+	if opts.SocketGroup != "opslify" {
+		t.Errorf("SocketGroup = %q", opts.SocketGroup)
+	}
+	if opts.Secrets == nil {
+		t.Error("Secrets (the narrow Put/List/Delete surface) must be wired")
+	}
+	if opts.Logger == nil {
+		t.Error("Logger must be wired")
+	}
+	if opts.Ready == nil {
+		t.Error("Ready must be wired, or systemd never sees the daemon come up")
+	}
+}
+
+type noopSecretManager struct{}
+
+func (noopSecretManager) Put(context.Context, string, []byte, broker.PutMeta, bool) error { return nil }
+func (noopSecretManager) List(context.Context) ([]broker.SecretMeta, error)               { return nil, nil }
+func (noopSecretManager) Delete(context.Context, string) error                            { return nil }

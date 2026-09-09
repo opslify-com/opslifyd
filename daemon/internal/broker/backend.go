@@ -61,6 +61,12 @@ type SecretMeta struct {
 	TTL string `json:"ttl,omitempty"`
 	// CreatedAt is when the secret was stored (audit/rotation hygiene).
 	CreatedAt time.Time `json:"created_at"`
+	// LastUsed is when a resolve last read this secret; zero means never. It is
+	// metadata only — knowing WHEN a secret was used reveals nothing about it, and
+	// "nothing has used this in 90 days" is the signal that retires a stale grant.
+	LastUsed time.Time `json:"last_used,omitempty"`
+	// RotatedAt is when the value was last replaced in place under the same ref.
+	RotatedAt time.Time `json:"rotated_at,omitempty"`
 }
 
 // PutMeta is the metadata a caller supplies when storing a secret. Created is

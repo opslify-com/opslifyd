@@ -170,18 +170,17 @@ func run() error {
 	// Service to resolve a scope at create.
 	projects.SetSandboxes(mgr)
 
-	d, err := daemon.New(daemon.Options{
-		Config:      cfg,
-		SocketPath:  *socketPath,
-		SocketGroup: *socketGroup,
-		Verifier:    verifier,
-		Sessions:    mgr,
-		Projects:    projects,
-		Secrets:     vault, // narrow management surface (Put/List/Delete — no Get)
-		Ready:       sdNotifyReady,
-		Version:     version,
-		Logger:      log,
-	})
+	// F8.3 consumer index: everything that addresses a secret ref today. F8.2
+	// connections register here later without changing any caller. It is built
+	// over LIVE config and policy rather than cached, so a delete guard can never
+	// consult a stale picture and permit a removal that breaks a running grant.
+	basePolicy, err := loadDefaultPolicy(cfg)
+	if err != nil {
+		return err
+	}
+	secretsSvc := buildSecretsService(cfg, vault, projects, basePolicy)
+
+	d, err := daemon.New(daemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, secretsSvc, log))
 	if err != nil {
 		return err
 	}
@@ -450,13 +449,9 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 	stateDir := filepath.Join(filepath.Dir(cfg.WorkspaceDir), "sessions")
 	// Load the daemon's trusted default policy (F4.1). Fail CLOSED: a configured
 	// but invalid policy aborts startup rather than serving with a permissive one.
-	defaultPolicy := policy.Default()
-	if cfg.PolicyFile != "" {
-		p, err := policy.Load(cfg.PolicyFile)
-		if err != nil {
-			return nil, fmt.Errorf("opslifyd: load default policy %q: %w", cfg.PolicyFile, err)
-		}
-		defaultPolicy = p
+	defaultPolicy, err := loadDefaultPolicy(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return session.NewManager(session.Options{
 		Config: session.ManagerConfig{
@@ -609,4 +604,97 @@ func sdNotifyReady() {
 	}
 	defer conn.Close()
 	_, _ = conn.Write([]byte("READY=1"))
+}
+
+// buildSecretsService wires the F8.3 operator surface: listing with consumers,
+// rotation, and a delete guarded by them. It holds the same Get-less
+// SecretManager as every other secret route, so no value can escape through it.
+//
+// The consumer sources are the subsystems that address a ref TODAY. Each is read
+// on demand, so config edits and per-scope policy layers are always reflected.
+// loadDefaultPolicy loads the daemon's trusted default policy (F4.1). It fails
+// CLOSED: a configured-but-invalid policy is an error, never a fallback to the
+// permissive built-in.
+func loadDefaultPolicy(cfg install.Config) (policy.Policy, error) {
+	if cfg.PolicyFile == "" {
+		return policy.Default(), nil
+	}
+	p, err := policy.Load(cfg.PolicyFile)
+	if err != nil {
+		return policy.Policy{}, fmt.Errorf("opslifyd: load default policy %q: %w", cfg.PolicyFile, err)
+	}
+	return p, nil
+}
+
+// daemonOptions is the daemon's composition root, extracted so a test can assert
+// over the SAME construction the binary uses. Inlined in the caller, a wiring
+// mistake here — a nil SecretsSvc, a missing Projects — was invisible to every
+// test in the tree while the whole suite stayed green.
+func daemonOptions(
+	cfg install.Config,
+	socketPath, socketGroup string,
+	verifier daemon.ToolchainVerifier,
+	mgr *session.Manager,
+	projects *project.Service,
+	vault broker.SecretManager,
+	secretsSvc *broker.SecretsService,
+	log *slog.Logger,
+) daemon.Options {
+	return daemon.Options{
+		Config:      cfg,
+		SocketPath:  socketPath,
+		SocketGroup: socketGroup,
+		Verifier:    verifier,
+		Sessions:    mgr,
+		Projects:    projects,
+		Secrets:     vault, // narrow management surface (Put/List/Delete — no Get)
+		SecretsSvc:  secretsSvc,
+		Ready:       sdNotifyReady,
+		Version:     version,
+		Logger:      log,
+	}
+}
+
+func buildSecretsService(cfg install.Config, vault broker.SecretManager, projects *project.Service, base policy.Policy) *broker.SecretsService {
+	egress := make([]broker.EgressInjectRef, 0, len(cfg.EgressInject))
+	for _, r := range cfg.EgressInject {
+		egress = append(egress, broker.EgressInjectRef{Host: r.Host, SecretRef: r.SecretRef})
+	}
+	upstreams := make([]broker.RegistryUpstreamRef, 0, len(cfg.RegistryProxy.Upstreams))
+	for _, u := range cfg.RegistryProxy.Upstreams {
+		upstreams = append(upstreams, broker.RegistryUpstreamRef{Ecosystem: u.Ecosystem, CredRef: u.CredRef})
+	}
+
+	// Policy grants: the daemon baseline plus every project/environment layer, so
+	// a grant that only exists in one environment still counts as a consumer.
+	policySrc := broker.ConsumerSourceFunc(func() (map[string][]broker.Consumer, error) {
+		scopes := []broker.PolicyScope{{Scope: "", Policy: base}}
+		if projects != nil {
+			ps, err := projects.Projects()
+			if err != nil {
+				return nil, err
+			}
+			for _, p := range ps {
+				envs, err := projects.Environments(p.ID)
+				if err != nil {
+					return nil, err
+				}
+				for _, e := range envs {
+					sc, err := projects.ResolveScope(base, p.ID, e.ID)
+					if err != nil {
+						// A scope that cannot resolve must not silently drop its grants
+						// from the index — that would under-report consumers.
+						return nil, err
+					}
+					scopes = append(scopes, broker.PolicyScope{Scope: p.ID + "/" + e.Name, Policy: sc.Base()})
+				}
+			}
+		}
+		return broker.PolicyConsumers(scopes).Consumers()
+	})
+
+	return broker.NewSecretsService(vault, broker.NewConsumerIndex(
+		broker.ConfigConsumers(egress, upstreams),
+		policySrc,
+	))
 }

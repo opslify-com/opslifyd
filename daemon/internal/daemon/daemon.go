@@ -77,6 +77,11 @@ type Options struct {
 	// 404. There is deliberately no route that returns a secret value — Get is
 	// daemon-internal (session.Manager.ResolveSecret), not part of this surface.
 	Secrets broker.SecretManager
+	// SecretsSvc is the F8.3 operator surface over the same vault: listing with
+	// consumers, rotation, and a delete guarded by them. It is metadata-only by
+	// construction — it holds the same Get-less SecretManager. nil leaves the F8.3
+	// routes off and the F5.6 routes unchanged.
+	SecretsSvc *broker.SecretsService
 }
 
 // Daemon is the running service. Construct with New; drive with Run (or the
@@ -92,6 +97,7 @@ type Daemon struct {
 	sessions     SessionService
 	projects     ProjectService
 	secrets      broker.SecretManager
+	secretsSvc   *broker.SecretsService
 
 	version  string
 	tier     string
@@ -122,6 +128,7 @@ func New(opts Options) (*Daemon, error) {
 		sessions:     opts.Sessions,
 		projects:     opts.Projects,
 		secrets:      opts.Secrets,
+		secretsSvc:   opts.SecretsSvc,
 		version:      orDefault(opts.Version, "dev"),
 		tier:         opts.Config.Tier,
 	}

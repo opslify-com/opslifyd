@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -104,11 +105,19 @@ func decodeKey(raw string) ([]byte, error) {
 // the KEK; Value is the secret encrypted under that data key. Both blobs are
 // nonce||ciphertext (AES-256-GCM), base64-encoded for JSON.
 type record struct {
-	Ref        string    `json:"ref"`
-	Provider   string    `json:"provider,omitempty"`
-	Scope      string    `json:"scope,omitempty"`
-	TTL        string    `json:"ttl,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
+	Ref       string    `json:"ref"`
+	Provider  string    `json:"provider,omitempty"`
+	Scope     string    `json:"scope,omitempty"`
+	TTL       string    `json:"ttl,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	// LastUsed is when a resolve last read this secret. It is rotation hygiene and
+	// an operator signal ("nothing has used this in 90 days"); it is metadata, so
+	// it never reveals anything about the value.
+	LastUsed time.Time `json:"last_used,omitempty"`
+	// RotatedAt is when the value was last replaced under this ref (Put with
+	// overwrite). Consumers address the ref, so a rotation is invisible to them —
+	// which is exactly why the operator needs it recorded.
+	RotatedAt  time.Time `json:"rotated_at,omitempty"`
 	WrappedDEK string    `json:"wrapped_dek"` // base64(nonce||GCM(KEK, DEK))
 	Value      string    `json:"value"`       // base64(nonce||GCM(DEK, plaintext))
 }
@@ -129,7 +138,24 @@ type Vault struct {
 	mu   sync.Mutex
 	kek  []byte
 	data vaultFile
+	// log surfaces a failure to persist a last-used stamp. A resolve deliberately
+	// SUCCEEDS through such a failure (the caller already holds the value and the
+	// injection must proceed), so a log line is the only signal there is.
+	log *slog.Logger
+	// lastUsedFlushed records, per ref, when a last-used stamp last reached disk.
+	// In-memory stamps are always exact; this throttles the WRITE. Not serialized:
+	// after a restart the first resolve of each ref flushes.
+	lastUsedFlushed map[string]time.Time
 }
+
+// lastUsedFlushInterval bounds how often a resolve rewrites the vault file.
+// Without it every resolve re-encoded and re-wrote EVERY secret under the global
+// mutex, so a hot ref turned each credential injection into a full-file write —
+// throughput loss, disk wear, and a widening window where the vault is being
+// rewritten. Last-used is rotation hygiene, not an authorisation input, so
+// minute-granularity on disk is ample. Cost of an unclean stop: up to one
+// interval of last-used freshness, never a value.
+const lastUsedFlushInterval = time.Minute
 
 var _ SecretBackend = (*Vault)(nil)
 var _ SecretManager = (*Vault)(nil)
@@ -148,7 +174,13 @@ func OpenVault(path string, ks KeySource) (*Vault, error) {
 	if len(kek) != masterKeyLen {
 		return nil, fmt.Errorf("%w: master key must be %d bytes", ErrInvalidInput, masterKeyLen)
 	}
-	v := &Vault{path: path, kek: kek, data: vaultFile{Version: vaultFormatVersion, Secrets: map[string]record{}}}
+	v := &Vault{
+		path:            path,
+		kek:             kek,
+		data:            vaultFile{Version: vaultFormatVersion, Secrets: map[string]record{}},
+		log:             slog.Default(),
+		lastUsedFlushed: map[string]time.Time{},
+	}
 	if err := v.load(); err != nil {
 		return nil, err
 	}
@@ -247,7 +279,13 @@ func validRef(ref string) error {
 }
 
 // Put stores value under ref (envelope-encrypted). See SecretBackend.Put.
-func (v *Vault) Put(_ context.Context, ref string, value []byte, meta PutMeta, overwrite bool) error {
+func (v *Vault) Put(ctx context.Context, ref string, value []byte, meta PutMeta, overwrite bool) error {
+	return v.putLocked(ctx, ref, value, meta, overwrite, false)
+}
+
+// putLocked is the single write path. mustExist makes the write conditional on the
+// ref still existing AT THE MOMENT OF THE WRITE (see Update).
+func (v *Vault) putLocked(_ context.Context, ref string, value []byte, meta PutMeta, overwrite, mustExist bool) error {
 	if err := validRef(ref); err != nil {
 		return err
 	}
@@ -263,6 +301,10 @@ func (v *Vault) Put(_ context.Context, ref string, value []byte, meta PutMeta, o
 	defer v.mu.Unlock()
 	if _, ok := v.data.Secrets[ref]; ok && !overwrite {
 		return fmt.Errorf("%w: %s", ErrExists, ref)
+	} else if !ok && mustExist {
+		// Deleted between the caller's check and here. Writing now would silently
+		// bring a removed credential back to life.
+		return fmt.Errorf("%w: %s (removed concurrently)", ErrNotFound, ref)
 	}
 
 	// Fresh per-secret data key; sealed value under it; DEK wrapped under the KEK.
@@ -290,7 +332,13 @@ func (v *Vault) Put(_ context.Context, ref string, value []byte, meta PutMeta, o
 		Value:      base64.StdEncoding.EncodeToString(valueBlob),
 	}
 	if existing, ok := v.data.Secrets[ref]; ok {
-		rec.CreatedAt = existing.CreatedAt // preserve original creation on overwrite
+		// An overwrite is a ROTATION: consumers address the ref, so the identity and
+		// its history survive and only the sealed value changes. Stamping RotatedAt
+		// is what makes "this ref works but its value changed" visible to an
+		// operator, since nothing downstream can tell.
+		rec.CreatedAt = existing.CreatedAt
+		rec.LastUsed = existing.LastUsed
+		rec.RotatedAt = time.Now().UTC()
 	}
 	v.data.Secrets[ref] = rec
 	return v.persist()
@@ -309,7 +357,40 @@ func (v *Vault) Get(_ context.Context, ref string) ([]byte, SecretMeta, error) {
 		return nil, SecretMeta{}, err
 	}
 	Zeroize(dek)
+	// Stamp last-used. This is rotation hygiene, not an authorisation step, so a
+	// persist failure must never fail the resolve that already succeeded — the
+	// caller has the value and the injection must proceed.
+	now := time.Now().UTC()
+	rec.LastUsed = now
+	v.data.Secrets[ref] = rec
+	if now.Sub(v.lastUsedFlushed[ref]) >= lastUsedFlushInterval {
+		if err := v.persist(); err != nil {
+			v.logger().Warn("broker: could not persist last-used stamp; the resolve still succeeded",
+				"ref", ref, "err", err)
+		} else {
+			v.lastUsedFlushed[ref] = now
+		}
+	}
 	return value, metaOf(rec), nil
+}
+
+func (v *Vault) logger() *slog.Logger {
+	if v.log == nil {
+		return slog.Default()
+	}
+	return v.log
+}
+
+// Update replaces the value under an EXISTING ref atomically: the existence check
+// and the write happen under one hold of the mutex, so a concurrent Delete cannot
+// slip between them and have the write resurrect the ref it just removed. Rotation
+// must go through here, never through find-then-Put.
+func (v *Vault) Update(ctx context.Context, ref string, value []byte, meta PutMeta) error {
+	// No existence pre-check here on purpose: a check outside the lock is exactly
+	// the window this method exists to close. putLocked re-tests existence while
+	// holding the mutex it writes under, so the test and the write cannot be
+	// separated by a concurrent Delete.
+	return v.putLocked(ctx, ref, value, meta, true, true)
 }
 
 // decrypt unwraps the DEK under the KEK and opens the value under the DEK. The
@@ -356,6 +437,9 @@ func (v *Vault) Delete(_ context.Context, ref string) error {
 		return fmt.Errorf("%w: %s", ErrNotFound, ref)
 	}
 	delete(v.data.Secrets, ref)
+	// Forget the flush marker under the SAME lock that guards the map, so a ref
+	// that is later re-added flushes its last-used stamp on first use.
+	delete(v.lastUsedFlushed, ref)
 	return v.persist()
 }
 
@@ -407,6 +491,8 @@ func metaOf(rec record) SecretMeta {
 		Scope:     rec.Scope,
 		TTL:       rec.TTL,
 		CreatedAt: rec.CreatedAt,
+		LastUsed:  rec.LastUsed,
+		RotatedAt: rec.RotatedAt,
 	}
 }
 
