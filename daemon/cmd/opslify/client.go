@@ -111,6 +111,164 @@ type createReq struct {
 	Name string `json:"name,omitempty"`
 	Tier string `json:"tier,omitempty"`
 	TTL  string `json:"ttl,omitempty"`
+	// F8.1 scope. Both omitted => the daemon's default project/environment.
+	Project     string `json:"project,omitempty"`
+	Environment string `json:"environment,omitempty"`
+}
+
+// --- F8.1 project / environment surface ---
+
+// projectView mirrors the daemon's project response (records only — no secret,
+// and a policy layer is a PATH, never content).
+type projectView struct {
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Created      string            `json:"created"`
+	RepoURL      string            `json:"repo_url,omitempty"`
+	Capabilities map[string]string `json:"capabilities,omitempty"`
+	PolicyFile   string            `json:"policy_file,omitempty"`
+	Environments []environmentView `json:"environments"`
+}
+
+// environmentView mirrors the daemon's environment response.
+type environmentView struct {
+	ID            string `json:"id"`
+	ProjectID     string `json:"project_id"`
+	Name          string `json:"name"`
+	Created       string `json:"created"`
+	PolicyOverlay string `json:"policy_overlay,omitempty"`
+	DefaultTier   string `json:"default_tier,omitempty"`
+	DefaultTTL    string `json:"default_ttl,omitempty"`
+	Production    bool   `json:"production"`
+}
+
+// createProjectReq is the POST /v1/projects body.
+type createProjectReq struct {
+	Name         string            `json:"name"`
+	RepoURL      string            `json:"repo_url,omitempty"`
+	Capabilities map[string]string `json:"capabilities,omitempty"`
+	PolicyFile   string            `json:"policy_file,omitempty"`
+	Environments []addEnvReq       `json:"environments,omitempty"`
+}
+
+// addEnvReq is the POST /v1/projects/{id}/environments body.
+type addEnvReq struct {
+	Name          string `json:"name"`
+	PolicyOverlay string `json:"policy_overlay,omitempty"`
+	DefaultTier   string `json:"default_tier,omitempty"`
+	DefaultTTL    string `json:"default_ttl,omitempty"`
+	Production    bool   `json:"production,omitempty"`
+}
+
+// createProject POSTs /v1/projects.
+func (c *client) createProject(ctx context.Context, req createProjectReq) (projectView, error) {
+	var out projectView
+	body, _ := json.Marshal(req)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/projects", bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// listProjects GETs /v1/projects.
+func (c *client) listProjects(ctx context.Context) ([]projectView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/projects", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []projectView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// getProject GETs /v1/projects/{id}.
+func (c *client) getProject(ctx context.Context, id string) (projectView, error) {
+	var out projectView
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/projects/"+url.PathEscape(id), nil)
+	if err != nil {
+		return out, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// addEnvironment POSTs /v1/projects/{id}/environments.
+func (c *client) addEnvironment(ctx context.Context, projectID string, req addEnvReq) (environmentView, error) {
+	var out environmentView
+	body, _ := json.Marshal(req)
+	u := c.baseURL + "/v1/projects/" + url.PathEscape(projectID) + "/environments"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// listEnvironments GETs /v1/projects/{id}/environments.
+func (c *client) listEnvironments(ctx context.Context, projectID string) ([]environmentView, error) {
+	u := c.baseURL + "/v1/projects/" + url.PathEscape(projectID) + "/environments"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []environmentView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // workspaceView mirrors session.WorkspaceView for the `ws ls` table.

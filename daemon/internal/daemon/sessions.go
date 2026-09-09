@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/project"
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
@@ -81,6 +82,12 @@ type createRequest struct {
 	Tier     string `json:"tier,omitempty"`
 	Location string `json:"location,omitempty"`
 	TTL      string `json:"ttl,omitempty"` // Go duration string, e.g. "30m"
+	// Project / Environment place the session in an F8.1 scope. Both omitted =>
+	// the default project/environment, so every existing client keeps working.
+	// Environment accepts the full id ("flight.staging") or the bare name
+	// ("staging") within the project.
+	Project     string `json:"project,omitempty"`
+	Environment string `json:"environment,omitempty"`
 }
 
 // createResponse is the POST /v1/sessions reply.
@@ -266,10 +273,12 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := session.CreateRequest{
-		Mode:     session.Mode(body.Mode),
-		Name:     body.Name,
-		Tier:     runtime.Tier(body.Tier),
-		Location: runtime.Location(body.Location),
+		Mode:          session.Mode(body.Mode),
+		Name:          body.Name,
+		Tier:          runtime.Tier(body.Tier),
+		Location:      runtime.Location(body.Location),
+		ProjectID:     body.Project,
+		EnvironmentID: body.Environment,
 	}
 	if body.TTL != "" {
 		ttl, err := time.ParseDuration(body.TTL)
@@ -652,6 +661,12 @@ func decodeJSON(r *http.Request, v any) error {
 // writeSessionError maps a manager error to an HTTP status + layered envelope.
 func writeSessionError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, project.ErrNotFound), errors.Is(err, project.ErrExists),
+		errors.Is(err, project.ErrInUse), errors.Is(err, project.ErrInvalidInput):
+		// F8.1: a create naming an unknown/foreign project or environment fails at
+		// the SCOPE layer, before any sandbox exists. Route it through the project
+		// mapper so the operator sees layer "project", not a generic sandbox 500.
+		writeProjectError(w, err)
 	case errors.Is(err, session.ErrNotFound):
 		writeAPIError(w, http.StatusNotFound, "sandbox", err.Error())
 	case errors.Is(err, session.ErrNotReady):

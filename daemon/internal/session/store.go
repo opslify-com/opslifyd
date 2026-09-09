@@ -24,6 +24,13 @@ type record struct {
 	WorkspaceDir string                  `json:"workspace_dir"`
 	Created      time.Time               `json:"created"`
 	TTL          time.Duration           `json:"ttl"`
+	// ProjectID / EnvironmentID are the F8.1 scope the session was created in.
+	// They are persisted so a restart's reconcile knows WHICH environment each
+	// orphan belonged to (an environment removal must be able to find its
+	// sandboxes even across a daemon lifetime). omitempty keeps a pre-F8.1 record
+	// loadable: it simply decodes with empty ids.
+	ProjectID     string `json:"project_id,omitempty"`
+	EnvironmentID string `json:"environment_id,omitempty"`
 }
 
 // snapshotMeta records one committed workspace snapshot image. The tag is the

@@ -213,7 +213,7 @@ func TestSpinUp_UnsetDaemonBoundIgnoresWorkspaceWeakening(t *testing.T) {
 
 	// Sanity: the RESOLVED model really did carry the workspace's weaker values
 	// (this is the F4.1 pass-through the enforcement must not trust).
-	resolved, err := m.resolveCreatePolicy(ModeWorkspace, wsName)
+	resolved, err := m.resolveCreatePolicy(ModeWorkspace, wsName, m.cfg.DefaultPolicy)
 	if err != nil {
 		t.Fatalf("resolveCreatePolicy: %v", err)
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/opslify-com/opslifyd/internal/env"
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/project"
 	"github.com/opslify-com/opslifyd/internal/regproxy"
 	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
@@ -150,10 +151,24 @@ func run() error {
 		return err
 	}
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject)
+	// Wire the F8.1 project/environment registry BEFORE the session manager: every
+	// session is created in exactly one environment, and the environment supplies
+	// the trusted policy baseline the create enforces against. It fails CLOSED — a
+	// state dir that cannot be created aborts startup rather than serving unscoped
+	// sessions.
+	projects, err := buildProjectService(cfg, log)
 	if err != nil {
 		return err
 	}
+
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject, projects)
+	if err != nil {
+		return err
+	}
+	// Complete the mutual reference: the Service needed the Manager to exist to
+	// know which sandboxes are live under a scope, and the Manager needed the
+	// Service to resolve a scope at create.
+	projects.SetSandboxes(mgr)
 
 	d, err := daemon.New(daemon.Options{
 		Config:      cfg,
@@ -161,6 +176,7 @@ func run() error {
 		SocketGroup: *socketGroup,
 		Verifier:    verifier,
 		Sessions:    mgr,
+		Projects:    projects,
 		Secrets:     vault, // narrow management surface (Put/List/Delete — no Get)
 		Ready:       sdNotifyReady,
 		Version:     version,
@@ -399,7 +415,30 @@ func buildEgressInject(cfg install.Config, brk *broker.Broker, log *slog.Logger)
 	return ei, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector) (*session.Manager, error) {
+// buildProjectService opens the F8.1 project/environment store and constructs the
+// registry, bootstrapping the default project + environment so a create that
+// names neither still resolves (the backwards-compatibility path). The records
+// live alongside the session state dir (0700, daemon-private) and survive a
+// restart, which is what lets the reconciler attribute an orphan sandbox to the
+// environment that governed it. project_dir overrides the location.
+func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service, error) {
+	dir := cfg.ProjectDir
+	if dir == "" {
+		dir = filepath.Join(filepath.Dir(cfg.WorkspaceDir), "projects")
+	}
+	store, err := project.NewFileStore(dir)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: project store: %w", err)
+	}
+	svc, err := project.NewService(project.Options{Store: store, Logger: log})
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: project registry: %w", err)
+	}
+	log.Info("F8.1 project/environment registry active", "dir", dir)
+	return svc, nil
+}
+
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service) (*session.Manager, error) {
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -443,6 +482,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 		CredInjector:   credInjector,       // F5.1: executor-side credential injection
 		EgressInject:   egressInject,       // F5.7: credential-blind HTTP egress path
 		RegistryInject: registryInject,     // F7.5: operator package-install path
+		Projects:       projects,           // F8.1: project/environment scoping
 	})
 }
 

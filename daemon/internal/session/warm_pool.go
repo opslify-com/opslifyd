@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/project"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 )
 
@@ -67,7 +68,14 @@ func (p *warmPool) start() { p.replenish() }
 // returns (nil, nil) on a clean miss — wrong rung, empty pool, or closed — so
 // Create falls back to on-demand. Either way it triggers background
 // replenishment; the claim never blocks on it.
-func (p *warmPool) claim(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, ttl time.Duration) (*Session, error) {
+//
+// scope + resolved are THIS create's F8.1 placement and policy. A warm container
+// is deliberately scope-agnostic (the pool pre-creates it under the daemon
+// baseline, and hardening/image/tier are identical on both paths), so the claim
+// RE-STAMPS it: a claimed session never inherits the pool's pre-create policy or
+// an empty scope, which would silently run a prod-scoped session under the
+// unnarrowed daemon default.
+func (p *warmPool) claim(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, ttl time.Duration, scope sessionScope, resolved policy.Resolved) (*Session, error) {
 	// The pool only holds its own rung; a mismatched request is a clean miss.
 	if tier != p.tier || loc != p.loc {
 		return nil, nil
@@ -99,13 +107,17 @@ func (p *warmPool) claim(ctx context.Context, tier runtime.Tier, loc runtime.Loc
 	}
 
 	// Re-stamp warm → ready with the caller's disposition and re-persist so the
-	// record reflects the real mode/ttl for reconciliation.
+	// record reflects the real mode/ttl/scope for reconciliation.
 	now := p.m.clock.Now()
 	s.Mode = mode
 	s.TTL = ttl
 	s.State = StateReady
 	s.Created = now
 	s.LastActivity = now
+	s.ProjectID = scope.projectID
+	s.EnvironmentID = scope.envID
+	s.policy = resolved
+	s.policyHash = resolved.Hash
 	if err := p.m.store.Save(recordOf(s)); err != nil {
 		p.m.log.Warn("warm pool: re-persist on claim failed, discarding", "session", s.ID, "err", err)
 		p.destroy(ctx, s)
@@ -180,8 +192,11 @@ func (p *warmPool) realizeWarm(ctx context.Context) (*Session, error) {
 	// A warm container is always a generic SCRATCH sandbox with no workspace
 	// policy file, so it runs under the daemon default policy. The pool tier equals
 	// cfg.DefaultTier (the enforced floor for the default policy), so no spin-up
-	// clamp applies here.
-	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, "", 0, StateWarm, policy.ResolveDefault(p.m.cfg.DefaultPolicy))
+	// clamp applies here. Its F8.1 scope and policy are PLACEHOLDERS re-stamped at
+	// claim (the pool is shared across projects, so it cannot pre-bind one).
+	s, err := p.m.realize(ctx, p.tier, p.loc, ModeScratch, "", 0, StateWarm,
+		policy.ResolveDefault(p.m.cfg.DefaultPolicy),
+		sessionScope{projectID: project.DefaultProjectID, envID: project.DefaultEnvironmentID, base: p.m.cfg.DefaultPolicy})
 	if err != nil {
 		return nil, err
 	}

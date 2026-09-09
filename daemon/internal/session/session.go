@@ -65,6 +65,14 @@ type Session struct {
 	Location runtime.Location
 	State    State
 
+	// ProjectID / EnvironmentID are the F8.1 scope this session was created in.
+	// A session is ALWAYS in exactly one environment (a create that names none
+	// lands in the default scope), so both are non-empty for every live session.
+	// They are persisted on the record and bound into the session.start trace
+	// event, so audit can filter by project/environment without inference.
+	ProjectID     string
+	EnvironmentID string
+
 	// Handle is the F0.3 container handle used for Exec/Destroy.
 	Handle runtime.ContainerHandle
 	// WorkspaceDir is the host path bind-mounted read-write at /workspace.
@@ -158,6 +166,11 @@ type View struct {
 	State        State  `json:"state"`
 	AgeSeconds   int64  `json:"age_seconds"`
 	TTLRemaining int64  `json:"ttl_remaining_seconds"`
+	// ProjectID / EnvironmentID are the F8.1 scope (additive fields: an older
+	// client ignoring them is unaffected). They make a session listing filterable
+	// by project/environment without a join against the trace.
+	ProjectID     string `json:"project_id,omitempty"`
+	EnvironmentID string `json:"environment_id,omitempty"`
 }
 
 // view renders a Session as of now.
@@ -170,11 +183,13 @@ func (s *Session) view(now time.Time) View {
 		}
 	}
 	return View{
-		ID:           s.ID,
-		Mode:         s.Mode,
-		Tier:         string(s.Tier),
-		State:        s.State,
-		AgeSeconds:   int64(now.Sub(s.Created).Seconds()),
-		TTLRemaining: remaining,
+		ID:            s.ID,
+		Mode:          s.Mode,
+		Tier:          string(s.Tier),
+		State:         s.State,
+		AgeSeconds:    int64(now.Sub(s.Created).Seconds()),
+		TTLRemaining:  remaining,
+		ProjectID:     s.ProjectID,
+		EnvironmentID: s.EnvironmentID,
 	}
 }

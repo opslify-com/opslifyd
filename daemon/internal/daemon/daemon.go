@@ -68,6 +68,10 @@ type Options struct {
 	// keeps the daemon at its F1.1 surface (health only) — the routes 404 —
 	// which is what F1.1-scope tests rely on.
 	Sessions SessionService
+	// Projects is the F8.1 project/environment registry backing the /v1/projects
+	// routes. nil keeps those routes 404 (the same opt-in shape as Sessions), so a
+	// daemon built without the control tower is unchanged.
+	Projects ProjectService
 	// Secrets is the F5.6 secret MANAGEMENT surface (Put/List/Delete — the narrow
 	// broker.SecretManager, which has NO Get). nil keeps the /v1/secrets routes
 	// 404. There is deliberately no route that returns a secret value — Get is
@@ -86,6 +90,7 @@ type Daemon struct {
 	ready        func()
 	log          *slog.Logger
 	sessions     SessionService
+	projects     ProjectService
 	secrets      broker.SecretManager
 
 	version  string
@@ -115,6 +120,7 @@ func New(opts Options) (*Daemon, error) {
 		ready:        opts.Ready,
 		log:          opts.Logger,
 		sessions:     opts.Sessions,
+		projects:     opts.Projects,
 		secrets:      opts.Secrets,
 		version:      orDefault(opts.Version, "dev"),
 		tier:         opts.Config.Tier,
