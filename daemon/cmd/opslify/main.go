@@ -65,6 +65,8 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(secretsCmd())
 	root.AddCommand(credsCmd())
 	root.AddCommand(vaultCmd())
+	root.AddCommand(projectCmd())
+	root.AddCommand(envCmd())
 	return root
 }
 

@@ -45,6 +45,7 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /"+APIVersion+"/health", d.handleHealth)
 	d.registerSessionRoutes(mux)
 	d.registerSecretRoutes(mux)
+	d.registerProjectRoutes(mux)
 	return mux
 }
 

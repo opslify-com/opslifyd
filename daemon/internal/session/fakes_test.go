@@ -54,6 +54,10 @@ type fakeRuntime struct {
 	execArgvs    [][]string // argv of every Exec call, in order (F4.4 preview/approve checks)
 	execEnvs     [][]string // env of every Exec call, in order (F5.1 injection checks)
 	planContent  []byte     // bytes a simulated `terraform plan -out` writes (F4.4 pin)
+	// beforeCreate runs at the top of Create, OUTSIDE the fake's mutex, so a test
+	// can hold a create open inside the window between scope resolution and
+	// session registration (the F8.1 in-flight window).
+	beforeCreate func() // set via setBeforeCreate, read under mu
 	nextExec     runtime.ExecStream
 }
 
@@ -67,7 +71,21 @@ func newFakeRuntime() *fakeRuntime {
 	}
 }
 
+// setBeforeCreate installs the hook under the mutex, so a test may set it while
+// creates are already in flight without racing Create's read.
+func (f *fakeRuntime) setBeforeCreate(fn func()) {
+	f.mu.Lock()
+	f.beforeCreate = fn
+	f.mu.Unlock()
+}
+
 func (f *fakeRuntime) Create(_ context.Context, spec runtime.SessionSpec) (runtime.ContainerHandle, error) {
+	f.mu.Lock()
+	hook := f.beforeCreate
+	f.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.createErr != nil {

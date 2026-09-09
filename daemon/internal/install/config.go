@@ -50,6 +50,11 @@ type Config struct {
 	EgressAllowlist []string `yaml:"egress_allowlist"`
 	// WorkspaceDir is the host root for per-session writable workspaces.
 	WorkspaceDir string `yaml:"workspace_dir"`
+	// ProjectDir is the host root for the F8.1 project/environment records
+	// (0700, daemon-private, alongside the session state dir). Empty =>
+	// <dirname(workspace_dir)>/projects, which is where the session records
+	// already live, so a default install needs no new config.
+	ProjectDir string `yaml:"project_dir,omitempty"`
 	// SandboxNetwork is the podman network sandboxes attach to (`--network`).
 	// Empty uses the engine default. On rootless podman the default (pasta) has
 	// no bridge gateway, so the F5.8 credential-blind listeners cannot bind and

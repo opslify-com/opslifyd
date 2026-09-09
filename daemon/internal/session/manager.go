@@ -21,6 +21,7 @@ import (
 
 	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/project"
 	"github.com/opslify-com/opslifyd/internal/regproxy"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
@@ -211,6 +212,13 @@ type Manager struct {
 	// The proxy + CA are torn down on session end.
 	egressInject *EgressInjector
 
+	// projects is the F8.1 project/environment registry. nil disables scoping: a
+	// create then records the WELL-KNOWN default ids (so the trace shape is
+	// uniform) and runs under cfg.DefaultPolicy alone, and a create that names a
+	// project/environment is refused rather than silently unscoped. The daemon
+	// always wires it.
+	projects *project.Service
+
 	// registryInject is the F7.5 per-session registry-proxy factory. nil disables
 	// the operator package-install path (opt-in: no registry_proxy config => no
 	// proxy, no routing env). At registerReady, when the proxy is configured, it
@@ -223,6 +231,12 @@ type Manager struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	// inflight counts creates that have RESOLVED a scope but not yet registered.
+	// A sandbox is being built during that window; without counting it, a scope
+	// removal racing an in-flight create sees "nothing live", deletes the
+	// governing record, and orphans the sandbox that lands a moment later.
+	// Keyed "<projectID>\x00<environmentID>".
+	inflight map[string]int
 
 	// apprMu guards the pending-approval registry (F4.3). It is a SEPARATE lock
 	// from mu so the exec hot path and the approve/deny/timeout control plane never
@@ -286,6 +300,10 @@ type Options struct {
 	// the operator install path (opt-in) — the daemon wires it only when the config
 	// carries a registry_proxy section with at least one upstream.
 	RegistryInject *RegistryInjector
+	// Projects is the F8.1 project/environment registry every session is scoped
+	// in. nil keeps the pre-F8.1 behaviour (every session lands in the well-known
+	// default scope and an explicitly named project/environment is refused).
+	Projects *project.Service
 }
 
 // NewManager validates options and constructs a Manager (it does not start the
@@ -321,7 +339,9 @@ func NewManager(opts Options) (*Manager, error) {
 		credInjector:   opts.CredInjector,
 		egressInject:   opts.EgressInject,
 		registryInject: opts.RegistryInject,
+		projects:       opts.Projects,
 		sessions:       make(map[string]*Session),
+		inflight:       make(map[string]int),
 	}
 	if m.redactor == nil {
 		m.redactor = trace.NoopRedactor{}
@@ -358,9 +378,39 @@ func NewManager(opts Options) (*Manager, error) {
 type CreateRequest struct {
 	Mode     Mode
 	Name     string           // workspace name (workspace mode only; validated)
-	Tier     runtime.Tier     // empty => cfg.DefaultTier
+	Tier     runtime.Tier     // empty => the environment default, else cfg.DefaultTier
 	Location runtime.Location // empty => local
-	TTL      time.Duration    // <=0 => cfg.DefaultTTL
+	TTL      time.Duration    // <=0 => the environment default, else cfg.DefaultTTL
+	// ProjectID / EnvironmentID place the session in an F8.1 scope. Both empty =>
+	// the default project/environment, so every pre-F8.1 caller (CLI, MCP, the
+	// existing REST body) keeps working unchanged. EnvironmentID accepts either
+	// the full id ("flight.staging") or the bare name ("staging") within the
+	// project.
+	ProjectID     string
+	EnvironmentID string
+}
+
+// sessionScope is the resolved F8.1 placement of one session: the ids it records,
+// the TRUSTED policy baseline the scope imposes (daemon ⊕ project ⊕ environment),
+// the environment's session defaults, and the layer-tagged record of every clamp
+// the overlay resolution applied. It is computed BEFORE any container is built.
+type sessionScope struct {
+	projectID string
+	envID     string
+	// base is the trusted policy the workspace layer narrows over and the
+	// enforcement floors are derived from. It is daemon-authoritative: the
+	// project and environment layers are daemon-side records, and each of them
+	// could only NARROW the daemon baseline to get here.
+	base policy.Policy
+	// tier/ttl are the environment's session defaults, already defaulted to the
+	// daemon config values when the environment sets none. They are DEFAULTS, not
+	// floors — a floor is expressed in the environment's policy overlay
+	// (session.tier / session.ttl) and enforced from base.
+	tier runtime.Tier
+	ttl  time.Duration
+	// clamps records every widening attempt the project/environment layers made
+	// and had clamped, layer-tagged (extends the F4.1 workspace clamp record).
+	clamps []string
 }
 
 // Create realises a new sandbox and registers it ready. When a warm pool is
@@ -390,28 +440,52 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		loc = runtime.LocationLocal
 	}
 
+	// F8.1 scope resolution. Decide WHICH project/environment this session is
+	// created in before anything else: the environment supplies the trusted policy
+	// baseline the rest of the create enforces against, plus its session defaults,
+	// and both ids are recorded on the session, its durable record and the
+	// session.start trace binding. A create naming neither lands in the default
+	// scope, so no session is ever unscoped and nothing pre-F8.1 breaks.
+	scope, err := m.resolveScope(req.ProjectID, req.EnvironmentID)
+	if err != nil {
+		return nil, err
+	}
+	// The scope is now committed for this create. Count it as in-flight until the
+	// session registers, so a concurrent removal of that project/environment
+	// refuses instead of orphaning the sandbox being built below.
+	defer m.beginCreate(scope.projectID, scope.envID)()
+
 	// F4.2 session-spin-up enforcement. Resolve the policy in force FIRST, then
 	// clamp the session's tier/ttl to the daemon-authoritative bounds. This runs
 	// before any container is built, so a policy-forbidden request is refused
 	// without ever touching the runtime (fail-closed spin-up).
-	resolved, err := m.resolveCreatePolicy(mode, name)
+	resolved, err := m.resolveCreatePolicy(mode, name, scope.base)
 	if err != nil {
 		return nil, err
 	}
-	tier, err := m.enforceTier(req.Tier, resolved)
+	// Carry the scope's clamps into the session's resolved model so the record of
+	// what the project/environment layers tried to widen travels with the policy
+	// the session actually runs under (Notes are not part of the policy_hash).
+	if len(scope.clamps) > 0 {
+		resolved.Notes = append(append([]string(nil), scope.clamps...), resolved.Notes...)
+	}
+	tier, err := m.enforceTier(req.Tier, resolved, scope)
 	if err != nil {
 		// Legible, layer-tagged refusal — the requested tier is weaker than the
 		// policy floor. No sandbox is created.
 		m.log.Warn("policy denied session spin-up", "reason", err.Error(), "policy_hash", resolved.Hash)
 		return nil, err
 	}
-	ttl := m.enforceTTL(req.TTL, resolved)
+	ttl := m.enforceTTL(req.TTL, resolved, scope)
 
 	// Fast path: claim a pre-warmed sandbox. The pool holds only generic SCRATCH
 	// containers (no per-name workspace dir or resume base), so a workspace create
-	// always takes the on-demand realize path — never a warm claim.
+	// always takes the on-demand realize path — never a warm claim. A warm
+	// container is scope-AGNOSTIC (its hardening, image and tier are identical on
+	// both paths), so the claim re-stamps it with THIS create's scope and resolved
+	// policy — it never inherits the pool's pre-create policy.
 	if m.pool != nil && mode == ModeScratch {
-		if s, err := m.pool.claim(ctx, tier, loc, mode, ttl); err != nil {
+		if s, err := m.pool.claim(ctx, tier, loc, mode, ttl, scope, resolved); err != nil {
 			return nil, err
 		} else if s != nil {
 			m.registerReady(s, "claimed")
@@ -429,12 +503,128 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		defer m.wsMu.Unlock()
 	}
 
-	s, err := m.realize(ctx, tier, loc, mode, name, ttl, StateReady, resolved)
+	s, err := m.realize(ctx, tier, loc, mode, name, ttl, StateReady, resolved, scope)
 	if err != nil {
 		return nil, err
 	}
 	m.registerReady(s, "created")
 	return s, nil
+}
+
+// resolveScope resolves the (project, environment) a create lands in and the
+// trusted policy baseline that scope imposes.
+//
+// With no project service wired (the F1.x-era unit managers, or a daemon built
+// without the control tower) the session still records the WELL-KNOWN default
+// ids, so the trace shape is uniform and audit can always filter — but naming a
+// project/environment explicitly is refused rather than silently ignored, which
+// would place a "prod" session in an unscoped sandbox.
+func (m *Manager) resolveScope(projectID, envID string) (sessionScope, error) {
+	sc := sessionScope{
+		projectID: project.DefaultProjectID,
+		envID:     project.DefaultEnvironmentID,
+		base:      m.cfg.DefaultPolicy,
+		tier:      m.cfg.DefaultTier,
+		ttl:       m.cfg.DefaultTTL,
+	}
+	if m.projects == nil {
+		if projectID != "" || envID != "" {
+			return sessionScope{}, fmt.Errorf("%w: project/environment scoping is not enabled on this daemon", ErrInvalidInput)
+		}
+		return sc, nil
+	}
+	resolved, err := m.projects.ResolveScope(m.cfg.DefaultPolicy, projectID, envID)
+	if err != nil {
+		// The project sentinels (invalid input / not found) are preserved so the
+		// REST layer maps them to the right status with layer "project".
+		return sessionScope{}, fmt.Errorf("session: scope: %w", err)
+	}
+	sc.projectID = resolved.Project.ID
+	sc.envID = resolved.Environment.ID
+	sc.base = resolved.Base()
+	sc.clamps = resolved.Clamps()
+	if t := resolved.Environment.DefaultTier; t != "" {
+		sc.tier = runtime.Tier(t)
+	}
+	if d := resolved.Environment.DefaultTTL; d != "" {
+		// Validated at environment-creation time; an unparseable value here would
+		// mean a hand-edited record, so fall back to the daemon default rather
+		// than failing the create.
+		if parsed, perr := time.ParseDuration(d); perr == nil && parsed > 0 {
+			sc.ttl = parsed
+		} else {
+			m.log.Warn("environment default_ttl is unparseable; using the daemon default",
+				"environment", resolved.Environment.ID, "default_ttl", d)
+		}
+	}
+	return sc, nil
+}
+
+// inflightKey scopes the in-flight counter to one (project, environment).
+func inflightKey(projectID, environmentID string) string {
+	return projectID + "\x00" + environmentID
+}
+
+// beginCreate marks a create as in-flight in its scope and returns the release
+// func the caller MUST defer, so the count drops whether the create succeeds,
+// fails, or panics.
+func (m *Manager) beginCreate(projectID, environmentID string) func() {
+	k := inflightKey(projectID, environmentID)
+	m.mu.Lock()
+	m.inflight[k]++
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		if m.inflight[k] <= 1 {
+			delete(m.inflight, k)
+		} else {
+			m.inflight[k]--
+		}
+		m.mu.Unlock()
+	}
+}
+
+// InFlightIn reports how many creates have resolved this scope but not yet
+// registered. A scope removal MUST refuse while this is non-zero: the sandbox
+// exists (or is about to) but is not yet visible to SessionsIn, so tearing the
+// governing record down now would orphan it.
+func (m *Manager) InFlightIn(projectID, environmentID string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for k, c := range m.inflight {
+		proj, env, _ := strings.Cut(k, "\x00")
+		if proj != projectID {
+			continue
+		}
+		if environmentID != "" && env != environmentID {
+			continue
+		}
+		n += c
+	}
+	return n
+}
+
+// SessionsIn returns the ids of LIVE sessions scoped to projectID and, when
+// environmentID is non-empty, to that environment. It is the F8.1 seam the
+// project service uses to refuse a project removal while a sandbox is live and to
+// tear an environment's sandboxes down in order — the daemon, not the UI, decides
+// whether a scope is still in use.
+func (m *Manager) SessionsIn(projectID, environmentID string) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, s := range m.sessions {
+		if s.ProjectID != projectID {
+			continue
+		}
+		if environmentID != "" && s.EnvironmentID != environmentID {
+			continue
+		}
+		out = append(out, s.ID)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // realize builds one sandbox and persists its record, returning it in state st.
@@ -443,7 +633,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 // same hardening hard-spec (F0.3 base) and same signed toolchain digest. It does
 // NOT register the session in the live map — the caller (Create for ready
 // sessions; the pool for warm ones) decides that.
-func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, name string, ttl time.Duration, st State, resolved policy.Resolved) (*Session, error) {
+func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Location, mode Mode, name string, ttl time.Duration, st State, resolved policy.Resolved, scope sessionScope) (*Session, error) {
 	rt, err := m.resolve(tier, loc)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
@@ -542,19 +732,21 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	}
 
 	s := &Session{
-		ID:           id,
-		Mode:         mode,
-		Name:         name,
-		Tier:         tier,
-		Location:     loc,
-		State:        st,
-		Handle:       handle,
-		WorkspaceDir: wsDir,
-		Created:      now,
-		LastActivity: now,
-		TTL:          ttl,
-		policyHash:   resolved.Hash,
-		policy:       resolved,
+		ID:            id,
+		Mode:          mode,
+		Name:          name,
+		Tier:          tier,
+		Location:      loc,
+		State:         st,
+		Handle:        handle,
+		WorkspaceDir:  wsDir,
+		Created:       now,
+		LastActivity:  now,
+		TTL:           ttl,
+		ProjectID:     scope.projectID,
+		EnvironmentID: scope.envID,
+		policyHash:    resolved.Hash,
+		policy:        resolved,
 	}
 
 	if err := m.store.Save(recordOf(s)); err != nil {
@@ -599,6 +791,11 @@ func (m *Manager) registerReady(s *Session, origin string) {
 			"image_digest":        m.cfg.Image,
 			"toolchain_lock_hash": m.toolchainDigest(),
 			"policy_hash":         s.policyHash, // F4.1: resolved policy_hash
+			// F8.1: the scope this session ran in. Bound at seq 0 — the chain root —
+			// so the whole session's evidence is attributable to one project and one
+			// environment, and audit can filter by either without inference.
+			"project_id":     s.ProjectID,
+			"environment_id": s.EnvironmentID,
 		}); err != nil {
 			m.log.Warn("trace session.start emit failed", "session", s.ID, "err", err)
 		}
@@ -1325,14 +1522,19 @@ func (m *Manager) ActivePolicy() policy.Resolved {
 // resolveCreatePolicy resolves the F4.1 policy used for F4.2 spin-up enforcement,
 // BEFORE any container is built. A scratch session has an ephemeral, freshly
 // empty /workspace and therefore never carries a workspace policy file — it runs
-// under the daemon default. A workspace session's stable per-name dir may hold an
-// (untrusted) opslify.policy.yaml, resolved (narrowed) over the daemon default;
-// an invalid file is a hard, fail-closed error (refuse to serve).
-func (m *Manager) resolveCreatePolicy(mode Mode, name string) (policy.Resolved, error) {
+// under `base` alone. A workspace session's stable per-name dir may hold an
+// (untrusted) opslify.policy.yaml, resolved (narrowed) over `base`; an invalid
+// file is a hard, fail-closed error (refuse to serve).
+//
+// base is the TRUSTED baseline the session starts from: the daemon default under
+// F4.1, and under F8.1 the daemon default already narrowed by the project and
+// environment layers (each of which could itself only narrow). The workspace is
+// therefore always the LAST and least-trusted rung of the same chain.
+func (m *Manager) resolveCreatePolicy(mode Mode, name string, base policy.Policy) (policy.Resolved, error) {
 	if mode != ModeWorkspace || m.cfg.WorkspaceRoot == "" {
-		return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+		return policy.ResolveDefault(base), nil
 	}
-	return m.resolvePolicy(m.workspaceDir(name))
+	return m.resolvePolicy(base, m.workspaceDir(name))
 }
 
 // enforceTier returns the tier the session must run at, or ErrPolicyDenied when
@@ -1345,21 +1547,28 @@ func (m *Manager) resolveCreatePolicy(mode Mode, name string) (policy.Resolved, 
 // not read resolved.Session.Tier in that case. When the daemon policy DOES pin a
 // tier, resolved.Session.Tier is trustworthy (narrowing can only make it more
 // isolated), so it is honoured as an additional floor.
-func (m *Manager) enforceTier(reqTier runtime.Tier, resolved policy.Resolved) (runtime.Tier, error) {
-	// Running tier: the explicit request, else the daemon config default (prior
-	// behavior — the config default is a DEFAULT, not a floor, so a caller may
-	// still pick the weaker compat rung when no policy constrains it).
+// F8.1 extends "trusted" from the daemon policy alone to scope.base, the daemon
+// policy already narrowed by the project and environment layers (both daemon-side
+// records, each of which could itself only narrow). That is what lets a prod
+// environment overlay impose a stricter rung than staging while a workspace file
+// still cannot impose or relax one. With no project service wired, scope.base IS
+// cfg.DefaultPolicy, so the pre-F8.1 behaviour is unchanged.
+func (m *Manager) enforceTier(reqTier runtime.Tier, resolved policy.Resolved, scope sessionScope) (runtime.Tier, error) {
+	// Running tier: the explicit request, else the scope default (the
+	// environment's default_tier, or the daemon config default when it sets none).
+	// The default is a DEFAULT, not a floor, so a caller may still pick the weaker
+	// compat rung when no policy constrains it.
 	tier := reqTier
 	if tier == "" {
-		tier = m.cfg.DefaultTier
+		tier = scope.tier
 	}
-	// A policy floor exists ONLY when the daemon policy pins a tier. Then
+	// A policy floor exists ONLY when the TRUSTED policy pins a tier. Then
 	// resolved.Session.Tier is trustworthy (F4.1 narrowing can only make it MORE
-	// isolated than the daemon pin). When the daemon policy leaves session.tier
-	// unset we deliberately do NOT read resolved.Session.Tier — it is the
-	// workspace's pass-through value — so a workspace can neither impose nor relax
-	// a tier (the F4.1 carry-over is satisfied by ignoring it outright).
-	if m.cfg.DefaultPolicy.Session.Tier == "" {
+	// isolated than the trusted pin). When the trusted side leaves session.tier
+	// unset we deliberately do NOT read resolved.Session.Tier -- it is the
+	// workspace's pass-through value -- so a workspace can neither impose nor
+	// relax a tier (the F4.1 carry-over is satisfied by ignoring it outright).
+	if scope.base.Session.Tier == "" {
 		return tier, nil
 	}
 	floorRank, ok := policy.TierRank(resolved.Session.Tier)
@@ -1389,17 +1598,20 @@ func (m *Manager) enforceTier(reqTier runtime.Tier, resolved policy.Resolved) (r
 // the workspace's pass-through value and is IGNORED (the carry-over) — the bound
 // is cfg.DefaultTTL, so a workspace proposing a longer ttl cannot lengthen the
 // session. A requested ttl longer than the bound is clamped down, never honoured.
-func (m *Manager) enforceTTL(reqTTL time.Duration, resolved policy.Resolved) time.Duration {
+// F8.1: the bound comes from scope.base (daemon, narrowed by project and
+// environment) and the fallback from the environment's default_ttl, so a prod
+// overlay can shorten every session in it. A workspace still cannot lengthen one.
+func (m *Manager) enforceTTL(reqTTL time.Duration, resolved policy.Resolved, scope sessionScope) time.Duration {
 	ttl := reqTTL
 	if ttl <= 0 {
-		ttl = m.cfg.DefaultTTL
+		ttl = scope.ttl
 	}
-	// A ttl bound exists ONLY when the daemon policy pins one. resolved.Session.TTL
+	// A ttl bound exists ONLY when the TRUSTED policy pins one. resolved.Session.TTL
 	// is then trustworthy (narrowing takes the MIN, so it is never longer than the
-	// daemon pin). When the daemon policy leaves ttl unset we do NOT read the
-	// resolved value (the workspace's pass-through) — so a workspace proposing a
+	// trusted pin). When the trusted side leaves ttl unset we do NOT read the
+	// resolved value (the workspace's pass-through), so a workspace proposing a
 	// longer ttl can never lengthen the session (the F4.1 carry-over).
-	if m.cfg.DefaultPolicy.Session.TTL == "" {
+	if scope.base.Session.TTL == "" {
 		return ttl
 	}
 	if d, err := time.ParseDuration(resolved.Session.TTL); err == nil && d > 0 {
@@ -1424,21 +1636,24 @@ func (m *Manager) enforceTTL(reqTTL time.Duration, resolved policy.Resolved) tim
 //
 // An empty wsDir (WorkspaceRoot unset, e.g. many unit tests) yields the daemon
 // default with no file read.
-func (m *Manager) resolvePolicy(wsDir string) (policy.Resolved, error) {
+// base is the trusted baseline the workspace narrows over: the daemon default
+// under F4.1, and under F8.1 that default already narrowed by the project and
+// environment layers.
+func (m *Manager) resolvePolicy(base policy.Policy, wsDir string) (policy.Resolved, error) {
 	if wsDir == "" {
-		return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+		return policy.ResolveDefault(base), nil
 	}
 	path := filepath.Join(wsDir, policy.DefaultFileName)
 	ws, err := policy.Load(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return policy.ResolveDefault(m.cfg.DefaultPolicy), nil
+			return policy.ResolveDefault(base), nil
 		}
 		// Invalid/unreadable workspace policy: refuse to serve (fail-closed). The
 		// error carries layer context; the caller aborts the create.
 		return policy.Resolved{}, fmt.Errorf("session: policy: %w", err)
 	}
-	resolved := policy.Resolve(m.cfg.DefaultPolicy, ws)
+	resolved := policy.Resolve(base, ws)
 	for _, note := range resolved.Notes {
 		m.log.Warn("policy narrowed", "workspace_dir", wsDir, "reason", note)
 	}
@@ -1706,28 +1921,32 @@ func newID() (string, error) {
 
 func recordOf(s *Session) record {
 	return record{
-		ID:           s.ID,
-		Mode:         s.Mode,
-		Tier:         s.Tier,
-		Location:     s.Location,
-		Handle:       s.Handle,
-		WorkspaceDir: s.WorkspaceDir,
-		Created:      s.Created,
-		TTL:          s.TTL,
+		ID:            s.ID,
+		Mode:          s.Mode,
+		Tier:          s.Tier,
+		Location:      s.Location,
+		Handle:        s.Handle,
+		WorkspaceDir:  s.WorkspaceDir,
+		Created:       s.Created,
+		TTL:           s.TTL,
+		ProjectID:     s.ProjectID,
+		EnvironmentID: s.EnvironmentID,
 	}
 }
 
 func sessionOf(r record) *Session {
 	return &Session{
-		ID:           r.ID,
-		Mode:         r.Mode,
-		Tier:         r.Tier,
-		Location:     r.Location,
-		State:        StateEnded,
-		Handle:       r.Handle,
-		WorkspaceDir: r.WorkspaceDir,
-		Created:      r.Created,
-		TTL:          r.TTL,
+		ID:            r.ID,
+		Mode:          r.Mode,
+		Tier:          r.Tier,
+		Location:      r.Location,
+		State:         StateEnded,
+		Handle:        r.Handle,
+		WorkspaceDir:  r.WorkspaceDir,
+		Created:       r.Created,
+		TTL:           r.TTL,
+		ProjectID:     r.ProjectID,
+		EnvironmentID: r.EnvironmentID,
 	}
 }
 
