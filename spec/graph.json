@@ -971,7 +971,7 @@
       "id": "F8.1",
       "phase": "P8",
       "title": "Project & environment model",
-      "status": "planned",
+      "status": "approved",
       "owner": "Builder (Go)",
       "depends_on": [
         "F2.2",
