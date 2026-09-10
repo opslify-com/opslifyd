@@ -77,7 +77,7 @@ func (c *httpConnection) Validate() error {
 // sandbox's environment by the F5.1 injector, placing in the sandbox exactly the
 // value the connection exists to keep out of it. The kind is credential-blind
 // only if both halves hold.
-func (c *httpConnection) BuildForSession(_ context.Context, _ SessionContext) (ConnectionInjection, io.Closer, error) {
+func (c *httpConnection) EgressRules() []HeaderInjectRule {
 	rules := make([]HeaderInjectRule, 0, len(c.spec.Hosts))
 	for _, host := range c.spec.Hosts {
 		rules = append(rules, HeaderInjectRule{
@@ -87,8 +87,11 @@ func (c *httpConnection) BuildForSession(_ context.Context, _ SessionContext) (C
 			HeaderFormat: c.headerFormat(),
 		})
 	}
+	return rules
+}
+
+func (c *httpConnection) BuildForSession(_ context.Context, _ SessionContext) (ConnectionInjection, io.Closer, error) {
 	return ConnectionInjection{
-		EgressRules: rules,
 		ExcludeRefs: []string{c.spec.SecretRef},
 		// No Env and no Files, deliberately: the sandbox receives nothing.
 	}, nil, nil

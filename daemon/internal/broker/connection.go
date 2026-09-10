@@ -38,8 +38,19 @@ type Connection interface {
 	// Validate checks the connection is usable before it is stored, so a broken
 	// definition is a create-time error rather than a session-time surprise.
 	Validate() error
+	// EgressRules are the header injections this connection needs at the L7 proxy.
+	//
+	// It is separate from BuildForSession because of a hard ordering constraint:
+	// the per-session proxy is BUILT FROM these rules, so they must be known before
+	// it exists — while a kind like kubernetes needs the proxy's address to write
+	// the kubeconfig that points at it. Two phases make that ordering explicit
+	// instead of leaving it as a circular dependency someone discovers later.
+	EgressRules() []HeaderInjectRule
+
 	// BuildForSession produces the injection for one session and a Closer that
-	// tears down everything the kind allocated (listeners, agents, sockets).
+	// tears down everything the kind allocated (listeners, agents, sockets). It
+	// runs AFTER the proxy exists, so sc carries the address and CA a kind needs to
+	// point the sandbox at it.
 	//
 	// It must FAIL CLOSED: a connection whose secret is missing or unreadable
 	// returns an error and injects nothing. There is no partial mode and no
@@ -80,6 +91,15 @@ type SessionContext struct {
 	SourceIP string
 	// WorkspaceDir is where injected files are written. Daemon-controlled.
 	WorkspaceDir string
+	// ProxyAddr is the container-reachable address of the per-session L7 proxy,
+	// once it is bound. A kind that points the sandbox at the proxy (kubernetes)
+	// requires it; a kind that does not (http, ssh) ignores it.
+	ProxyAddr string
+	// ProxyCAPEM is the per-session CA the proxy terminates TLS with. A sandbox
+	// client must trust it or every request fails certificate validation — and a
+	// kind must never work around that by disabling verification, which would make
+	// the sandbox accept ANY certificate, not merely ours.
+	ProxyCAPEM []byte
 }
 
 // InjectedFile is a file a kind writes for the sandbox to use.
@@ -120,9 +140,6 @@ type ConnectionInjection struct {
 	Env map[string]string
 	// Files are written into the workspace before the sandbox starts.
 	Files []InjectedFile
-	// EgressRules are header injections for the L7 proxy. Only the http kind
-	// produces these today.
-	EgressRules []HeaderInjectRule
 	// ExcludeRefs are secret refs that must NOT be resolved into the sandbox
 	// environment by the F5.1 env injector, because this connection resolves them
 	// at a boundary instead. Getting this wrong would place in the sandbox exactly
@@ -152,7 +169,6 @@ func (i *ConnectionInjection) Merge(other ConnectionInjection) error {
 		}
 		i.Files = append(i.Files, f)
 	}
-	i.EgressRules = append(i.EgressRules, other.EgressRules...)
 	i.ExcludeRefs = append(i.ExcludeRefs, other.ExcludeRefs...)
 	return nil
 }

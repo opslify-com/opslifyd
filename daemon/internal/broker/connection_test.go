@@ -47,13 +47,17 @@ func TestHTTPConnectionGivesTheSandboxNothing(t *testing.T) {
 	if len(inj.Files) != 0 {
 		t.Errorf("the sandbox must receive no files from an http connection: %v", inj.Files)
 	}
-	// What it DOES produce: an upstream rule, and the exclusion that keeps the same
-	// secret out of the sandbox environment.
-	if len(inj.EgressRules) != 1 || inj.EgressRules[0].Host != "gitlab.example.com" {
-		t.Fatalf("EgressRules = %+v", inj.EgressRules)
+	// What it DOES produce: an upstream rule (phase one, before the proxy exists)
+	// and the exclusion that keeps the same secret out of the sandbox environment.
+	rules := c.EgressRules()
+	if len(rules) != 1 || rules[0].Host != "gitlab.example.com" {
+		t.Fatalf("EgressRules = %+v", rules)
 	}
-	if inj.EgressRules[0].HeaderName != "PRIVATE-TOKEN" {
-		t.Errorf("header name = %q", inj.EgressRules[0].HeaderName)
+	if rules[0].HeaderName != "PRIVATE-TOKEN" {
+		t.Errorf("header name = %q", rules[0].HeaderName)
+	}
+	if rules[0].SecretRef != "gitlab-token" {
+		t.Errorf("rule must name the ref, not a value: %+v", rules[0])
 	}
 }
 
@@ -178,12 +182,8 @@ func TestHeaderNameCannotInjectAHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an unset header name must fall back to the default: %v", err)
 	}
-	inj, _, err := c.BuildForSession(context.Background(), SessionContext{SessionID: "s1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inj.EgressRules[0].HeaderName != "Authorization" {
-		t.Errorf("default header = %q, want Authorization", inj.EgressRules[0].HeaderName)
+	if got := c.EgressRules()[0].HeaderName; got != "Authorization" {
+		t.Errorf("default header = %q, want Authorization", got)
 	}
 }
 
@@ -254,13 +254,14 @@ func TestMergeRefusesConflicts(t *testing.T) {
 	if err := same.Merge(ConnectionInjection{Env: map[string]string{"X": "1"}}); err != nil {
 		t.Errorf("identical values must merge cleanly: %v", err)
 	}
-	// Rules and exclusions accumulate rather than conflict.
-	acc := ConnectionInjection{EgressRules: []HeaderInjectRule{{Host: "a"}}, ExcludeRefs: []string{"r1"}}
-	if err := acc.Merge(ConnectionInjection{EgressRules: []HeaderInjectRule{{Host: "b"}}, ExcludeRefs: []string{"r2"}}); err != nil {
+	// Exclusions accumulate rather than conflict: two connections may each need a
+	// different ref kept out of the sandbox environment.
+	acc := ConnectionInjection{ExcludeRefs: []string{"r1"}}
+	if err := acc.Merge(ConnectionInjection{ExcludeRefs: []string{"r2"}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(acc.EgressRules) != 2 || len(acc.ExcludeRefs) != 2 {
-		t.Errorf("rules and exclusions must accumulate: %+v", acc)
+	if len(acc.ExcludeRefs) != 2 {
+		t.Errorf("exclusions must accumulate: %+v", acc)
 	}
 }
 
