@@ -505,3 +505,285 @@ func TestAuditRecordCarriesConsumerCount(t *testing.T) {
 		t.Errorf("audit record must carry the consumer count; log = %q", buf.String())
 	}
 }
+
+// --- ref validation, exhaustively (F10) --------------------------------------
+
+// TestValidateRefRefusesInjectionCharacters pins the ALLOWLIST, which was
+// previously unconstrained: widening it to admit '?', '#' or '%' survived the
+// whole suite, and those are precisely the characters that let a ref rewrite a
+// URL. validRef's own doc calls it the guard that stops a ref being "a path or
+// an injection vector", so the allowlist is a security boundary, not a style
+// choice.
+func TestValidateRefRefusesInjectionCharacters(t *testing.T) {
+	for _, ref := range []string{
+		// URL structure
+		"tok?force=true", "tok#frag", "tok%2f", "tok%00", "tok&x=1", "tok=v",
+		"tok:1", "tok;x", "tok|x", "tok\\x", "tok<x", "tok>x", "tok\"x", "tok'x",
+		"http://evil/tok", "//evil/tok", "tok?", "tok#",
+		// path shape
+		"/leading", "trailing/", "double//seg", "..", "../tok", "tok/..",
+		"a/../../b", "./tok", "/", "//",
+		// whitespace and control
+		"tok tok", "tok\ttok", "tok\ntok", "tok\rtok", "tok\x00",
+		// non-ASCII lookalikes for '/'
+		"tok⁄x", "tok／x",
+		// empty and over-long
+		"", strings.Repeat("x", 257),
+	} {
+		if err := ValidateRef(ref); err == nil {
+			t.Errorf("ValidateRef(%q) must be refused — a ref reaches a URL path and a filesystem-shaped key", ref)
+		}
+	}
+}
+
+// TestValidateRefAcceptsLegitimateRefs keeps the allowlist from being a blanket
+// refusal. These shapes are documented and in use.
+func TestValidateRefAcceptsLegitimateRefs(t *testing.T) {
+	for _, ref := range []string{
+		"gitlab-token", "aws/deploy", "gh/token", "a.b_c-d@e/f",
+		"azure/sp.client-secret", "npm_token", "k8s/prod/kubeconfig",
+		"user@example.com", "v1.2.3", strings.Repeat("x", 256),
+	} {
+		if err := ValidateRef(ref); err != nil {
+			t.Errorf("ValidateRef(%q) is legitimate but was refused: %v", ref, err)
+		}
+	}
+}
+
+// --- find() (F8) --------------------------------------------------------------
+
+// TestRotateRefusesUnknownRefInAPopulatedVault pins that the ref LOOKUP works,
+// not just that an empty vault has nothing to find. A `find` that matched the
+// wrong record made a rotation silently inherit another secret's provider, scope
+// and TTL — and on a backend without atomic Update it let a rotation CREATE a
+// ref, leaving the real credential un-rotated while the operator believed it had
+// been replaced.
+func TestRotateRefusesUnknownRefInAPopulatedVault(t *testing.T) {
+	v, _ := newTestVault(t)
+	mustPut(t, v, "real-token", "real-value", "gitlab")
+	mustPut(t, v, "other-token", "other-value", "azure")
+	svc := NewSecretsService(v, nil)
+
+	err := svc.Rotate(context.Background(), "typo-token", []byte("new"), PutMeta{})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rotating an unknown ref must be ErrNotFound, got %v", err)
+	}
+	metas, _ := v.List(context.Background())
+	if len(metas) != 2 {
+		t.Fatalf("a refused rotation must not create a ref: %d secrets", len(metas))
+	}
+	for _, m := range metas {
+		if !m.RotatedAt.IsZero() {
+			t.Errorf("a refused rotation must not stamp RotatedAt on %q", m.Ref)
+		}
+	}
+}
+
+// TestRotateCarriesForwardTheCorrectSecretsMetadata: the carry-forward must come
+// from the ref being rotated, not from whichever record happened to match first.
+func TestRotateCarriesForwardTheCorrectSecretsMetadata(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	if err := v.Put(ctx, "first", []byte("v1"), PutMeta{Provider: "azure", Scope: "prod", TTL: "1h"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Put(ctx, "second", []byte("v2"), PutMeta{Provider: "gitlab", Scope: "staging", TTL: "2h"}, false); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewSecretsService(v, nil)
+	// Rotate the SECOND one, restating nothing.
+	if err := svc.Rotate(ctx, "second", []byte("v2-new"), PutMeta{}); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	metas, _ := v.List(ctx)
+	for _, m := range metas {
+		if m.Ref != "second" {
+			continue
+		}
+		if m.Provider != "gitlab" || m.Scope != "staging" || m.TTL != "2h" {
+			t.Fatalf("rotation inherited the wrong record's metadata: %+v", m)
+		}
+	}
+}
+
+// TestRotateRequiresAnAtomicBackend: a backend that cannot rotate atomically
+// must be refused rather than served by the old find-then-Put fallback, which
+// could both resurrect a deleted ref and create a new one.
+func TestRotateRequiresAnAtomicBackend(t *testing.T) {
+	svc := NewSecretsService(&nonAtomicBackend{secrets: map[string]bool{"tok": true}}, nil)
+	err := svc.Rotate(context.Background(), "tok", []byte("new"), PutMeta{})
+	if !errors.Is(err, ErrDenied) {
+		t.Fatalf("a backend without atomic Update must be refused, got %v", err)
+	}
+}
+
+// nonAtomicBackend implements SecretManager but NOT SecretUpdater.
+type nonAtomicBackend struct{ secrets map[string]bool }
+
+func (b *nonAtomicBackend) Put(_ context.Context, ref string, _ []byte, _ PutMeta, _ bool) error {
+	b.secrets[ref] = true
+	return nil
+}
+
+func (b *nonAtomicBackend) List(context.Context) ([]SecretMeta, error) {
+	out := make([]SecretMeta, 0, len(b.secrets))
+	for ref := range b.secrets {
+		out = append(out, SecretMeta{Ref: ref})
+	}
+	return out, nil
+}
+
+func (b *nonAtomicBackend) Delete(_ context.Context, ref string) error {
+	delete(b.secrets, ref)
+	return nil
+}
+
+// --- metadata bounds (F7) -----------------------------------------------------
+
+// TestProviderAndScopeAreBounded: both are written to the audit log and stored in
+// the vault file (read whole at startup, rewritten whole on every write). Only
+// ref and TTL were validated, so a 100 KB provider was accepted, and a newline
+// in one forged a second audit line under a text log handler.
+func TestProviderAndScopeAreBounded(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	for _, tc := range []struct{ name, provider, scope string }{
+		{"long provider", strings.Repeat("p", 129), ""},
+		{"long scope", "", strings.Repeat("s", 129)},
+		{"newline in provider", "x\nlevel=INFO msg=secret.delete audit=true ref=other", ""},
+		{"newline in scope", "", "prod\nforged"},
+		{"carriage return", "x\ry", ""},
+		{"NUL", "x\x00y", ""},
+		{"escape", "x\x1b[2Jy", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := v.Put(ctx, "tok-"+strings.ReplaceAll(tc.name, " ", "-"), []byte("v"),
+				PutMeta{Provider: tc.provider, Scope: tc.scope}, false)
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("provider/scope %q/%q must be refused, got %v", tc.provider, tc.scope, err)
+			}
+		})
+	}
+	// Legitimate values still work.
+	if err := v.Put(ctx, "ok", []byte("v"), PutMeta{Provider: "gitlab", Scope: "tripon/prod"}, false); err != nil {
+		t.Errorf("a legitimate provider/scope was refused: %v", err)
+	}
+}
+
+// TestAuditRecordCannotBeForgedThroughProvider is the end-to-end of F7: even
+// with a text handler (the worst case), no second audit line can be forged.
+func TestAuditRecordCannotBeForgedThroughProvider(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	mustPut(t, v, "tok", "v", "gitlab")
+	var buf bytes.Buffer
+	svc := NewSecretsService(v, nil).WithLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+
+	err := svc.Rotate(ctx, "tok", []byte("new"),
+		PutMeta{Provider: "x\nlevel=INFO msg=secret.delete audit=true ref=victim provider=forged"})
+	if err == nil {
+		t.Fatal("a provider with a newline must be refused")
+	}
+	if strings.Contains(buf.String(), "ref=victim") {
+		t.Fatalf("an audit line was forged through the provider field:\n%s", buf.String())
+	}
+}
+
+// --- force past a broken index (F5) -------------------------------------------
+
+// TestForceDeleteSurvivesABrokenConsumerIndex. Fail-closed is right for the
+// UNFORCED path, but force means "I accept breaking consumers" — refusing it too
+// left an operator unable to revoke a LEAKED credential while the project store
+// was corrupt, with no escape hatch at the moment one is most needed.
+func TestForceDeleteSurvivesABrokenConsumerIndex(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	mustPut(t, v, "leaked-token", "v", "gitlab")
+	idx := NewConsumerIndex(ConsumerSourceFunc(func() (map[string][]Consumer, error) {
+		return nil, errors.New("project store corrupt")
+	}))
+	svc := NewSecretsService(v, idx)
+
+	// Unforced: must refuse.
+	if _, err := svc.Delete(ctx, "leaked-token", false); err == nil {
+		t.Fatal("an unforced delete must fail closed while consumers are unknowable")
+	}
+	if metas, _ := v.List(ctx); len(metas) != 1 {
+		t.Fatal("the refused delete removed the secret anyway")
+	}
+	// Forced: must proceed, so a leaked credential can always be revoked.
+	if _, err := svc.Delete(ctx, "leaked-token", true); err != nil {
+		t.Fatalf("a FORCED delete must proceed past a broken index: %v", err)
+	}
+	if metas, _ := v.List(ctx); len(metas) != 0 {
+		t.Fatal("the forced delete did not remove the secret")
+	}
+}
+
+// --- flush-marker lifecycle (F4) ----------------------------------------------
+
+// TestRotationMakesTheNextUseVisibleOnDisk pins F4. A rotation left the flush
+// marker in place, so the FIRST resolve of the newly rotated value did not flush
+// — on disk last_used predated rotated_at, and an operator asking "has the new
+// credential been used since I rotated it?" was told no.
+func TestRotationMakesTheNextUseVisibleOnDisk(t *testing.T) {
+	v, path := newTestVault(t)
+	ctx := context.Background()
+	mustPut(t, v, "tok", "old", "gitlab")
+
+	if _, _, err := v.Get(ctx, "tok"); err != nil { // first use: flushes
+		t.Fatalf("Get: %v", err)
+	}
+	svc := NewSecretsService(v, nil)
+	if err := svc.Rotate(ctx, "tok", []byte("new"), PutMeta{}); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if _, _, err := v.Get(ctx, "tok"); err != nil { // first use of the NEW value
+		t.Fatalf("Get after rotate: %v", err)
+	}
+
+	reopened, err := OpenVault(path, StaticKeySource(testKey()))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	metas, _ := reopened.List(ctx)
+	if len(metas) != 1 {
+		t.Fatalf("want 1 secret, got %d", len(metas))
+	}
+	m := metas[0]
+	if m.RotatedAt.IsZero() {
+		t.Fatal("the rotation was not persisted")
+	}
+	if m.LastUsed.Before(m.RotatedAt) {
+		t.Fatalf("on disk last_used (%s) predates rotated_at (%s): use of the rotated credential is invisible, so 'has the new credential been used?' answers wrongly",
+			m.LastUsed.Format(time.RFC3339Nano), m.RotatedAt.Format(time.RFC3339Nano))
+	}
+}
+
+// TestDeleteClearsTheFlushMarker: a ref that is removed and later re-added must
+// flush on its first use, rather than inheriting the old ref's marker and going
+// unrecorded on disk.
+func TestDeleteClearsTheFlushMarker(t *testing.T) {
+	v, path := newTestVault(t)
+	ctx := context.Background()
+	mustPut(t, v, "tok", "v1", "gitlab")
+	if _, _, err := v.Get(ctx, "tok"); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := v.Delete(ctx, "tok"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	mustPut(t, v, "tok", "v2", "gitlab")
+	if _, _, err := v.Get(ctx, "tok"); err != nil {
+		t.Fatalf("Get after re-add: %v", err)
+	}
+
+	reopened, err := OpenVault(path, StaticKeySource(testKey()))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	metas, _ := reopened.List(ctx)
+	if len(metas) != 1 || metas[0].LastUsed.IsZero() {
+		t.Fatal("a re-added ref must flush its last-used stamp on first use")
+	}
+}

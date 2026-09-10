@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -646,14 +647,34 @@ func (s *httpSink) pendingFrame(execID, rule, reason string) error {
 	return s.emit(frame{Status: "pending", ExecID: execID, Rule: rule, Reason: reason})
 }
 
+// maxRequestBody bounds any decoded request body.
+//
+// The secret routes need this most: nothing previously bounded a value, and every
+// Put/Update rewrites the ENTIRE vault file under the global mutex (and OpenVault
+// reads it whole at startup), so one oversized value permanently slows every
+// later credential injection. 1 MiB is far above any real credential — an SSH
+// key, a kubeconfig or a service-account JSON is kilobytes — while base64's 4/3
+// expansion still leaves the decoded value comfortably bounded.
+const maxRequestBody = 1 << 20
+
 // decodeJSON strictly decodes an optional JSON body (empty body => zero value),
 // rejecting unknown fields so a malformed request is a legible 400, not a
-// silently-ignored field.
+// silently-ignored field, and bounding the read so a large body cannot be used to
+// exhaust memory or bloat daemon state.
 func decodeJSON(r *http.Request, v any) error {
 	if r.Body == nil || r.ContentLength == 0 {
 		return nil
 	}
-	dec := json.NewDecoder(r.Body)
+	// This check is redundant with MaxBytesReader below, which catches the same
+	// case — it is kept because it names the actual size in the error, where
+	// MaxBytesReader can only say "too large". Mutation testing confirms the bound
+	// still holds with either line alone.
+	if r.ContentLength > maxRequestBody {
+		return fmt.Errorf("request body is %d bytes, over the %d-byte limit", r.ContentLength, maxRequestBody)
+	}
+	// MaxBytesReader covers a chunked body, where ContentLength is -1 and the
+	// check above cannot see the size at all.
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxRequestBody))
 	dec.DisallowUnknownFields()
 	return dec.Decode(v)
 }

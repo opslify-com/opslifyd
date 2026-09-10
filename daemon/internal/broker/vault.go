@@ -258,6 +258,43 @@ func (v *Vault) persist() error {
 
 // validRef bounds a ref to a safe, non-empty identifier so it can never be a path
 // or an injection vector in a log/audit line.
+// ValidateRef is THE rule for what a secret ref may be, exported so that every
+// layer applies the same one.
+//
+// It must be enforced CLIENT-SIDE as well, before a ref is concatenated into a
+// request path. Percent-escaping alone is not enough: url.PathEscape leaves "."
+// and ".." intact, so a ref like "../../v1/sessions/live-1" retargets the
+// request to an entirely different route and the daemon's own validation for
+// THIS route is never reached. Escaping decides how a ref is transmitted;
+// validation decides whether it is a ref at all.
+func ValidateRef(ref string) error { return validRef(ref) }
+
+// maxMetaFieldLen bounds Provider and Scope. Unbounded, a 100 KB provider was
+// stored in the vault file (which is read whole at startup and rewritten whole on
+// every write) and re-emitted on every audit record.
+const maxMetaFieldLen = 128
+
+// validateMetaField bounds a metadata string's length and rejects control
+// characters. The newline matters most: these fields are written to the
+// administrative audit log, and a provider containing "\nlevel=INFO
+// msg=secret.delete ..." forges a second audit line under a text log handler.
+// Production uses a JSON handler, which escapes it — but relying on the handler
+// choice means the safety lives in configuration rather than in the code.
+func validateMetaField(name, v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > maxMetaFieldLen {
+		return fmt.Errorf("%w: %s is %d bytes, over the %d-byte limit", ErrInvalidInput, name, len(v), maxMetaFieldLen)
+	}
+	for _, r := range v {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%w: %s %q contains a control character (it is written to the audit log)", ErrInvalidInput, name, v)
+		}
+	}
+	return nil
+}
+
 func validRef(ref string) error {
 	if ref == "" {
 		return fmt.Errorf("%w: ref is empty", ErrInvalidInput)
@@ -274,6 +311,28 @@ func validRef(ref string) error {
 	}
 	if strings.Contains(ref, "..") {
 		return fmt.Errorf("%w: ref %q contains ..", ErrInvalidInput, ref)
+	}
+	// A ref is a NAME, not a path. A leading slash makes it look absolute
+	// ("/etc/passwd" was previously a legal ref), a trailing slash makes the last
+	// segment empty, and an empty interior segment ("a//b") normalises differently
+	// in different URL parsers — all of which turn a ref back into something
+	// path-shaped, which is the class of bug this function exists to prevent.
+	if strings.HasPrefix(ref, "/") {
+		return fmt.Errorf("%w: ref %q must not start with '/' — a ref is a name, not a path", ErrInvalidInput, ref)
+	}
+	if strings.HasSuffix(ref, "/") {
+		return fmt.Errorf("%w: ref %q must not end with '/'", ErrInvalidInput, ref)
+	}
+	if strings.Contains(ref, "//") {
+		return fmt.Errorf("%w: ref %q must not contain an empty segment", ErrInvalidInput, ref)
+	}
+	// A "." segment is path syntax, not a name. "./tok" and "tok" would address the
+	// same secret while hashing and comparing as different strings, and a URL
+	// parser may collapse one into the other — so two refs could silently be one.
+	for _, seg := range strings.Split(ref, "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("%w: ref %q contains a %q path segment — a ref is a name, not a path", ErrInvalidInput, ref, seg)
+		}
 	}
 	return nil
 }
@@ -296,6 +355,12 @@ func (v *Vault) putLocked(_ context.Context, ref string, value []byte, meta PutM
 		if _, err := time.ParseDuration(meta.TTL); err != nil {
 			return fmt.Errorf("%w: ttl %q: %v", ErrInvalidInput, meta.TTL, err)
 		}
+	}
+	if err := validateMetaField("provider", meta.Provider); err != nil {
+		return err
+	}
+	if err := validateMetaField("scope", meta.Scope); err != nil {
+		return err
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -341,6 +406,11 @@ func (v *Vault) putLocked(_ context.Context, ref string, value []byte, meta PutM
 		rec.RotatedAt = time.Now().UTC()
 	}
 	v.data.Secrets[ref] = rec
+	// Forget the flush marker, symmetric with Delete. Without this, a resolve of a
+	// FRESHLY ROTATED credential did not flush (the marker still dated from before
+	// the rotation), so on disk last_used predated rotated_at and an operator
+	// asking "has the new credential been used since I rotated it?" was told no.
+	delete(v.lastUsedFlushed, ref)
 	return v.persist()
 }
 
@@ -363,13 +433,23 @@ func (v *Vault) Get(_ context.Context, ref string) ([]byte, SecretMeta, error) {
 	now := time.Now().UTC()
 	rec.LastUsed = now
 	v.data.Secrets[ref] = rec
+	if v.lastUsedFlushed == nil {
+		// Symmetric with logger()'s nil guard. Unreachable while OpenVault is the
+		// only constructor, but a nil-map write panics, and a panic in the resolve
+		// path would fail a credential injection that had already succeeded.
+		v.lastUsedFlushed = map[string]time.Time{}
+	}
 	if now.Sub(v.lastUsedFlushed[ref]) >= lastUsedFlushInterval {
 		if err := v.persist(); err != nil {
 			v.logger().Warn("broker: could not persist last-used stamp; the resolve still succeeded",
 				"ref", ref, "err", err)
-		} else {
-			v.lastUsedFlushed[ref] = now
 		}
+		// Advance the marker whether or not the write succeeded. Retrying on every
+		// resolve meant a read-only or full vault directory produced one failed
+		// full-file write AND one log line per credential injection — correct, but
+		// unbounded, and loudest exactly when the disk is already in trouble. The
+		// retry still happens, once per interval, so a recovered disk catches up.
+		v.lastUsedFlushed[ref] = now
 	}
 	return value, metaOf(rec), nil
 }
@@ -438,7 +518,9 @@ func (v *Vault) Delete(_ context.Context, ref string) error {
 	}
 	delete(v.data.Secrets, ref)
 	// Forget the flush marker under the SAME lock that guards the map, so a ref
-	// that is later re-added flushes its last-used stamp on first use.
+	// that is later re-added flushes its last-used stamp on first use. Redundant
+	// with putLocked's own clear (a re-add goes through it), but it also keeps the
+	// map from holding an entry for a ref that is never re-added.
 	delete(v.lastUsedFlushed, ref)
 	return v.persist()
 }

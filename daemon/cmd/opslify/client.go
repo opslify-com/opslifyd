@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/trace"
 )
 
@@ -650,7 +651,6 @@ func (c *client) listSecrets(ctx context.Context) ([]secretMeta, error) {
 	return out, nil
 }
 
-// removeSecret DELETEs /v1/secrets/{ref}.
 // secretConsumer mirrors broker.Consumer. It carries no value and no path to one.
 type secretConsumer struct {
 	Kind  string `json:"kind"`
@@ -688,6 +688,24 @@ func escapeRef(ref string) string {
 	return strings.Join(parts, "/")
 }
 
+// refPath validates a ref and returns the request path for it.
+//
+// Validation is NOT redundant with escapeRef. url.PathEscape leaves "." and ".."
+// untouched, so escaping alone let a ref walk out of its own route:
+// `secrets rm '../../v1/sessions/live-1'` produced DELETE /v1/sessions/live-1 —
+// one request, exit 0, "removed secret" printed, and a live session destroyed.
+// The daemon could not defend against it, because by then the request was for a
+// different route entirely and this route's validation never ran.
+//
+// Every secrets URL is built through here so that no future call site can
+// reintroduce the bypass by concatenating a ref itself.
+func refPath(ref string) (string, error) {
+	if err := broker.ValidateRef(ref); err != nil {
+		return "", err
+	}
+	return "/v1/secrets/" + escapeRef(ref), nil
+}
+
 // listSecretsWithConsumers GETs /v1/secrets/consumers — metadata + who uses each
 // ref. There is no response shape here that can carry a value.
 func (c *client) listSecretsWithConsumers(ctx context.Context) ([]secretView, error) {
@@ -712,12 +730,16 @@ func (c *client) listSecretsWithConsumers(ctx context.Context) ([]secretView, er
 
 // rotateSecret PUTs a new value under an existing ref.
 func (c *client) rotateSecret(ctx context.Context, ref string, req rotateSecretReq) error {
+	path, err := refPath(ref)
+	if err != nil {
+		return err
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut,
-		c.baseURL+"/v1/secrets/"+escapeRef(ref), bytes.NewReader(body))
+		c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -735,27 +757,15 @@ func (c *client) rotateSecret(ctx context.Context, ref string, req rotateSecretR
 
 // removeSecretForce DELETEs a ref, optionally past the in-use guard.
 func (c *client) removeSecretForce(ctx context.Context, ref string, force bool) error {
-	u := c.baseURL + "/v1/secrets/" + escapeRef(ref)
+	path, err := refPath(ref)
+	if err != nil {
+		return err
+	}
+	u := c.baseURL + path
 	if force {
 		u += "?force=true"
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return c.wireError(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
-		return c.decodeError(resp)
-	}
-	return nil
-}
-
-func (c *client) removeSecret(ctx context.Context, ref string) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/secrets/"+escapeRef(ref), nil)
 	if err != nil {
 		return err
 	}

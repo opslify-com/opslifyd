@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // A secret is a VALUE; a consumer is something that reaches an upstream with it.
@@ -66,6 +67,11 @@ func (f ConsumerSourceFunc) Consumers() (map[string][]Consumer, error) { return 
 // a stale index would refuse a legitimate delete or — far worse — permit one that
 // breaks a live grant.
 type ConsumerIndex struct {
+	// mu guards sources. Register is documented for post-construction wiring
+	// (F8.2 connections), while All is called from live HTTP handlers
+	// (handleSecretConsumers, handleSecretDelete) — so the two genuinely race, and
+	// -race confirmed it. Latent only because nothing calls Register at runtime yet.
+	mu      sync.RWMutex
 	sources []ConsumerSource
 }
 
@@ -83,16 +89,28 @@ func NewConsumerIndex(sources ...ConsumerSource) *ConsumerIndex {
 
 // Register adds a source after construction (F8.2 wiring, mutual references).
 func (ci *ConsumerIndex) Register(s ConsumerSource) {
-	if s != nil {
-		ci.sources = append(ci.sources, s)
+	if s == nil {
+		return
 	}
+	ci.mu.Lock()
+	defer ci.mu.Unlock()
+	ci.sources = append(ci.sources, s)
 }
 
 // All returns every ref that is addressed, mapped to its consumers, sorted and
 // de-duplicated so the output is stable for a UI and a test alike.
 func (ci *ConsumerIndex) All() (map[string][]Consumer, error) {
+	// Snapshot under the read lock, then call the sources OUTSIDE it: a source
+	// reads the project store and the policy layers, which is slow enough that
+	// holding the lock across it would serialise every consumer lookup behind the
+	// slowest source.
+	ci.mu.RLock()
+	sources := make([]ConsumerSource, len(ci.sources))
+	copy(sources, ci.sources)
+	ci.mu.RUnlock()
+
 	merged := map[string][]Consumer{}
-	for _, src := range ci.sources {
+	for _, src := range sources {
 		got, err := src.Consumers()
 		if err != nil {
 			// Fail CLOSED: an index that silently drops a source would under-report

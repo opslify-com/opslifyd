@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -178,7 +179,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	secretsSvc := buildSecretsService(cfg, vault, projects, basePolicy)
+	secretsSvc, err := buildSecretsService(cfg, vault, projects, basePolicy)
+	if err != nil {
+		return err
+	}
 
 	d, err := daemon.New(daemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, secretsSvc, log))
 	if err != nil {
@@ -606,12 +610,6 @@ func sdNotifyReady() {
 	_, _ = conn.Write([]byte("READY=1"))
 }
 
-// buildSecretsService wires the F8.3 operator surface: listing with consumers,
-// rotation, and a delete guarded by them. It holds the same Get-less
-// SecretManager as every other secret route, so no value can escape through it.
-//
-// The consumer sources are the subsystems that address a ref TODAY. Each is read
-// on demand, so config edits and per-scope policy layers are always reflected.
 // loadDefaultPolicy loads the daemon's trusted default policy (F4.1). It fails
 // CLOSED: a configured-but-invalid policy is an error, never a fallback to the
 // permissive built-in.
@@ -655,7 +653,23 @@ func daemonOptions(
 	}
 }
 
-func buildSecretsService(cfg install.Config, vault broker.SecretManager, projects *project.Service, base policy.Policy) *broker.SecretsService {
+// buildSecretsService builds the F8.3 operator surface over the vault: listing
+// with consumers, rotation, and a delete guarded by who still addresses a ref.
+// It holds the same Get-less SecretManager as every other secret route, so no
+// value can escape through it. The consumer sources are the subsystems that
+// address a ref TODAY, each read on demand, so config edits and per-scope policy
+// layers are always reflected rather than cached.
+//
+// projects is REQUIRED. A nil one silently limited the consumer index to the
+// daemon baseline, so a credential a project/environment layer still granted
+// reported zero consumers and DELETE succeeded without a 409 — breaking a live
+// grant, the exact failure the guard exists to prevent. The daemon always has a
+// project service (F8.1 bootstraps a default project), so nil is never
+// legitimate here; refusing turns a silent degradation into a startup failure.
+func buildSecretsService(cfg install.Config, vault broker.SecretManager, projects *project.Service, base policy.Policy) (*broker.SecretsService, error) {
+	if projects == nil {
+		return nil, errors.New("opslifyd: a project service is required to index secret consumers")
+	}
 	egress := make([]broker.EgressInjectRef, 0, len(cfg.EgressInject))
 	for _, r := range cfg.EgressInject {
 		egress = append(egress, broker.EgressInjectRef{Host: r.Host, SecretRef: r.SecretRef})
@@ -669,25 +683,23 @@ func buildSecretsService(cfg install.Config, vault broker.SecretManager, project
 	// a grant that only exists in one environment still counts as a consumer.
 	policySrc := broker.ConsumerSourceFunc(func() (map[string][]broker.Consumer, error) {
 		scopes := []broker.PolicyScope{{Scope: "", Policy: base}}
-		if projects != nil {
-			ps, err := projects.Projects()
+		ps, err := projects.Projects()
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range ps {
+			envs, err := projects.Environments(p.ID)
 			if err != nil {
 				return nil, err
 			}
-			for _, p := range ps {
-				envs, err := projects.Environments(p.ID)
+			for _, e := range envs {
+				sc, err := projects.ResolveScope(base, p.ID, e.ID)
 				if err != nil {
+					// A scope that cannot resolve must not silently drop its grants
+					// from the index — that would under-report consumers.
 					return nil, err
 				}
-				for _, e := range envs {
-					sc, err := projects.ResolveScope(base, p.ID, e.ID)
-					if err != nil {
-						// A scope that cannot resolve must not silently drop its grants
-						// from the index — that would under-report consumers.
-						return nil, err
-					}
-					scopes = append(scopes, broker.PolicyScope{Scope: p.ID + "/" + e.Name, Policy: sc.Base()})
-				}
+				scopes = append(scopes, broker.PolicyScope{Scope: p.ID + "/" + e.Name, Policy: sc.Base()})
 			}
 		}
 		return broker.PolicyConsumers(scopes).Consumers()
@@ -696,5 +708,5 @@ func buildSecretsService(cfg install.Config, vault broker.SecretManager, project
 	return broker.NewSecretsService(vault, broker.NewConsumerIndex(
 		broker.ConfigConsumers(egress, upstreams),
 		policySrc,
-	))
+	)), nil
 }

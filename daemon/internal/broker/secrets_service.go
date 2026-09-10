@@ -51,11 +51,7 @@ func (s *SecretsService) WithLogger(l *slog.Logger) *SecretsService {
 // audit records an administrative action by REFERENCE. It takes metadata only —
 // there is deliberately no parameter that could carry a value.
 func (s *SecretsService) audit(action, ref, provider string, consumers int) {
-	l := s.log
-	if l == nil {
-		l = slog.Default()
-	}
-	l.Info("secret."+action,
+	s.logger().Info("secret."+action,
 		"audit", true,
 		"ref", ref,
 		"provider", provider,
@@ -69,6 +65,15 @@ func (s *SecretsService) audit(action, ref, provider string, consumers int) {
 // concurrent with a rotation is undone by the rotation's write.
 type SecretUpdater interface {
 	Update(ctx context.Context, ref string, value []byte, meta PutMeta) error
+}
+
+// logger returns the audit/diagnostic logger, defaulting when unset so a
+// zero-value service cannot panic on a nil logger.
+func (s *SecretsService) logger() *slog.Logger {
+	if s.log == nil {
+		return slog.Default()
+	}
+	return s.log
 }
 
 // SecretView is a secret's metadata plus who uses it. It carries no value and no
@@ -132,14 +137,19 @@ func (s *SecretsService) Rotate(ctx context.Context, ref string, value []byte, m
 	if meta.TTL == "" {
 		meta.TTL = existing.TTL
 	}
-	// Prefer the atomic path. Without it, a Delete landing between find() above and
-	// the write below would be silently undone: the ref would come back, holding
-	// the value the operator believed they had just removed.
-	if u, ok := s.secrets.(SecretUpdater); ok {
-		if err := u.Update(ctx, ref, value, meta); err != nil {
-			return err
-		}
-	} else if err := s.secrets.Put(ctx, ref, value, meta, true); err != nil {
+	// The atomic path is REQUIRED, not preferred. The old fallback to
+	// Put(overwrite=true) had two defects that only a backend without Update could
+	// exhibit: a Delete landing between find() above and the write was silently
+	// undone (the ref came back holding the value the operator believed they had
+	// removed), and a find() that wrongly matched let a rotation CREATE a ref —
+	// leaving the real credential un-rotated while the operator believed otherwise.
+	// Refusing is correct: a backend that cannot rotate atomically cannot offer
+	// this operation safely, and saying so is better than doing it unsafely.
+	u, ok := s.secrets.(SecretUpdater)
+	if !ok {
+		return fmt.Errorf("%w: this secret backend does not support atomic rotation", ErrDenied)
+	}
+	if err := u.Update(ctx, ref, value, meta); err != nil {
 		return err
 	}
 	cs, _ := s.Consumers(ref) // best-effort: the rotation already succeeded
@@ -155,7 +165,20 @@ func (s *SecretsService) Delete(ctx context.Context, ref string, force bool) ([]
 	}
 	cs, err := s.Consumers(ref)
 	if err != nil {
-		return nil, err
+		if !force {
+			// Unforced: fail CLOSED. Permitting a delete while the index cannot answer
+			// "who uses this?" would break a running grant exactly when the daemon has
+			// lost the ability to warn about it.
+			return nil, err
+		}
+		// Forced: PROCEED. force already means "I accept breaking consumers", and
+		// refusing here left an operator unable to revoke a leaked credential while
+		// the project store was corrupt or a scope would not resolve — no escape
+		// hatch at the moment one is most needed. The unknown consumer set is
+		// surfaced rather than silently treated as empty.
+		s.logger().Warn("broker: deleting a secret while its consumers are unknowable; forced",
+			"ref", ref, "err", err)
+		cs = nil
 	}
 	if len(cs) > 0 && !force {
 		return cs, fmt.Errorf("%w: %q is used by %d consumer(s): %s (use force to remove anyway)",

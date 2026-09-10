@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +17,43 @@ import (
 )
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+
+// leaks reports whether body contains the secret in ANY encoding it could
+// plausibly travel in.
+//
+// A plaintext-only check was blind to exactly the encoding values DO travel in:
+// a rotate handler echoing value_b64 straight back to the caller — a total
+// defeat of the write-only premise — passed every leak assertion in the tree.
+// Base64 comes in three alphabets (std/URL, padded and not) and JSON may escape
+// the '+' and '/'; hex is checked too since a future handler could render bytes
+// that way.
+func leaks(body, secret string) (string, bool) {
+	raw := []byte(secret)
+	candidates := map[string]string{
+		"plaintext":      secret,
+		"base64-std":     base64.StdEncoding.EncodeToString(raw),
+		"base64-std-raw": base64.RawStdEncoding.EncodeToString(raw),
+		"base64-url":     base64.URLEncoding.EncodeToString(raw),
+		"base64-url-raw": base64.RawURLEncoding.EncodeToString(raw),
+		"hex":            hex.EncodeToString(raw),
+		"hex-upper":      strings.ToUpper(hex.EncodeToString(raw)),
+	}
+	for name, enc := range candidates {
+		if enc == "" {
+			continue
+		}
+		if strings.Contains(body, enc) {
+			return name, true
+		}
+	}
+	// A JSON-escaped base64 payload ("a\/b") would evade a raw substring check.
+	if unquoted := strings.ReplaceAll(body, "\\/", "/"); unquoted != body {
+		if strings.Contains(unquoted, base64.StdEncoding.EncodeToString(raw)) {
+			return "base64-std (JSON-escaped)", true
+		}
+	}
+	return "", false
+}
 
 // The canary is planted as a real secret value; if any route can be made to
 // return it, these tests fail. This is the feature's whole premise.
@@ -47,23 +87,68 @@ func newSecretsTestDaemon(t *testing.T) (http.Handler, *broker.Vault) {
 }
 
 // No route may return a secret value — enumerated over the whole secrets surface,
-// including the F8.3 additions.
+// including the F8.3 additions, and checked in every encoding a value could
+// travel in rather than plaintext alone.
+//
+// Each route that ACCEPTS a value is also sent one, so a handler that echoes its
+// own request body is caught. Sending only "{}" (as this test used to) meant the
+// canary was never in play on exactly the routes most able to reflect it.
 func TestNoSecretsRouteReturnsAValue(t *testing.T) {
-	h, _ := newSecretsTestDaemon(t)
-	for _, tc := range []struct{ method, path string }{
-		{http.MethodGet, "/v1/secrets"},
-		{http.MethodGet, "/v1/secrets/consumers"},
-		{http.MethodGet, "/v1/secrets/gitlab-token"},
-		{http.MethodPost, "/v1/secrets"},
-		{http.MethodPut, "/v1/secrets/gitlab-token"},
-		{http.MethodDelete, "/v1/secrets/gitlab-token"},
+	// Bodies are per-route because the request shapes differ: POST /v1/secrets
+	// carries the ref, PUT /v1/secrets/{ref} takes it from the path and REJECTS a
+	// "ref" field. wantStatus is asserted so a body the handler refuses with a 400
+	// cannot masquerade as a clean leak check — the first version of this test sent
+	// one shape everywhere, and the rotate route 400'd before ever reaching the
+	// code being probed, making the assertion vacuous on the route most able to
+	// reflect a value.
+	addBody := `{"ref":"gitlab-token","value_b64":"` + b64(secretCanary) + `","provider":"gitlab"}`
+	rotateBody := `{"value_b64":"` + b64(secretCanary) + `","provider":"gitlab"}`
+	for _, tc := range []struct {
+		name, method, path, body string
+		wantStatus               int
+	}{
+		{"list", http.MethodGet, "/v1/secrets", "{}", http.StatusOK},
+		{"consumers", http.MethodGet, "/v1/secrets/consumers", "{}", http.StatusOK},
+		{"add-existing", http.MethodPost, "/v1/secrets", addBody, http.StatusConflict},
+		{"add-new", http.MethodPost, "/v1/secrets", `{"ref":"new-token","value_b64":"` + b64(secretCanary) + `"}`, http.StatusCreated},
+		{"rotate", http.MethodPut, "/v1/secrets/gitlab-token", rotateBody, http.StatusOK},
+		{"delete-in-use", http.MethodDelete, "/v1/secrets/gitlab-token", "{}", http.StatusConflict},
+		{"delete-forced", http.MethodDelete, "/v1/secrets/gitlab-token?force=true", "{}", http.StatusNoContent},
 	} {
-		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader("{}"))
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if strings.Contains(rec.Body.String(), secretCanary) {
-			t.Fatalf("%s %s returned the secret VALUE: %s", tc.method, tc.path, rec.Body.String())
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newSecretsTestDaemon(t)
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("%s %s = %d, want %d — the route did not run, so this leak check proves nothing: %s",
+					tc.method, tc.path, rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if enc, bad := leaks(rec.Body.String(), secretCanary); bad {
+				t.Fatalf("%s %s returned the secret VALUE as %s: %s", tc.method, tc.path, enc, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestTheLeakDetectorActuallyDetects guards the guard. A containment check that
+// silently stopped matching would make every leak assertion above vacuous, and
+// nothing else in the tree would notice.
+func TestTheLeakDetectorActuallyDetects(t *testing.T) {
+	for _, enc := range []string{
+		secretCanary,
+		base64.StdEncoding.EncodeToString([]byte(secretCanary)),
+		base64.RawStdEncoding.EncodeToString([]byte(secretCanary)),
+		base64.URLEncoding.EncodeToString([]byte(secretCanary)),
+		hex.EncodeToString([]byte(secretCanary)),
+		strings.ToUpper(hex.EncodeToString([]byte(secretCanary))),
+	} {
+		if _, bad := leaks(`{"ref":"x","value":"`+enc+`"}`, secretCanary); !bad {
+			t.Errorf("the leak detector missed encoding %q", enc)
 		}
+	}
+	if _, bad := leaks(`{"ref":"gitlab-token","provider":"gitlab"}`, secretCanary); bad {
+		t.Error("the leak detector false-positives on a clean metadata response")
 	}
 }
 
@@ -262,5 +347,174 @@ func TestConsumersRouteWireContract(t *testing.T) {
 		if _, ok := consumers[0][key]; !ok {
 			t.Errorf("wire contract: consumer missing key %q", key)
 		}
+	}
+}
+
+// --- log discipline (F16) -----------------------------------------------------
+
+// TestNoSecretRouteLogsAValue. The premise forbids a value in "any log line at
+// any level", but nothing constrained the HTTP layer's log output — a handler
+// added tomorrow that logged the credential it was about to store would pass
+// every other test in the tree. Both the daemon's own logger and the global
+// default are captured, since a handler could reach either.
+func TestNoSecretRouteLogsAValue(t *testing.T) {
+	var daemonLog, globalLog bytes.Buffer
+	restore := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&globalLog, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(restore) })
+
+	key := make([]byte, 32)
+	v, err := broker.OpenVault(t.TempDir()+"/vault.db", broker.StaticKeySource(key))
+	if err != nil {
+		t.Fatalf("OpenVault: %v", err)
+	}
+	if err := v.Put(context.Background(), "gitlab-token", []byte(secretCanary), broker.PutMeta{Provider: "gitlab"}, false); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	idx := broker.NewConsumerIndex(broker.ConfigConsumers(
+		[]broker.EgressInjectRef{{Host: "gitlab.example.com", SecretRef: "gitlab-token"}}, nil))
+	d, err := New(Options{
+		Secrets:    v,
+		SecretsSvc: broker.NewSecretsService(v, idx).WithLogger(slog.New(slog.NewTextHandler(&daemonLog, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+		Verifier:   okVerifier(),
+		Logger:     slog.New(slog.NewTextHandler(&daemonLog, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h := d.Handler()
+
+	rotateBody := `{"value_b64":"` + b64(secretCanary) + `","provider":"gitlab"}`
+	addBody := `{"ref":"another","value_b64":"` + b64(secretCanary) + `"}`
+	for _, tc := range []struct{ method, path, body string }{
+		{http.MethodPost, "/v1/secrets", addBody},
+		{http.MethodPut, "/v1/secrets/gitlab-token", rotateBody},
+		{http.MethodGet, "/v1/secrets", "{}"},
+		{http.MethodGet, "/v1/secrets/consumers", "{}"},
+		{http.MethodDelete, "/v1/secrets/gitlab-token", "{}"},
+		{http.MethodDelete, "/v1/secrets/gitlab-token?force=true", "{}"},
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
+	}
+	for name, buf := range map[string]*bytes.Buffer{"daemon logger": &daemonLog, "slog default": &globalLog} {
+		if enc, bad := leaks(buf.String(), secretCanary); bad {
+			t.Fatalf("the %s carried the secret VALUE as %s:\n%s", name, enc, buf.String())
+		}
+	}
+	// The audit records must still be there — this test must not pass by the
+	// daemon simply logging nothing.
+	if !strings.Contains(daemonLog.String(), "secret.rotate") {
+		t.Errorf("expected a rotation audit record in the daemon log; got:\n%s", daemonLog.String())
+	}
+}
+
+// TestAddWithOverwriteIsAuditedAsARotation pins F6. `secrets add <ref>
+// --overwrite` replaces a live credential, which IS a rotation whatever verb
+// reached it — but it went straight to the vault, bypassing the service, so it
+// produced no audit record and had none of the rotate path's atomicity. One
+// operation must not have two safety levels depending on which route it entered.
+func TestAddWithOverwriteIsAuditedAsARotation(t *testing.T) {
+	var auditLog bytes.Buffer
+	key := make([]byte, 32)
+	v, err := broker.OpenVault(t.TempDir()+"/vault.db", broker.StaticKeySource(key))
+	if err != nil {
+		t.Fatalf("OpenVault: %v", err)
+	}
+	if err := v.Put(context.Background(), "gitlab-token", []byte("old"), broker.PutMeta{Provider: "gitlab"}, false); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	svc := broker.NewSecretsService(v, broker.NewConsumerIndex()).
+		WithLogger(slog.New(slog.NewTextHandler(&auditLog, nil)))
+	d, err := New(Options{Secrets: v, SecretsSvc: svc, Verifier: okVerifier()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	body := `{"ref":"gitlab-token","value_b64":"` + b64(secretCanary) + `","provider":"gitlab","overwrite":true}`
+	rec := httptest.NewRecorder()
+	d.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST overwrite = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(auditLog.String(), "secret.rotate") {
+		t.Errorf("add --overwrite replaced a live credential with no audit record; log:\n%s", auditLog.String())
+	}
+	if !strings.Contains(auditLog.String(), "gitlab-token") {
+		t.Errorf("the audit record must name the ref; log:\n%s", auditLog.String())
+	}
+	if enc, bad := leaks(auditLog.String()+rec.Body.String(), secretCanary); bad {
+		t.Fatalf("the value leaked as %s", enc)
+	}
+	// It must still have actually rotated, and stamped RotatedAt.
+	metas, _ := v.List(context.Background())
+	if len(metas) != 1 || metas[0].RotatedAt.IsZero() {
+		t.Errorf("add --overwrite must rotate in place and stamp RotatedAt: %+v", metas)
+	}
+}
+
+// TestAddOfANewRefStillCreatesEvenWithOverwrite: routing overwrite through the
+// rotate path must not break the plain create case, where the ref does not exist
+// yet and rotation would (correctly) refuse.
+func TestAddOfANewRefStillCreatesEvenWithOverwrite(t *testing.T) {
+	h, v := newSecretsTestDaemon(t)
+	body := `{"ref":"brand-new","value_b64":"` + b64("v") + `","overwrite":true}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("creating a new ref with overwrite=true = %d: %s", rec.Code, rec.Body.String())
+	}
+	metas, _ := v.List(context.Background())
+	var found bool
+	for _, m := range metas {
+		if m.Ref == "brand-new" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the new ref was not created")
+	}
+}
+
+// TestOversizedRequestBodyIsRefused pins F12. Nothing bounded a value, and every
+// write rewrites the ENTIRE vault file under the global mutex (OpenVault reads it
+// whole at startup), so one oversized value permanently slows every later
+// credential injection.
+func TestOversizedRequestBodyIsRefused(t *testing.T) {
+	h, v := newSecretsTestDaemon(t)
+	huge := b64(strings.Repeat("x", 2<<20)) // ~2 MiB raw, larger once base64'd
+	body := `{"ref":"huge","value_b64":"` + huge + `"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("an oversized body = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	metas, _ := v.List(context.Background())
+	for _, m := range metas {
+		if m.Ref == "huge" {
+			t.Fatal("the oversized secret was stored anyway")
+		}
+	}
+
+	// A chunked body (ContentLength = -1) must be bounded too, or the check is
+	// trivially evaded by omitting Content-Length.
+	req := httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body))
+	req.ContentLength = -1
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusBadRequest {
+		t.Fatalf("an oversized CHUNKED body = %d, want 400: %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// TestNormalSizedSecretsStillAccepted keeps the bound from being a bug: real
+// credentials (SSH keys, kubeconfigs, service-account JSON) are kilobytes.
+func TestNormalSizedSecretsStillAccepted(t *testing.T) {
+	h, _ := newSecretsTestDaemon(t)
+	body := `{"ref":"ssh-key","value_b64":"` + b64(strings.Repeat("k", 8192)) + `"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("an 8 KiB credential = %d, want 201: %s", rec.Code, rec.Body.String())
 	}
 }

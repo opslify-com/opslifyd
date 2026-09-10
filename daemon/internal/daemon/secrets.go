@@ -38,10 +38,26 @@ type secretMetaResponse struct {
 	Scope     string    `json:"scope,omitempty"`
 	TTL       string    `json:"ttl,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	// LastUsed and RotatedAt are the rotation-hygiene signals. They were carried
+	// only by the consumers route, which meant the primary listing verb could not
+	// answer "which credentials are stale?" — the question the stamps exist for.
+	// Pointers so "never used" is absent rather than a zero time that renders as
+	// year 1.
+	LastUsed  *time.Time `json:"last_used,omitempty"`
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
 }
 
 func secretMetaResp(m broker.SecretMeta) secretMetaResponse {
-	return secretMetaResponse{Ref: m.Ref, Provider: m.Provider, Scope: m.Scope, TTL: m.TTL, CreatedAt: m.CreatedAt}
+	r := secretMetaResponse{Ref: m.Ref, Provider: m.Provider, Scope: m.Scope, TTL: m.TTL, CreatedAt: m.CreatedAt}
+	if !m.LastUsed.IsZero() {
+		t := m.LastUsed
+		r.LastUsed = &t
+	}
+	if !m.RotatedAt.IsZero() {
+		t := m.RotatedAt
+		r.RotatedAt = &t
+	}
+	return r
 }
 
 // addSecretRequest is the POST /v1/secrets body. The value arrives base64-encoded
@@ -89,8 +105,30 @@ func (d *Daemon) handleSecretAdd(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "input", "secret value is empty")
 		return
 	}
+	if err := broker.ValidateRef(body.Ref); err != nil {
+		writeSecretError(w, err)
+		return
+	}
 	meta := broker.PutMeta{Provider: body.Provider, Scope: body.Scope, TTL: body.TTL}
-	if err := d.secrets.Put(r.Context(), body.Ref, value, meta, body.Overwrite); err != nil {
+	// An overwrite of an existing ref IS a rotation, whatever verb the caller used.
+	// It previously went straight to d.secrets.Put, bypassing the service — so
+	// `secrets add <ref> --overwrite` replaced a live credential with no audit
+	// record and none of the atomicity the rotate path has. Route it through the
+	// service so one operation cannot have two different safety levels depending on
+	// which verb reached it.
+	if body.Overwrite && d.secretsSvc != nil {
+		if err := d.secretsSvc.Rotate(r.Context(), body.Ref, value, meta); err != nil {
+			// A ref that does not exist yet is a plain create, not a rotation.
+			if !errors.Is(err, broker.ErrNotFound) {
+				writeSecretError(w, err)
+				return
+			}
+			if err := d.secrets.Put(r.Context(), body.Ref, value, meta, false); err != nil {
+				writeSecretError(w, err)
+				return
+			}
+		}
+	} else if err := d.secrets.Put(r.Context(), body.Ref, value, meta, body.Overwrite); err != nil {
 		writeSecretError(w, err)
 		return
 	}
@@ -102,6 +140,13 @@ func (d *Daemon) handleSecretAdd(w http.ResponseWriter, r *http.Request) {
 // handleSecretDelete removes a secret by ref.
 func (d *Daemon) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("ref")
+	// Validate at the route. Relying on the lookup to 404 conflates "no such
+	// secret" with "that was never a valid ref", and leaves the guard depending on
+	// storage behaviour rather than on an explicit rule.
+	if err := broker.ValidateRef(ref); err != nil {
+		writeSecretError(w, err)
+		return
+	}
 	// With the F8.3 service wired the delete is GUARDED: a ref something still
 	// addresses is refused unless ?force=true, and the refusal names the
 	// consumers. Without it, the F5.6 behaviour is unchanged.
@@ -150,29 +195,20 @@ func writeSecretError(w http.ResponseWriter, err error) {
 
 // secretViewResponse is a secret's metadata plus who addresses it. Still no value
 // and no value length — consumers are refs and names, which are safe to render.
+// secretViewResponse is the consumers listing: metadata (which now carries
+// last_used/rotated_at via the embedded struct) plus who addresses the ref.
 type secretViewResponse struct {
 	secretMetaResponse
-	LastUsed  *time.Time        `json:"last_used,omitempty"`
-	RotatedAt *time.Time        `json:"rotated_at,omitempty"`
 	Consumers []broker.Consumer `json:"consumers,omitempty"`
 	InUse     bool              `json:"in_use"`
 }
 
 func secretViewResp(v broker.SecretView) secretViewResponse {
-	out := secretViewResponse{
+	return secretViewResponse{
 		secretMetaResponse: secretMetaResp(v.SecretMeta),
 		Consumers:          v.Consumers,
 		InUse:              v.InUse,
 	}
-	if !v.LastUsed.IsZero() {
-		t := v.LastUsed
-		out.LastUsed = &t
-	}
-	if !v.RotatedAt.IsZero() {
-		t := v.RotatedAt
-		out.RotatedAt = &t
-	}
-	return out
 }
 
 // rotateSecretRequest is the PUT body. Like add, the value travels IN only.
@@ -210,6 +246,10 @@ func (d *Daemon) handleSecretConsumers(w http.ResponseWriter, r *http.Request) {
 // the ref, so nothing downstream changes — which is the point.
 func (d *Daemon) handleSecretRotate(w http.ResponseWriter, r *http.Request) {
 	ref := r.PathValue("ref")
+	if err := broker.ValidateRef(ref); err != nil {
+		writeSecretError(w, err)
+		return
+	}
 	var body rotateSecretRequest
 	if err := decodeJSON(r, &body); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "input", err.Error())

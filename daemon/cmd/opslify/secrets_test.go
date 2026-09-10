@@ -337,3 +337,171 @@ func TestEmptyValueIsRefusedFromEverySource(t *testing.T) {
 		})
 	}
 }
+
+// TestSecretsRefCannotRetargetAnotherRoute pins F0, the exploitable half of the
+// ref-injection class that percent-escaping alone did NOT close.
+//
+// url.PathEscape leaves "." and ".." intact, so a ref could walk out of its own
+// route: `secrets rm '../../v1/sessions/live-1'` sent DELETE /v1/sessions/live-1
+// — one request, exit code 0, "removed secret" printed, and a live session
+// destroyed. Refs come from config files, CI variables and automation, not only
+// from an operator's keyboard, and the daemon cannot defend against it because by
+// then the request is for a different route entirely.
+//
+// The mux below carries the daemon's REAL route patterns, so a traversal that
+// reaches another handler is observable as that handler firing.
+func TestSecretsRefCannotRetargetAnotherRoute(t *testing.T) {
+	traversals := []string{
+		"../../v1/sessions/live-session-1",
+		"../../v1/projects/prod",
+		"../../v1/workspaces/prod",
+		"a/../../../v1/projects/prod",
+		"../secrets",
+		"..",
+		"../../../v1/sessions/live-session-1",
+		"./../../v1/projects/prod",
+		"/etc/passwd",
+		"trailing/",
+		"double//segment",
+	}
+	for _, ref := range traversals {
+		t.Run(ref, func(t *testing.T) {
+			var hit string
+			mux := http.NewServeMux()
+			// The daemon's actual patterns for every DELETE-able resource.
+			for pattern, name := range map[string]string{
+				"DELETE /v1/secrets/{ref...}":  "secrets",
+				"DELETE /v1/sessions/{id}":     "sessions",
+				"DELETE /v1/projects/{id}":     "projects",
+				"DELETE /v1/workspaces/{name}": "workspaces",
+				"PUT /v1/secrets/{ref...}":     "rotate",
+			} {
+				resource := name
+				mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+					hit = resource + " " + r.URL.Path
+					w.WriteHeader(http.StatusNoContent)
+				})
+			}
+			fd := newFakeDaemon(t, mux)
+
+			for _, args := range [][]string{
+				{"secrets", "rm", ref, "--force"},
+				{"secrets", "rm", ref},
+				{"secrets", "rotate", ref},
+			} {
+				hit = ""
+				_, _, err := runCLI(t, "value\n", append(args, "--socket", fd.socketPath)...)
+				if err == nil {
+					t.Fatalf("%v with ref %q must be refused before a request is built", args, ref)
+				}
+				if hit != "" {
+					t.Fatalf("SECURITY: ref %q reached another route: %s", ref, hit)
+				}
+			}
+		})
+	}
+}
+
+// TestLegitimateRefsStillReachTheSecretsRoute keeps the validation from being a
+// blanket refusal: a ref with '/', '@', '.', '_' and '-' is legal and must work.
+func TestLegitimateRefsStillReachTheSecretsRoute(t *testing.T) {
+	for _, ref := range []string{
+		"gitlab-token", "aws/deploy", "a.b_c-d@e/f", "gh/token", "azure/sp.client-secret",
+	} {
+		t.Run(ref, func(t *testing.T) {
+			var rec recordedRequest
+			fd := newRecordingDaemon(t, &rec)
+			if _, _, err := runCLI(t, "", "secrets", "rm", ref, "--force", "--socket", fd.socketPath); err != nil {
+				t.Fatalf("legitimate ref %q was refused: %v", ref, err)
+			}
+			if rec.escapedPath != "/v1/secrets/"+ref {
+				t.Errorf("path = %q, want /v1/secrets/%s", rec.escapedPath, ref)
+			}
+		})
+	}
+}
+
+// --- secrets sync (F9) --------------------------------------------------------
+
+// TestSecretsSyncFetchesFromManagerAndNeverPrintsTheValue exercises the
+// documented Vault/Doppler/Secrets-Manager entry point, which had NO test at all
+// — a mutant that appended the credential to its success line printed it to the
+// operator's terminal, uncaught.
+func TestSecretsSyncSendsValueAndNeverPrintsIt(t *testing.T) {
+	const secret = "FAKE-from-vault-kv-get-abc123"
+	var rec recordedRequest
+	fd := newRecordingDaemon(t, &rec)
+
+	out, errb, err := runCLI(t, "", "secrets", "sync", "gitlab-token",
+		"--from-command", "printf '%s\\n' "+secret, "--socket", fd.socketPath)
+	if err != nil {
+		t.Fatalf("sync: %v (%s)", err, errb)
+	}
+	var body rotateSecretReq
+	if err := json.Unmarshal(rec.body, &body); err != nil {
+		t.Fatalf("unmarshal: %v (body %q)", err, rec.body)
+	}
+	decoded, _ := base64.StdEncoding.DecodeString(body.ValueB64)
+	if string(decoded) != secret {
+		t.Fatalf("daemon received %q, want %q", decoded, secret)
+	}
+	if rec.method != http.MethodPut {
+		t.Errorf("sync used %s, want PUT (it is a rotation, and must not be able to create)", rec.method)
+	}
+	if strings.Contains(out+errb, secret) {
+		t.Fatalf("SECURITY: sync printed the credential to the terminal:\nstdout=%q\nstderr=%q", out, errb)
+	}
+	if strings.Contains(out+errb, base64.StdEncoding.EncodeToString([]byte(secret))) {
+		t.Fatal("SECURITY: sync printed the base64 credential to the terminal")
+	}
+}
+
+// TestSecretsSyncFailureLeavesPreviousValueIntact: a failed fetch must never
+// reach the vault. This is the property that makes an automated sync safe to run
+// on a schedule.
+func TestSecretsSyncFailureLeavesPreviousValueIntact(t *testing.T) {
+	var rec recordedRequest
+	fd := newRecordingDaemon(t, &rec)
+	_, _, err := runCLI(t, "", "secrets", "sync", "gitlab-token",
+		"--from-command", "exit 3", "--socket", fd.socketPath)
+	if err == nil {
+		t.Fatal("a failed --from-command must fail the sync")
+	}
+	if rec.method != "" {
+		t.Fatalf("a failed fetch must not send a request; got %s %s", rec.method, rec.path)
+	}
+}
+
+// TestSyncDoesNotFoldStderrIntoTheValue: a manager CLI that prints a deprecation
+// warning to stderr must not have it stored as part of the credential. Using
+// CombinedOutput here would silently corrupt every synced secret.
+func TestSyncDoesNotFoldStderrIntoTheValue(t *testing.T) {
+	const secret = "FAKE-real-credential"
+	var rec recordedRequest
+	fd := newRecordingDaemon(t, &rec)
+	_, _, err := runCLI(t, "", "secrets", "sync", "gitlab-token",
+		"--from-command", "printf 'WARNING: deprecated flag\\n' 1>&2; printf '%s\\n' "+secret,
+		"--socket", fd.socketPath)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	var body rotateSecretReq
+	json.Unmarshal(rec.body, &body)
+	decoded, _ := base64.StdEncoding.DecodeString(body.ValueB64)
+	if string(decoded) != secret {
+		t.Fatalf("stored value = %q, want exactly %q — stderr must not be folded in", decoded, secret)
+	}
+}
+
+// TestReadSecretValueTakesStdoutOnly is the unit-level twin of the above.
+func TestReadSecretValueTakesStdoutOnly(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.SetIn(strings.NewReader(""))
+	got, err := readSecretValue(cmd, "", "printf 'noise\\n' 1>&2; printf 'value'")
+	if err != nil {
+		t.Fatalf("readSecretValue: %v", err)
+	}
+	if string(got) != "value" {
+		t.Fatalf("got %q, want %q — only stdout is the value", got, "value")
+	}
+}

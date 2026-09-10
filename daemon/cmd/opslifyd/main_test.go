@@ -8,8 +8,14 @@ import (
 	"testing"
 
 	"github.com/opslify-com/opslifyd/internal/broker"
+	"os"
+	"path/filepath"
+	"slices"
+
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/policy"
+	"github.com/opslify-com/opslifyd/internal/project"
+	"github.com/opslify-com/opslifyd/internal/session"
 	"github.com/opslify-com/opslifyd/internal/session/egress"
 )
 
@@ -126,7 +132,7 @@ func secretsWiringConfig() install.Config {
 // was permitted without a warning.
 func TestSecretsServiceIndexesConfigAndPolicyConsumers(t *testing.T) {
 	base := policy.Policy{Creds: []policy.Cred{{Name: "grant-only-token", Provider: "azure"}}}
-	svc := buildSecretsService(secretsWiringConfig(), nil, nil, base)
+	svc := mustBuildSecretsService(t, secretsWiringConfig(), nil, newTestProjectService(t), base)
 
 	for _, tc := range []struct {
 		ref  string
@@ -156,7 +162,7 @@ func TestSecretsServiceIndexesConfigAndPolicyConsumers(t *testing.T) {
 // back to the unguarded delete path.
 func TestDaemonOptionsWireSecretsService(t *testing.T) {
 	cfg := secretsWiringConfig()
-	svc := buildSecretsService(cfg, nil, nil, policy.Policy{})
+	svc := mustBuildSecretsService(t, cfg, nil, newTestProjectService(t), policy.Policy{})
 	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, discardLog())
 
 	if opts.SecretsSvc == nil {
@@ -167,14 +173,21 @@ func TestDaemonOptionsWireSecretsService(t *testing.T) {
 	}
 }
 
-// TestDaemonOptionsCarryEveryStatefulDependency guards the whole literal, not just
-// the field this feature added: a dependency dropped here disables a subsystem
-// silently at runtime.
+// TestDaemonOptionsCarryEveryStatefulDependency guards the WHOLE literal. The
+// first version of this test passed nil for mgr, projects and verifier, so it
+// could not assert them — and dropping any of those three from daemonOptions
+// survived the entire suite, silently disabling the project API, the session API
+// or toolchain verification in production. Every dependency is now passed as a
+// real non-nil value and asserted to arrive.
 func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
 	cfg := secretsWiringConfig()
 	vault := &noopSecretManager{}
-	svc := buildSecretsService(cfg, vault, nil, policy.Policy{})
-	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, vault, svc, discardLog())
+	svc := mustBuildSecretsService(t, cfg, vault, newTestProjectService(t), policy.Policy{})
+	projects := newTestProjectService(t)
+	mgr := &session.Manager{}
+	verifier := stubVerifier{}
+
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", verifier, mgr, projects, vault, svc, discardLog())
 
 	if opts.SocketPath != "/run/opslify/api.sock" {
 		t.Errorf("SocketPath = %q", opts.SocketPath)
@@ -185,6 +198,18 @@ func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
 	if opts.Secrets == nil {
 		t.Error("Secrets (the narrow Put/List/Delete surface) must be wired")
 	}
+	if opts.SecretsSvc == nil {
+		t.Error("SecretsSvc must be wired, or the in-use delete guard is inoperative")
+	}
+	if opts.Projects != projects {
+		t.Error("Projects must be wired, or the F8.1 project/environment API is silently disabled")
+	}
+	if opts.Sessions != mgr {
+		t.Error("Sessions must be wired, or the session API is silently disabled")
+	}
+	if opts.Verifier == nil {
+		t.Error("Verifier must be wired, or the daemon serves an unverified toolchain")
+	}
 	if opts.Logger == nil {
 		t.Error("Logger must be wired")
 	}
@@ -192,6 +217,118 @@ func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
 		t.Error("Ready must be wired, or systemd never sees the daemon come up")
 	}
 }
+
+// newTestProjectService builds a real project.Service over a temp state dir, so
+// the wiring tests exercise the actual type rather than nil.
+func mustBuildSecretsService(t *testing.T, cfg install.Config, vault broker.SecretManager, projects *project.Service, base policy.Policy) *broker.SecretsService {
+	t.Helper()
+	svc, err := buildSecretsService(cfg, vault, projects, base)
+	if err != nil {
+		t.Fatalf("buildSecretsService: %v", err)
+	}
+	return svc
+}
+
+// TestSecretsServiceRequiresProjectService: a nil project service limited the
+// consumer index to the daemon baseline, so a credential a project or
+// environment layer still granted reported zero consumers and its delete was
+// permitted without a 409. The daemon always has one, so nil is a wiring bug and
+// must fail loudly at startup rather than degrade the guard in silence.
+func TestSecretsServiceRequiresProjectService(t *testing.T) {
+	if _, err := buildSecretsService(secretsWiringConfig(), nil, nil, policy.Policy{}); err == nil {
+		t.Fatal("a nil project service must be refused, not silently accepted")
+	}
+}
+
+func newTestProjectService(t *testing.T) *project.Service {
+	t.Helper()
+	store, err := project.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	svc, err := project.NewService(project.Options{Store: store, Logger: discardLog()})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	return svc
+}
+
+// TestSecretsServiceIndexesPerEnvironmentPolicyGrants covers the limb of
+// buildSecretsService that enumerates projects and environments. It had ZERO
+// coverage: passing projects=nil, or making a ResolveScope error `continue`,
+// survived the whole suite.
+//
+// Note on semantics: an environment overlay CANNOT introduce a grant the daemon
+// baseline lacks — policy.Resolve intersects creds, narrows-never-widens. So the
+// property under test is not "a new grant appears" but "the per-environment
+// layers are enumerated at all", which is observable in the consumer's SCOPE
+// label. With the enumeration dropped, the same ref is still reported (via the
+// baseline) but with no scope, and an operator can no longer tell WHICH
+// environment a delete would break.
+func TestSecretsServiceIndexesPerEnvironmentPolicyGrants(t *testing.T) {
+	base := policy.Policy{Creds: []policy.Cred{
+		{Name: "prod-token", Provider: "azure"},
+		{Name: "staging-token", Provider: "azure"},
+	}}
+	// The overlay narrows prod to just prod-token.
+	overlay := filepath.Join(t.TempDir(), "prod.policy.yaml")
+	if err := os.WriteFile(overlay, []byte("creds:\n  - name: prod-token\n    provider: azure\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projects := newTestProjectService(t)
+	if _, _, err := projects.CreateProject(project.ProjectSpec{
+		Name: "tripon",
+		Environments: []project.EnvironmentSpec{
+			{Name: "prod", PolicyOverlay: overlay, Production: true},
+		},
+	}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+
+	svc := mustBuildSecretsService(t, secretsWiringConfig(), nil, projects, base)
+	cs, err := svc.Consumers("prod-token")
+	if err != nil {
+		t.Fatalf("Consumers: %v", err)
+	}
+	var scopes []string
+	for _, c := range cs {
+		scopes = append(scopes, c.Scope)
+	}
+	if !slices.Contains(scopes, "tripon/prod") {
+		t.Fatalf("the per-environment policy layers were not enumerated: consumer scopes = %v, want one naming tripon/prod", scopes)
+	}
+	for _, c := range cs {
+		if c.Kind != broker.ConsumerPolicyGrant {
+			t.Errorf("kind = %q, want %q", c.Kind, broker.ConsumerPolicyGrant)
+		}
+	}
+}
+
+// TestSecretsServiceFailsClosedOnUnresolvableScope: a scope that cannot resolve
+// must make the whole index error, not silently drop its grants. Under-reporting
+// is what lets a delete break a live grant.
+func TestSecretsServiceFailsClosedOnUnresolvableScope(t *testing.T) {
+	// A policy overlay path that does not exist: LoadLayer is fail-closed, so
+	// ResolveScope errors for this environment.
+	missing := filepath.Join(t.TempDir(), "gone.policy.yaml")
+	projects := newTestProjectService(t)
+	if _, _, err := projects.CreateProject(project.ProjectSpec{
+		Name:         "tripon",
+		Environments: []project.EnvironmentSpec{{Name: "prod", PolicyOverlay: missing}},
+	}); err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	svc := mustBuildSecretsService(t, secretsWiringConfig(), nil, projects, policy.Policy{})
+	if _, err := svc.Consumers("anything"); err == nil {
+		t.Fatal("an unresolvable scope must fail the consumer index closed, not drop its grants")
+	}
+}
+
+// stubVerifier stands in for the toolchain verifier: the wiring test only needs a
+// non-nil value it can compare against.
+type stubVerifier struct{}
+
+func (stubVerifier) VerifyToolchain(context.Context) error { return nil }
 
 type noopSecretManager struct{}
 
