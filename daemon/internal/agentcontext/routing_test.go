@@ -180,3 +180,52 @@ func TestRenderLabelsAuthority(t *testing.T) {
 		t.Errorf("repo layers must be labelled as repo-sourced:\n%s", rendered)
 	}
 }
+
+// TestDeclaredToolsWithNoPackAreReportedEvenWhenLoadingEverything: the capability
+// map must have an effect even with no role hint, or it is inert until some
+// future task supplies one — and the gap it describes ("you told us you use
+// argocd; there is no argocd pack") stays invisible for that whole time.
+func TestDeclaredToolsWithNoPackAreReportedEvenWhenLoadingEverything(t *testing.T) {
+	r := Route(estateCaps, nil, []string{"kubernetes"})
+	if !r.LoadedAll {
+		t.Fatal("no role hint must still load every pack")
+	}
+	// gitlab, gitlab-ci, argocd and terraform are declared; only kubernetes exists.
+	want := []string{"argocd", "gitlab", "gitlab-ci", "terraform"}
+	if !reflect.DeepEqual(r.Missing, want) {
+		t.Errorf("Missing = %v, want %v", r.Missing, want)
+	}
+	// An estate whose declared tools all have packs reports nothing missing.
+	full := Route(CapabilityMap{RoleOrchestration: "kubernetes"}, nil, []string{"kubernetes"})
+	if len(full.Missing) != 0 {
+		t.Errorf("Missing = %v, want none", full.Missing)
+	}
+	// And with no capability map at all there is nothing to be missing.
+	if none := Route(nil, nil, []string{"kubernetes"}); len(none.Missing) != 0 {
+		t.Errorf("Missing = %v with no capability map", none.Missing)
+	}
+}
+
+// TestAssemblyWarnsAboutDeclaredToolsWithNoPack ties it to the operator-facing
+// output: the warning is what turns the gap into an action.
+func TestAssemblyWarnsAboutDeclaredToolsWithNoPack(t *testing.T) {
+	f := newFixture(t)
+	f.writeHouseRules(t, houseRuleText)
+	f.write(t, ".opslify/skills/kubernetes.md", "Drain first.")
+
+	src := f.sources()
+	src.Capabilities = CapabilityMap{RoleOrchestration: "kubernetes", RoleDeploy: "argocd"}
+	a, err := Assemble(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, w := range a.Warnings {
+		if strings.Contains(w, "argocd") && strings.Contains(w, "skill draft") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a declared tool with no pack must produce an actionable warning; got %v", a.Warnings)
+	}
+}

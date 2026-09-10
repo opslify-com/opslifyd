@@ -55,7 +55,18 @@ func Route(caps CapabilityMap, roles []string, available []string) Routing {
 	if len(roles) == 0 {
 		sel := append([]string(nil), available...)
 		sort.Strings(sel)
-		return Routing{Selected: sel, LoadedAll: true}
+		// Even with everything loaded, a tool the estate DECLARES but has no pack for
+		// is worth reporting: it is the difference between "the agent read your notes
+		// on argocd" and "there were none". Without this the capability map has no
+		// effect at all until a task supplies role hints, and the gap it describes
+		// stays invisible for the whole of that time.
+		var missing []string
+		for _, tool := range caps {
+			if tool != "" && !have[tool] {
+				missing = append(missing, tool)
+			}
+		}
+		return Routing{Selected: sel, LoadedAll: true, Missing: dedupeSorted(missing)}
 	}
 
 	wantRoles := dedupeSorted(roles)
