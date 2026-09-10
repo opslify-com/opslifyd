@@ -647,34 +647,52 @@ func (s *httpSink) pendingFrame(execID, rule, reason string) error {
 	return s.emit(frame{Status: "pending", ExecID: execID, Rule: rule, Reason: reason})
 }
 
-// maxRequestBody bounds any decoded request body.
+// maxRequestBody is the DEFAULT bound on a decoded request body.
 //
-// The secret routes need this most: nothing previously bounded a value, and every
-// Put/Update rewrites the ENTIRE vault file under the global mutex (and OpenVault
-// reads it whole at startup), so one oversized value permanently slows every
-// later credential injection. 1 MiB is far above any real credential — an SSH
-// key, a kubeconfig or a service-account JSON is kilobytes — while base64's 4/3
-// expansion still leaves the decoded value comfortably bounded.
-const maxRequestBody = 1 << 20
+// It is derived from session.MaxFileBytes rather than picked, because the
+// workspace file routes legitimately carry a whole file base64-encoded in JSON.
+// A flat 1 MiB here — which is what a secret needs — silently broke every upload
+// over ~768 KiB: `workspace sync`, the F7.3/F7.4 linked-directory sync engine and
+// the MCP upload tool all passed their own 64 MiB check and were then refused
+// downstream by a limit none of them advertised. The right bound is per-route,
+// so the tight one lives on the secret routes and this one only has to
+// accommodate the largest thing the API actually accepts.
+//
+// base64 expands 4/3; the slack covers the JSON envelope and field names.
+const maxRequestBody = session.MaxFileBytes*4/3 + (1 << 20)
+
+// maxSecretBody bounds the secret routes specifically.
+//
+// A credential is kilobytes — an SSH key, a kubeconfig, a service-account JSON.
+// The bound matters more here than elsewhere because every write rewrites the
+// ENTIRE vault file under the global mutex (and OpenVault reads it whole at
+// startup), so one oversized value permanently slows every later credential
+// injection.
+const maxSecretBody = 1 << 20
 
 // decodeJSON strictly decodes an optional JSON body (empty body => zero value),
-// rejecting unknown fields so a malformed request is a legible 400, not a
-// silently-ignored field, and bounding the read so a large body cannot be used to
-// exhaust memory or bloat daemon state.
+// rejecting unknown fields so a malformed request is a legible 400 rather than a
+// silently-ignored field, under the default size bound.
 func decodeJSON(r *http.Request, v any) error {
+	return decodeJSONLimit(r, v, maxRequestBody)
+}
+
+// decodeJSONLimit is decodeJSON with an explicit bound, so a route that only ever
+// carries small bodies can say so instead of inheriting the limit set by the
+// largest route in the API.
+func decodeJSONLimit(r *http.Request, v any, limit int64) error {
 	if r.Body == nil || r.ContentLength == 0 {
 		return nil
 	}
-	// This check is redundant with MaxBytesReader below, which catches the same
-	// case — it is kept because it names the actual size in the error, where
-	// MaxBytesReader can only say "too large". Mutation testing confirms the bound
-	// still holds with either line alone.
-	if r.ContentLength > maxRequestBody {
-		return fmt.Errorf("request body is %d bytes, over the %d-byte limit", r.ContentLength, maxRequestBody)
+	// ContentLength is checked first only to name the actual size in the error;
+	// MaxBytesReader below enforces the bound and is what catches a chunked body,
+	// where ContentLength is -1 and this check cannot see the size at all. The two
+	// are NOT symmetric: MaxBytesReader alone holds the bound, this line alone
+	// does not.
+	if r.ContentLength > limit {
+		return fmt.Errorf("request body is %d bytes, over the %d-byte limit", r.ContentLength, limit)
 	}
-	// MaxBytesReader covers a chunked body, where ContentLength is -1 and the
-	// check above cannot see the size at all.
-	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, maxRequestBody))
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	dec.DisallowUnknownFields()
 	return dec.Decode(v)
 }

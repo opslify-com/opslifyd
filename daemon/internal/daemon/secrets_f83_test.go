@@ -7,13 +7,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/opslify-com/opslifyd/internal/broker"
+	"github.com/opslify-com/opslifyd/internal/session"
 )
 
 func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -27,6 +31,11 @@ func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) 
 // Base64 comes in three alphabets (std/URL, padded and not) and JSON may escape
 // the '+' and '/'; hex is checked too since a future handler could render bytes
 // that way.
+// The canary is deliberately all-unreserved ASCII with no '/', '"' or '\\': that
+// makes percent-encoding and quoted-printable identity transforms on it, so the
+// encodings enumerated below are the complete set that could carry it. A canary
+// containing those characters would need a real un-escaper here, not the narrow
+// one below.
 func leaks(body, secret string) (string, bool) {
 	raw := []byte(secret)
 	candidates := map[string]string{
@@ -112,6 +121,8 @@ func TestNoSecretsRouteReturnsAValue(t *testing.T) {
 		{"add-existing", http.MethodPost, "/v1/secrets", addBody, http.StatusConflict},
 		{"add-new", http.MethodPost, "/v1/secrets", `{"ref":"new-token","value_b64":"` + b64(secretCanary) + `"}`, http.StatusCreated},
 		{"rotate", http.MethodPut, "/v1/secrets/gitlab-token", rotateBody, http.StatusOK},
+		{"add-overwrite-existing", http.MethodPost, "/v1/secrets", `{"ref":"gitlab-token","value_b64":"` + b64(secretCanary) + `","overwrite":true}`, http.StatusOK},
+		{"add-overwrite-new", http.MethodPost, "/v1/secrets", `{"ref":"fresh","value_b64":"` + b64(secretCanary) + `","overwrite":true}`, http.StatusCreated},
 		{"delete-in-use", http.MethodDelete, "/v1/secrets/gitlab-token", "{}", http.StatusConflict},
 		{"delete-forced", http.MethodDelete, "/v1/secrets/gitlab-token?force=true", "{}", http.StatusNoContent},
 	} {
@@ -124,8 +135,11 @@ func TestNoSecretsRouteReturnsAValue(t *testing.T) {
 				t.Fatalf("%s %s = %d, want %d — the route did not run, so this leak check proves nothing: %s",
 					tc.method, tc.path, rec.Code, tc.wantStatus, rec.Body.String())
 			}
-			if enc, bad := leaks(rec.Body.String(), secretCanary); bad {
-				t.Fatalf("%s %s returned the secret VALUE as %s: %s", tc.method, tc.path, enc, rec.Body.String())
+			// HEADERS as well as the body: a handler setting an X-Debug header with
+			// the value passed a body-only check with the whole suite green.
+			if enc, bad := leaks(rec.Body.String()+fmt.Sprint(rec.Header()), secretCanary); bad {
+				t.Fatalf("%s %s returned the secret VALUE as %s: body=%s headers=%v",
+					tc.method, tc.path, enc, rec.Body.String(), rec.Header())
 			}
 		})
 	}
@@ -434,8 +448,9 @@ func TestAddWithOverwriteIsAuditedAsARotation(t *testing.T) {
 	body := `{"ref":"gitlab-token","value_b64":"` + b64(secretCanary) + `","provider":"gitlab","overwrite":true}`
 	rec := httptest.NewRecorder()
 	d.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("POST overwrite = %d: %s", rec.Code, rec.Body.String())
+	// 200, not 201: the ref already existed, so this replaced rather than created.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST overwrite of an existing ref = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(auditLog.String(), "secret.rotate") {
 		t.Errorf("add --overwrite replaced a live credential with no audit record; log:\n%s", auditLog.String())
@@ -450,6 +465,41 @@ func TestAddWithOverwriteIsAuditedAsARotation(t *testing.T) {
 	metas, _ := v.List(context.Background())
 	if len(metas) != 1 || metas[0].RotatedAt.IsZero() {
 		t.Errorf("add --overwrite must rotate in place and stamp RotatedAt: %+v", metas)
+	}
+	// And the VALUE must be the one sent. Asserting only that the ref exists is
+	// what let an all-zero credential pass as success.
+	assertStoredValue(t, v, "gitlab-token", secretCanary)
+	// The 200 must describe the stored record, not the request: a real created_at
+	// (carried forward from the original create) rather than year 1.
+	if strings.Contains(rec.Body.String(), "0001-01-01") {
+		t.Errorf("the response echoed the request instead of the stored record: %s", rec.Body.String())
+	}
+}
+
+// assertStoredValue decrypts a ref and checks it byte-for-byte.
+//
+// This exists because "the ref appears in List()" is NOT evidence a credential
+// was stored: a rotate-then-create pair that shared a zeroized plaintext buffer
+// reported 201 Created and stored 25 zero bytes, and a test asserting only
+// presence passed it.
+func assertStoredValue(t *testing.T, v *broker.Vault, ref, want string) {
+	t.Helper()
+	got, _, err := v.Get(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("stored %s could not be resolved: %v", ref, err)
+	}
+	if string(got) != want {
+		allZero := len(got) > 0
+		for _, b := range got {
+			if b != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			t.Fatalf("%s stored %d ZERO bytes — the plaintext buffer was wiped before the write", ref, len(got))
+		}
+		t.Fatalf("%s stored %q, want %q", ref, got, want)
 	}
 }
 
@@ -474,6 +524,38 @@ func TestAddOfANewRefStillCreatesEvenWithOverwrite(t *testing.T) {
 	if !found {
 		t.Fatal("the new ref was not created")
 	}
+	// The value is the point. `secrets add <new-ref> --overwrite` is the standard
+	// idempotent automation pattern, and it silently stored an all-zero credential
+	// that failed only at the next resolve.
+	assertStoredValue(t, v, "brand-new", "v")
+}
+
+// TestConcurrentAddWithOverwriteAllSucceed: two --overwrite requests racing on a
+// fresh ref must both succeed. The rotate-then-create composition let one lose to
+// ErrExists, which the single atomic upsert cannot do.
+func TestConcurrentAddWithOverwriteAllSucceed(t *testing.T) {
+	h, v := newSecretsTestDaemon(t)
+	const n = 16
+	codes := make(chan int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := `{"ref":"racy","value_b64":"` + b64("racy-value") + `","overwrite":true}`
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+			codes <- rec.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	for code := range codes {
+		if code != http.StatusCreated && code != http.StatusOK {
+			t.Fatalf("a concurrent --overwrite got %d; every explicit overwrite must succeed", code)
+		}
+	}
+	assertStoredValue(t, v, "racy", "racy-value")
 }
 
 // TestOversizedRequestBodyIsRefused pins F12. Nothing bounded a value, and every
@@ -516,5 +598,315 @@ func TestNormalSizedSecretsStillAccepted(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("an 8 KiB credential = %d, want 201: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBodyBoundsArePerRoute pins N3. A single flat bound on the shared decoder
+// silently broke every workspace upload over ~768 KiB — `workspace sync`, the
+// F7.3/F7.4 linked-directory sync engine and the MCP upload tool each passed
+// their own 64 MiB check and were then refused downstream by a limit none of them
+// advertised. The tight bound belongs on the secret routes only.
+func TestBodyBoundsArePerRoute(t *testing.T) {
+	// The secret bound must be far tighter than the general one, and the general
+	// one must accommodate the largest file the API says it accepts.
+	if maxSecretBody >= maxRequestBody {
+		t.Fatalf("maxSecretBody (%d) must be tighter than maxRequestBody (%d)", maxSecretBody, maxRequestBody)
+	}
+	// base64 expands 4/3, so the general bound must clear that for a full-size file
+	// or uploads fail at a limit no caller was told about.
+	needed := int64(session.MaxFileBytes) * 4 / 3
+	if maxRequestBody < needed {
+		t.Fatalf("maxRequestBody (%d) is below the base64-expanded size of session.MaxFileBytes (%d): uploads the API advertises would be refused",
+			maxRequestBody, needed)
+	}
+}
+
+// TestSecretRoutesRejectOversizedButUploadRouteDoesNot is the behavioural half:
+// the same body size must be refused as a secret and accepted by the decoder used
+// for file uploads.
+func TestSecretRoutesRejectOversizedButUploadRouteDoesNot(t *testing.T) {
+	h, _ := newSecretsTestDaemon(t)
+	// ~2 MiB raw -> ~2.7 MiB of JSON: over the secret bound, well under the general one.
+	body := `{"ref":"big","value_b64":"` + b64(strings.Repeat("x", 2<<20)) + `"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a 2 MiB secret = %d, want 400 (secrets are kilobytes)", rec.Code)
+	}
+
+	// The SAME body must get past the general decoder. Decoding directly is the
+	// honest check here: it isolates the bound from the upload route's own
+	// session/path validation, which is what this test is not about.
+	req := httptest.NewRequest(http.MethodPut, "/v1/sessions/s1/files", strings.NewReader(body))
+	var into struct {
+		Ref      string `json:"ref"`
+		ValueB64 string `json:"value_b64"`
+	}
+	if err := decodeJSON(req, &into); err != nil {
+		t.Fatalf("the general bound refused a %d-byte body that the file routes must accept: %v", len(body), err)
+	}
+	if len(into.ValueB64) == 0 {
+		t.Fatal("the body did not decode")
+	}
+}
+
+// TestUnknownFieldsAreStillRejected pins DisallowUnknownFields, which the
+// per-route refactor could have dropped. It is load-bearing: a request with a
+// misspelled field must be a legible 400, not a silently-ignored value — and a
+// rotate body carrying a stray "ref" field 400ing is what once made a leak test
+// vacuous without anyone noticing.
+func TestUnknownFieldsAreStillRejected(t *testing.T) {
+	h, _ := newSecretsTestDaemon(t)
+	for _, tc := range []struct{ name, method, path, body string }{
+		{"add", http.MethodPost, "/v1/secrets", `{"ref":"x","value_b64":"` + b64("v") + `","typoed":1}`},
+		{"rotate", http.MethodPut, "/v1/secrets/gitlab-token", `{"value_b64":"` + b64("v") + `","ref":"x"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("an unknown field = %d, want 400: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "unknown field") {
+				t.Errorf("the 400 must name the problem: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestRotateFallbackIsNotFedBySecurityRefusals pins N7. The add handler treats an
+// ErrNotFound from the upsert path as "this is a create". Nothing pinned that it
+// is ErrNotFound-ONLY, so a rotation refused for a SECURITY reason — a
+// non-atomic backend, a control-char provider — would have fallen through to a
+// plain create, converting a refusal into a write.
+func TestRotateFallbackIsNotFedBySecurityRefusals(t *testing.T) {
+	h, v := newSecretsTestDaemon(t)
+	// A control character in the provider is refused by the write path. The
+	// request must FAIL, not quietly land as a create.
+	body := `{"ref":"sneaky","value_b64":"` + b64("v") + `","provider":"x\nforged","overwrite":true}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code == http.StatusCreated || rec.Code == http.StatusOK {
+		t.Fatalf("a refused write returned %d — a security refusal must not become a create", rec.Code)
+	}
+	metas, _ := v.List(context.Background())
+	for _, m := range metas {
+		if m.Ref == "sneaky" {
+			t.Fatal("a refused write created the ref anyway")
+		}
+	}
+}
+
+// TestListRouteFailsClosedWhenConsumersUnknowable pins N8. `List` swallowing the
+// index error made `secrets consumers` report in_use:false for EVERY secret while
+// grants existed — an information-path fail-open, which is worse than a hard
+// error because the operator reads "nothing uses this" and reaches for --force.
+func TestListRouteFailsClosedWhenConsumersUnknowable(t *testing.T) {
+	key := make([]byte, 32)
+	v, err := broker.OpenVault(t.TempDir()+"/vault.db", broker.StaticKeySource(key))
+	if err != nil {
+		t.Fatalf("OpenVault: %v", err)
+	}
+	if err := v.Put(context.Background(), "gitlab-token", []byte("v"), broker.PutMeta{}, false); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	idx := broker.NewConsumerIndex(broker.ConsumerSourceFunc(func() (map[string][]broker.Consumer, error) {
+		return nil, errors.New("policy store unavailable")
+	}))
+	d, err := New(Options{Secrets: v, SecretsSvc: broker.NewSecretsService(v, idx), Verifier: okVerifier()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	d.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/secrets/consumers", nil))
+
+	if rec.Code == http.StatusOK {
+		if strings.Contains(rec.Body.String(), `"in_use":false`) {
+			t.Fatal("the listing reported in_use:false while the consumer index was erroring — an operator would read that as 'safe to delete'")
+		}
+		t.Fatalf("the consumers listing must not return 200 when consumers are unknowable: %s", rec.Body.String())
+	}
+}
+
+// TestListRouteCarriesRotationHygiene pins N14: last_used and rotated_at must
+// reach the PRIMARY listing verb, which is the stated reason they were added —
+// answering "which credentials are stale?" from `secrets ls`.
+func TestListRouteCarriesRotationHygiene(t *testing.T) {
+	h, v := newSecretsTestDaemon(t)
+	ctx := context.Background()
+	if _, _, err := v.Get(ctx, "gitlab-token"); err != nil { // stamps LastUsed
+		t.Fatalf("Get: %v", err)
+	}
+	if _, _, err := v.Upsert(ctx, "gitlab-token", []byte("new"), broker.PutMeta{Provider: "gitlab"}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/secrets", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d", rec.Code)
+	}
+	for _, key := range []string{"last_used", "rotated_at"} {
+		if !strings.Contains(rec.Body.String(), key) {
+			t.Errorf("GET /v1/secrets omits %q — the primary listing verb still cannot answer 'which credentials are stale?': %s",
+				key, rec.Body.String())
+		}
+	}
+	if enc, bad := leaks(rec.Body.String(), secretCanary); bad {
+		t.Fatalf("the listing leaked the value as %s", enc)
+	}
+}
+
+// needsQueryForm reports a ref that cannot survive URL path normalisation, and
+// therefore cannot be addressed as a path segment at all: ServeMux cleans the
+// path before routing and 307-redirects. A "." or ".." segment, a leading slash
+// and an empty interior segment are all rewritten. Such a ref is exactly why the
+// query form exists.
+func needsQueryForm(ref string) bool {
+	if strings.HasPrefix(ref, "/") || strings.Contains(ref, "//") {
+		return true
+	}
+	for _, seg := range strings.Split(ref, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDeleteRouteRemovesALegacyRef pins N5 at the ROUTE, where the lockout lived.
+// A secret stored under an earlier, looser ref rule must stay removable: the
+// route re-applying the current rule made such a secret listed, live, resolvable
+// and permanently un-deletable — removable only by hand-editing an encrypted
+// vault file. Enforcement belongs on the write path, not on delete.
+func TestDeleteRouteRemovesALegacyRef(t *testing.T) {
+	for _, legacy := range []string{"trail/", "/etc/passwd", "./tok", "a//b", "x/../y"} {
+		t.Run(legacy, func(t *testing.T) {
+			key := make([]byte, 32)
+			path := t.TempDir() + "/vault.db"
+			v, err := broker.OpenVault(path, broker.StaticKeySource(key))
+			if err != nil {
+				t.Fatalf("OpenVault: %v", err)
+			}
+			// The write path must refuse the shape...
+			if err := v.Put(context.Background(), legacy, []byte("v"), broker.PutMeta{}, false); err == nil {
+				t.Fatalf("the write path must refuse %q", legacy)
+			}
+			// ...but one already on disk must be deletable through the API.
+			broker.PlantLegacyRefForTest(t, v, legacy)
+			d, err := New(Options{
+				Secrets:    v,
+				SecretsSvc: broker.NewSecretsService(v, broker.NewConsumerIndex()),
+				Verifier:   okVerifier(),
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			// The path form when the ref can be expressed as a path, and the
+			// query form when it cannot — a "." or ".." segment is normalised away
+			// by ServeMux before routing, so such a ref is unreachable by path.
+			target := "/v1/secrets/" + legacy
+			if needsQueryForm(legacy) {
+				target = "/v1/secrets?ref=" + url.QueryEscape(legacy)
+			}
+			rec := httptest.NewRecorder()
+			d.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, target, nil))
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("DELETE of legacy ref %q via %s = %d, want 204: %s", legacy, target, rec.Code, rec.Body.String())
+			}
+			metas, _ := v.List(context.Background())
+			for _, m := range metas {
+				if m.Ref == legacy {
+					t.Fatal("the legacy ref survived deletion")
+				}
+			}
+		})
+	}
+}
+
+// TestDeleteByQueryIsGuardedIdentically: the path-free form changes how the ref
+// is transported, not what is permitted. If it were unguarded it would be a
+// trivial bypass of the whole in-use guard.
+func TestDeleteByQueryIsGuardedIdentically(t *testing.T) {
+	h, v := newSecretsTestDaemon(t)
+	// gitlab-token is in use by an egress-inject rule in this fixture.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/secrets?ref=gitlab-token", nil))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("DELETE ?ref= of an in-use secret = %d, want 409: %s", rec.Code, rec.Body.String())
+	}
+	if metas, _ := v.List(context.Background()); len(metas) != 1 {
+		t.Fatal("the refused delete removed the secret anyway")
+	}
+	// force must behave the same way as on the path form.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/secrets?ref=gitlab-token&force=true", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE ?ref=&force=true = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDeleteByQueryRequiresARef: without one it must be a legible 400, never a
+// wildcard delete.
+func TestDeleteByQueryRequiresARef(t *testing.T) {
+	h, v := newSecretsTestDaemon(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/secrets", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE /v1/secrets with no ref = %d, want 400", rec.Code)
+	}
+	if metas, _ := v.List(context.Background()); len(metas) != 1 {
+		t.Fatal("a ref-less delete removed secrets")
+	}
+}
+
+// TestAddResponseDescribesTheStoredRecord pins N9. The 201 echoed the REQUEST, so
+// every add reported created_at of year 1, and an --overwrite echoed the caller's
+// (often empty) provider while the stored record carried the previous values
+// forward. A response that describes the request rather than the record is a
+// quiet lie an operator has no way to check.
+func TestAddResponseDescribesTheStoredRecord(t *testing.T) {
+	h, _ := newSecretsTestDaemon(t)
+	body := `{"ref":"fresh","value_b64":"` + b64("v") + `","provider":"azure","scope":"tripon/prod","ttl":"1h"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("add = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got secretMetaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.CreatedAt.IsZero() || got.CreatedAt.Year() < 2000 {
+		t.Errorf("created_at = %v — the response echoed the request instead of the stored record", got.CreatedAt)
+	}
+	if got.Ref != "fresh" || got.Provider != "azure" || got.Scope != "tripon/prod" || got.TTL != "1h" {
+		t.Errorf("response = %+v, want the stored metadata", got)
+	}
+}
+
+// TestOverwriteResponseCarriesForwardMetadata: an --overwrite that restates
+// nothing must report the metadata the record actually kept, not the empty
+// request fields.
+func TestOverwriteResponseCarriesForwardMetadata(t *testing.T) {
+	h, _ := newSecretsTestDaemon(t)
+	// gitlab-token exists with provider "gitlab". Overwrite it restating nothing.
+	body := `{"ref":"gitlab-token","value_b64":"` + b64("new") + `","overwrite":true}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/secrets", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("overwrite = %d: %s", rec.Code, rec.Body.String())
+	}
+	var got secretMetaResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Provider != "gitlab" {
+		t.Errorf("provider = %q, want the carried-forward %q", got.Provider, "gitlab")
+	}
+	if got.RotatedAt == nil {
+		t.Error("an overwrite of an existing ref must report rotated_at")
+	}
+	if got.CreatedAt.IsZero() || got.CreatedAt.Year() < 2000 {
+		t.Errorf("created_at = %v — it must be the ORIGINAL creation time", got.CreatedAt)
 	}
 }

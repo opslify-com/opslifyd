@@ -335,3 +335,74 @@ type noopSecretManager struct{}
 func (noopSecretManager) Put(context.Context, string, []byte, broker.PutMeta, bool) error { return nil }
 func (noopSecretManager) List(context.Context) ([]broker.SecretMeta, error)               { return nil, nil }
 func (noopSecretManager) Delete(context.Context, string) error                            { return nil }
+
+// TestBuildDaemonOptionsWiresTheWholeSurface pins N4: the composition root's own
+// arguments. Before this, run() passed basePolicy, vault and secretsSvc by hand,
+// and three mutations there were SILENT — the daemon started normally with the
+// delete guard degraded or the secrets surface absent entirely:
+//
+//	basePolicy -> policy.Policy{}  : baseline grants vanish from the consumer
+//	                                 index, so deleting a granted secret gets no 409
+//	secretsSvc -> nil              : no rotate route, unguarded delete
+//	vault      -> nil              : secrets routes 404
+func TestBuildDaemonOptionsWiresTheWholeSurface(t *testing.T) {
+	dir := t.TempDir()
+	policyPath := filepath.Join(dir, "opslify.policy.yaml")
+	// A baseline grant: it must reach the consumer index through the composition
+	// root, or a delete of this ref is permitted with no warning.
+	if err := os.WriteFile(policyPath, []byte("creds:\n  - name: baseline-token\n    provider: azure\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := secretsWiringConfig()
+	cfg.PolicyFile = policyPath
+
+	vault := &noopSecretManager{}
+	projects := newTestProjectService(t)
+	mgr := &session.Manager{}
+
+	opts, err := buildDaemonOptions(cfg, "/run/opslify/api.sock", "opslify", stubVerifier{}, mgr, projects, vault, discardLog())
+	if err != nil {
+		t.Fatalf("buildDaemonOptions: %v", err)
+	}
+	if opts.SecretsSvc == nil {
+		t.Fatal("SecretsSvc is nil: the in-use delete guard is absent from the running daemon")
+	}
+	if opts.Secrets == nil {
+		t.Fatal("Secrets is nil: every secret route would 404")
+	}
+	if opts.Projects != projects || opts.Sessions != mgr || opts.Verifier == nil {
+		t.Error("a dependency was dropped between run() and daemon.New")
+	}
+	// The DAEMON BASELINE's grants must be indexed. This is what catches the
+	// baseline being replaced by an empty policy — the mutation that leaves every
+	// baseline-granted credential looking unused.
+	cs, err := opts.SecretsSvc.Consumers("baseline-token")
+	if err != nil {
+		t.Fatalf("Consumers: %v", err)
+	}
+	if len(cs) == 0 {
+		t.Fatal("the daemon policy baseline was not indexed: a credential it grants reports zero consumers, so its delete is permitted with no 409")
+	}
+	if cs[0].Kind != broker.ConsumerPolicyGrant {
+		t.Errorf("kind = %q, want %q", cs[0].Kind, broker.ConsumerPolicyGrant)
+	}
+	// And the config-derived consumers must still be there alongside them.
+	if cs, err := opts.SecretsSvc.Consumers("gitlab-token"); err != nil || len(cs) == 0 {
+		t.Errorf("the egress-inject consumer was lost: %v %v", cs, err)
+	}
+}
+
+// TestBuildDaemonOptionsFailsClosedOnABadPolicy: a configured-but-invalid policy
+// must abort startup, never fall back to the permissive built-in.
+func TestBuildDaemonOptionsFailsClosedOnABadPolicy(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "opslify.policy.yaml")
+	if err := os.WriteFile(bad, []byte("creds: [this is not a cred list\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := secretsWiringConfig()
+	cfg.PolicyFile = bad
+	if _, err := buildDaemonOptions(cfg, "/s", "g", stubVerifier{}, nil, newTestProjectService(t), &noopSecretManager{}, discardLog()); err == nil {
+		t.Fatal("an invalid daemon policy must abort startup, not fall back to a permissive default")
+	}
+}

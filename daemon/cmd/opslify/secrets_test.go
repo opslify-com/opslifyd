@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,27 +149,45 @@ func runCLI(t *testing.T, stdin string, args ...string) (string, string, error) 
 	return out.String(), errb.String(), err
 }
 
-// TestSecretsRmRefCannotForgeQueryString pins D3. A ref is concatenated into the
-// request path; without escaping, `secrets rm 'gitlab-token?force=true'` rewrote
-// the QUERY STRING and bypassed the daemon's in-use guard entirely — an
-// unprivileged client-side bypass of a server-side control.
+// TestSecretsRmRefCannotForgeQueryString pins D3, the client-side bypass of a
+// server-side control. A ref is concatenated into the request URL; unescaped,
+// `secrets rm 'gitlab-token?force=true'` rewrote the QUERY STRING and bypassed
+// the daemon's in-use guard entirely.
+//
+// The assertion is about the FORCE parameter specifically, not about the query
+// being empty: a ref that cannot be a path segment legitimately travels as an
+// escaped ?ref= value (so a legacy secret stays deletable), and that is safe
+// precisely because the escaping stops it from introducing new parameters.
 func TestSecretsRmRefCannotForgeQueryString(t *testing.T) {
 	for _, ref := range []string{
 		"gitlab-token?force=true",
 		"gitlab-token?force=true&x=1",
 		"gitlab-token#?force=true",
 		"gitlab-token%3fforce=true",
+		"gitlab-token&force=true",
+		"gitlab-token?FORCE=true",
 	} {
 		t.Run(ref, func(t *testing.T) {
 			var rec recordedRequest
 			fd := newRecordingDaemon(t, &rec)
 			_, _, err := runCLI(t, "", "secrets", "rm", ref, "--socket", fd.socketPath)
 
-			if rec.rawQuery != "" {
-				t.Fatalf("SECURITY: ref %q forged query %q — the in-use guard is bypassable from the client", ref, rec.rawQuery)
+			q := parseQuery(t, rec.rawQuery)
+			if len(q["force"]) > 0 {
+				t.Fatalf("SECURITY: ref %q forged force=%v without --force — the in-use guard is bypassable from the client", ref, q["force"])
+			}
+			for key := range q {
+				if key != "ref" {
+					t.Fatalf("SECURITY: ref %q introduced query parameter %q (%s)", ref, key, rec.rawQuery)
+				}
+			}
+			// The daemon must see the ref VERBATIM, so it deletes the secret the
+			// operator named and not some prefix of it.
+			if got := q.Get("ref"); got != "" && got != ref {
+				t.Errorf("daemon received ref %q, want %q", got, ref)
 			}
 			if err == nil {
-				t.Fatalf("the daemon refused this delete (409); the CLI must surface that as an error")
+				t.Errorf("the fake daemon refuses this delete (409); the CLI must surface that")
 			}
 		})
 	}
@@ -344,14 +363,16 @@ func TestEmptyValueIsRefusedFromEverySource(t *testing.T) {
 // url.PathEscape leaves "." and ".." intact, so a ref could walk out of its own
 // route: `secrets rm '../../v1/sessions/live-1'` sent DELETE /v1/sessions/live-1
 // — one request, exit code 0, "removed secret" printed, and a live session
-// destroyed. Refs come from config files, CI variables and automation, not only
-// from an operator's keyboard, and the daemon cannot defend against it because by
-// then the request is for a different route entirely.
+// destroyed.
 //
-// The mux below carries the daemon's REAL route patterns, so a traversal that
-// reaches another handler is observable as that handler firing.
+// The invariant asserted here is the one that matters, and it is stronger than
+// "the CLI errors": whatever the CLI does with a hostile ref, NO request may
+// reach a route other than the secrets routes, and no query parameter other than
+// ref/force may appear. Some of these refs are deliberately NOT refused — a
+// secret stored under an older, looser rule has to stay deletable — and those
+// travel as an escaped query value, which cannot retarget anything.
 func TestSecretsRefCannotRetargetAnotherRoute(t *testing.T) {
-	traversals := []string{
+	hostile := []string{
 		"../../v1/sessions/live-session-1",
 		"../../v1/projects/prod",
 		"../../v1/workspaces/prod",
@@ -363,22 +384,26 @@ func TestSecretsRefCannotRetargetAnotherRoute(t *testing.T) {
 		"/etc/passwd",
 		"trailing/",
 		"double//segment",
+		"gitlab-token?force=true",
+		"gitlab-token#frag",
 	}
-	for _, ref := range traversals {
+	for _, ref := range hostile {
 		t.Run(ref, func(t *testing.T) {
-			var hit string
+			var reached []string
+			var query string
 			mux := http.NewServeMux()
-			// The daemon's actual patterns for every DELETE-able resource.
 			for pattern, name := range map[string]string{
 				"DELETE /v1/secrets/{ref...}":  "secrets",
+				"DELETE /v1/secrets":           "secrets-query",
+				"PUT /v1/secrets/{ref...}":     "secrets-rotate",
 				"DELETE /v1/sessions/{id}":     "sessions",
 				"DELETE /v1/projects/{id}":     "projects",
 				"DELETE /v1/workspaces/{name}": "workspaces",
-				"PUT /v1/secrets/{ref...}":     "rotate",
 			} {
 				resource := name
 				mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-					hit = resource + " " + r.URL.Path
+					reached = append(reached, resource)
+					query = r.URL.RawQuery
 					w.WriteHeader(http.StatusNoContent)
 				})
 			}
@@ -389,17 +414,38 @@ func TestSecretsRefCannotRetargetAnotherRoute(t *testing.T) {
 				{"secrets", "rm", ref},
 				{"secrets", "rotate", ref},
 			} {
-				hit = ""
-				_, _, err := runCLI(t, "value\n", append(args, "--socket", fd.socketPath)...)
-				if err == nil {
-					t.Fatalf("%v with ref %q must be refused before a request is built", args, ref)
+				reached, query = nil, ""
+				_, _, _ = runCLI(t, "value\n", append(args, "--socket", fd.socketPath)...)
+
+				for _, hit := range reached {
+					if hit != "secrets" && hit != "secrets-query" && hit != "secrets-rotate" {
+						t.Fatalf("SECURITY: %v with ref %q reached the %s route", args, ref, hit)
+					}
 				}
-				if hit != "" {
-					t.Fatalf("SECURITY: ref %q reached another route: %s", ref, hit)
+				// Only ref and force may ever appear. A forged parameter here is how
+				// the in-use guard was bypassed from the client.
+				for key := range parseQuery(t, query) {
+					if key != "ref" && key != "force" {
+						t.Fatalf("SECURITY: %v with ref %q forged query parameter %q (%s)", args, ref, key, query)
+					}
+				}
+				// force must appear only when --force was passed.
+				wantForce := args[len(args)-1] == "--force"
+				if got := parseQuery(t, query)["force"]; !wantForce && len(got) > 0 {
+					t.Fatalf("SECURITY: %v with ref %q set force=%v without --force", args, ref, got)
 				}
 			}
 		})
 	}
+}
+
+func parseQuery(t *testing.T, raw string) url.Values {
+	t.Helper()
+	v, err := url.ParseQuery(raw)
+	if err != nil {
+		t.Fatalf("parse query %q: %v", raw, err)
+	}
+	return v
 }
 
 // TestLegitimateRefsStillReachTheSecretsRoute keeps the validation from being a
@@ -503,5 +549,221 @@ func TestReadSecretValueTakesStdoutOnly(t *testing.T) {
 	}
 	if string(got) != "value" {
 		t.Fatalf("got %q, want %q — only stdout is the value", got, "value")
+	}
+}
+
+// TestNoVerbCanRetargetAnotherRouteViaPathTraversal is the general form of the
+// ref-injection class, across EVERY verb that puts operator input in a URL.
+//
+// Guarding only the secrets verbs was not enough. Go's ServeMux 301-redirects an
+// uncleaned path and the CLI's http.Client follows it, so a scoped verb reached
+// the secrets route and took its query string with it:
+//
+//	opslify session kill '../secrets/gitlab-token?force=true'
+//	  -> 301 -> DELETE /v1/secrets/gitlab-token?force=true -> 204
+//
+// One request, exit 0, and an in-use secret deleted past the 409 guard.
+func TestNoVerbCanRetargetAnotherRouteViaPathTraversal(t *testing.T) {
+	traversals := []string{
+		"../secrets/gitlab-token?force=true",
+		"../../v1/secrets/gitlab-token?force=true",
+		"../projects/prod",
+		"../workspaces/prod",
+		"../../v1/sessions/live-1",
+		"..",
+		".",
+		"a/../../b",
+		"x/../../../v1/secrets/gitlab-token",
+	}
+	// Every verb that interpolates operator input into a path.
+	verbs := [][]string{
+		{"session", "kill"},
+		{"session", "trace"},
+		{"workspace", "rm"},
+		{"project", "show"},
+		{"env", "ls"},
+	}
+	for _, verb := range verbs {
+		for _, bad := range traversals {
+			t.Run(strings.Join(verb, "-")+"/"+bad, func(t *testing.T) {
+				var hit string
+				mux := http.NewServeMux()
+				for pattern, name := range map[string]string{
+					"DELETE /v1/secrets/{ref...}":        "secrets-delete",
+					"PUT /v1/secrets/{ref...}":           "secrets-rotate",
+					"DELETE /v1/sessions/{id}":           "sessions-delete",
+					"GET /v1/sessions/{id}/trace":        "sessions-trace",
+					"DELETE /v1/projects/{id}":           "projects-delete",
+					"GET /v1/projects/{id}":              "projects-get",
+					"GET /v1/projects/{id}/environments": "projects-envs",
+					"DELETE /v1/workspaces/{name}":       "workspaces-delete",
+					"POST /v1/sessions/{id}/exec":        "sessions-exec",
+					"PUT /v1/sessions/{id}/files":        "sessions-files",
+				} {
+					resource := name
+					mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+						// Record the FIRST handler reached and what it saw, including the
+						// query — the force bypass rode in on the query string.
+						if hit == "" {
+							hit = resource + " " + r.URL.Path + "?" + r.URL.RawQuery
+						}
+						w.WriteHeader(http.StatusNoContent)
+					})
+				}
+				fd := newFakeDaemon(t, mux)
+
+				args := append(append([]string{}, verb...), bad, "--socket", fd.socketPath)
+				_, _, err := runCLI(t, "", args...)
+				if err == nil {
+					t.Fatalf("%v %q must be refused before a request is built", verb, bad)
+				}
+				if hit != "" {
+					t.Fatalf("SECURITY: %v %q reached %s", verb, bad, hit)
+				}
+			})
+		}
+	}
+}
+
+// TestLegitimateIdsStillWork keeps pathSeg from being a blanket refusal.
+func TestLegitimateIdsStillWork(t *testing.T) {
+	for _, id := range []string{"s1", "sess-abc123", "tripon", "prod", "a.b-c_d"} {
+		t.Run(id, func(t *testing.T) {
+			var reached bool
+			mux := http.NewServeMux()
+			mux.HandleFunc("DELETE /v1/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+				reached = r.PathValue("id") == id
+				w.WriteHeader(http.StatusNoContent)
+			})
+			fd := newFakeDaemon(t, mux)
+			if _, _, err := runCLI(t, "", "session", "kill", id, "--socket", fd.socketPath); err != nil {
+				t.Fatalf("legitimate id %q was refused: %v", id, err)
+			}
+			if !reached {
+				t.Errorf("id %q did not arrive intact at the handler", id)
+			}
+		})
+	}
+}
+
+// TestForceRmPrintsWhatItBreaks pins N13. The --force help promised "the
+// consumers you are breaking are printed" and nothing was: a 204 carries no body,
+// so the daemon cannot report them afterwards, and the only record was a daemon
+// log line the operator never sees. Help text that describes output the tool
+// cannot produce is worse than no help.
+func TestForceRmPrintsWhatItBreaks(t *testing.T) {
+	var rec recordedRequest
+	fd := newRecordingDaemon(t, &rec)
+	_, errb, err := runCLI(t, "", "secrets", "rm", "gitlab-token", "--force", "--socket", fd.socketPath)
+	if err != nil {
+		t.Fatalf("rm --force: %v (%s)", err, errb)
+	}
+	for _, want := range []string{"breaking", "egress_inject", "gitlab.example.com"} {
+		if !strings.Contains(errb, want) {
+			t.Errorf("--force must report what it breaks (missing %q):\n%s", want, errb)
+		}
+	}
+}
+
+// TestForceRmProceedsWhenConsumersAreUnknowable: the report is a courtesy, not a
+// gate. force already means "proceed", so a failure to read the consumer list
+// must warn and continue — refusing would leave a leaked credential unrevocable.
+func TestForceRmProceedsWhenConsumersAreUnknowable(t *testing.T) {
+	var rec recordedRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/secrets/consumers", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"layer":"cred","error":"policy store unavailable"}`, http.StatusInternalServerError)
+	})
+	mux.HandleFunc("DELETE /v1/secrets/{ref...}", func(w http.ResponseWriter, r *http.Request) {
+		rec.rawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	})
+	fd := newFakeDaemon(t, mux)
+
+	out, errb, err := runCLI(t, "", "secrets", "rm", "leaked", "--force", "--socket", fd.socketPath)
+	if err != nil {
+		t.Fatalf("a forced removal must proceed when consumers cannot be read: %v (%s)", err, errb)
+	}
+	if !strings.Contains(errb, "could not determine") {
+		t.Errorf("the operator must be told the consumer list was unavailable:\n%s", errb)
+	}
+	if !strings.Contains(out, "removed secret leaked") {
+		t.Errorf("the removal must still happen:\n%s", out)
+	}
+	if rec.rawQuery != "force=true" {
+		t.Errorf("query = %q, want force=true", rec.rawQuery)
+	}
+}
+
+// TestSecretsLsShowsRotationHygiene pins the CLI half of N14: the daemon began
+// returning last_used/rotated_at, but the CLI's own wire type lacked the fields
+// and `ls` never printed them, so the stated purpose stayed unmet.
+func TestSecretsLsShowsRotationHygiene(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/secrets", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[
+		  {"ref":"used","provider":"gitlab","created_at":"2026-01-01T00:00:00Z",
+		   "last_used":"2026-09-01T10:00:00Z","rotated_at":"2026-08-01T10:00:00Z"},
+		  {"ref":"fresh","provider":"azure","created_at":"2026-01-01T00:00:00Z"}
+		]`)
+	})
+	fd := newFakeDaemon(t, mux)
+	out, errb, err := runCLI(t, "", "secrets", "ls", "--socket", fd.socketPath)
+	if err != nil {
+		t.Fatalf("secrets ls: %v (%s)", err, errb)
+	}
+	for _, want := range []string{"LAST USED", "ROTATED", "2026-09-01", "2026-08-01"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("secrets ls is missing %q:\n%s", want, out)
+		}
+	}
+	// A secret never used must read as "never", not as year 1.
+	if !strings.Contains(out, "never") {
+		t.Errorf("a never-used secret must render as 'never', not a zero time:\n%s", out)
+	}
+	if strings.Contains(out, "0001-01-01") {
+		t.Errorf("a zero time leaked into the listing:\n%s", out)
+	}
+}
+
+// TestDeleteURLFormAndForceSeparator pins how a ref is addressed for deletion,
+// including the query separator. Appending "?force=true" to a URL that already
+// carried "?ref=" produced two "?" and a force the daemon never saw — so the
+// removal came back 409 against an override the operator had explicitly asked
+// for.
+func TestDeleteURLFormAndForceSeparator(t *testing.T) {
+	for _, tc := range []struct{ ref, wantPath, wantQuery string }{
+		{"gitlab-token", "/v1/secrets/gitlab-token", "force=true"},
+		{"aws/deploy", "/v1/secrets/aws/deploy", "force=true"},
+		// Path-unaddressable shapes go to the query form, and force must ride on &.
+		// Not storable under the current rule, so it goes to the query form — a
+		// legacy secret must stay deletable even though it can no longer be created.
+		{"trail/", "/v1/secrets", "ref=trail%2F&force=true"},
+		{"/etc/passwd", "/v1/secrets", "ref=%2Fetc%2Fpasswd&force=true"},
+		{"./tok", "/v1/secrets", "ref=.%2Ftok&force=true"},
+		{"a//b", "/v1/secrets", "ref=a%2F%2Fb&force=true"},
+	} {
+		t.Run(tc.ref, func(t *testing.T) {
+			var rec recordedRequest
+			mux := http.NewServeMux()
+			h := func(w http.ResponseWriter, r *http.Request) {
+				rec.path, rec.rawQuery = r.URL.Path, r.URL.RawQuery
+				w.WriteHeader(http.StatusNoContent)
+			}
+			mux.HandleFunc("DELETE /v1/secrets/{ref...}", h)
+			mux.HandleFunc("DELETE /v1/secrets", h)
+			fd := newFakeDaemon(t, mux)
+
+			if _, _, err := runCLI(t, "", "secrets", "rm", tc.ref, "--force", "--socket", fd.socketPath); err != nil {
+				t.Fatalf("rm --force %q: %v", tc.ref, err)
+			}
+			if rec.path != tc.wantPath {
+				t.Errorf("path = %q, want %q", rec.path, tc.wantPath)
+			}
+			if rec.rawQuery != tc.wantQuery {
+				t.Errorf("query = %q, want %q", rec.rawQuery, tc.wantQuery)
+			}
+		})
 	}
 }

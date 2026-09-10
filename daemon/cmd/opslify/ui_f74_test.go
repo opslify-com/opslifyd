@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -345,3 +346,60 @@ func TestUILinkRefusesSensitiveDir(t *testing.T) {
 }
 
 func ptrInt(i int) *int { return &i }
+
+// allowedProxyRouteWithQuery exercises the proxy's FULL admission decision —
+// allowlist plus the query-parameter refusal — because a query that changes what
+// a route does is not visible to allowedProxyRoute alone.
+func allowedProxyRouteWithQuery(t *testing.T, method, rawURL string) bool {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", rawURL, err)
+	}
+	// Calls the PRODUCTION decision. Re-implementing "allowlist AND not force"
+	// here would let this test pass while the proxy checked only the allowlist.
+	return admitProxyRequest(method, u) == ""
+}
+
+// --- F8.3 through the local UI proxy (N11) -----------------------------------
+
+// TestUIProxyRefusesForceDelete pins N11. The allowlist matches on method and
+// path only, so ?force=true rode straight through and turned the guarded secret
+// delete into an unguarded one — F8.3's headline control bypassed from a browser
+// page which, worse, was ALSO blocked from the one route that could tell it what
+// it was breaking.
+func TestUIProxyRefusesForceDelete(t *testing.T) {
+	for _, q := range []string{"?force=true", "?force=1", "?x=1&force=true", "?force="} {
+		if allowedProxyRouteWithQuery(t, http.MethodDelete, "/v1/secrets/gitlab-token"+q) {
+			t.Errorf("DELETE %q must be refused through the UI proxy: forcing is a CLI-only action", q)
+		}
+	}
+	// The unforced delete is still permitted — the guard itself does the refusing.
+	if !allowedProxyRouteWithQuery(t, http.MethodDelete, "/v1/secrets/gitlab-token") {
+		t.Error("an unforced delete must still be proxied")
+	}
+}
+
+// TestUIProxyExposesConsumers: a page that can delete must be able to see what a
+// delete would break.
+func TestUIProxyExposesConsumers(t *testing.T) {
+	if !allowedProxyRoute(http.MethodGet, "/v1/secrets/consumers") {
+		t.Error("GET /v1/secrets/consumers must be exposed, or the UI can delete blind")
+	}
+	// It must not become a write target by being listed.
+	for _, m := range []string{http.MethodDelete, http.MethodPost, http.MethodPut} {
+		if allowedProxyRoute(m, "/v1/secrets/consumers") {
+			t.Errorf("%s /v1/secrets/consumers must not be allowed", m)
+		}
+	}
+}
+
+// TestUIProxyStillRefusesRawFileReads guards the pre-existing property while the
+// allowlist is being edited: the raw /workspace bytes stay unreachable.
+func TestUIProxyStillRefusesRawFileReads(t *testing.T) {
+	for _, p := range []string{"/v1/sessions/s1/files", "/v1/sessions/s1/files?path=x"} {
+		if allowedProxyRouteWithQuery(t, http.MethodGet, p) {
+			t.Errorf("GET %q must stay refused — it is raw, unredacted workspace content", p)
+		}
+	}
+}

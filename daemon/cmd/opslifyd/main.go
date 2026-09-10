@@ -175,16 +175,11 @@ func run() error {
 	// connections register here later without changing any caller. It is built
 	// over LIVE config and policy rather than cached, so a delete guard can never
 	// consult a stale picture and permit a removal that breaks a running grant.
-	basePolicy, err := loadDefaultPolicy(cfg)
+	opts, err := buildDaemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, log)
 	if err != nil {
 		return err
 	}
-	secretsSvc, err := buildSecretsService(cfg, vault, projects, basePolicy)
-	if err != nil {
-		return err
-	}
-
-	d, err := daemon.New(daemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, secretsSvc, log))
+	d, err := daemon.New(opts)
 	if err != nil {
 		return err
 	}
@@ -624,10 +619,42 @@ func loadDefaultPolicy(cfg install.Config) (policy.Policy, error) {
 	return p, nil
 }
 
-// daemonOptions is the daemon's composition root, extracted so a test can assert
-// over the SAME construction the binary uses. Inlined in the caller, a wiring
-// mistake here — a nil SecretsSvc, a missing Projects — was invisible to every
-// test in the tree while the whole suite stayed green.
+// buildDaemonOptions is the composition root: it derives the policy baseline,
+// builds the F8.3 operator surface over it, and assembles the daemon's Options.
+//
+// It exists as ONE function taking only raw dependencies so that run() has no
+// remaining call site whose ARGUMENTS can be mutated untested. Previously run()
+// passed basePolicy, vault and secretsSvc by hand, and replacing any of those
+// with nil (or the baseline with an empty policy) left the whole suite green
+// while silently disabling the delete guard or the entire secrets surface in
+// production. Now those mutations land inside a function a test drives directly.
+func buildDaemonOptions(
+	cfg install.Config,
+	socketPath, socketGroup string,
+	verifier daemon.ToolchainVerifier,
+	mgr *session.Manager,
+	projects *project.Service,
+	vault broker.SecretManager,
+	log *slog.Logger,
+) (daemon.Options, error) {
+	// LIVE config and policy rather than a cached snapshot, so the delete guard
+	// can never consult a stale picture and permit a removal that breaks a
+	// running grant.
+	basePolicy, err := loadDefaultPolicy(cfg)
+	if err != nil {
+		return daemon.Options{}, err
+	}
+	secretsSvc, err := buildSecretsService(cfg, vault, projects, basePolicy)
+	if err != nil {
+		return daemon.Options{}, err
+	}
+	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc, log), nil
+}
+
+// daemonOptions assembles the Options literal. Kept separate from
+// buildDaemonOptions so a test can assert the literal itself; a wiring mistake
+// here — a nil SecretsSvc, a missing Projects — was invisible to every test in
+// the tree while the whole suite stayed green.
 func daemonOptions(
 	cfg install.Config,
 	socketPath, socketGroup string,

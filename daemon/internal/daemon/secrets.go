@@ -27,6 +27,14 @@ func (d *Daemon) registerSecretRoutes(mux *http.ServeMux) {
 	// {ref...} is a multi-segment wildcard so refs containing '/' (e.g. "aws/deploy")
 	// match. r.PathValue("ref") returns the full remaining path.
 	mux.HandleFunc("DELETE /"+APIVersion+"/secrets/{ref...}", d.handleSecretDelete)
+	// DELETE /v1/secrets?ref=… is the path-free form, and it exists for exactly one
+	// reason: a ref containing a "." or ".." segment cannot be addressed by URL
+	// path at all, because ServeMux normalises the path before routing and
+	// 307-redirects. A secret stored under such a ref by an earlier release would
+	// otherwise be listed, live, resolvable and impossible to remove without
+	// hand-editing an encrypted file. The guard is identical — this changes how the
+	// ref is transported, not what is permitted.
+	mux.HandleFunc("DELETE /"+APIVersion+"/secrets", d.handleSecretDeleteByQuery)
 	d.registerSecretsServiceRoutes(mux)
 }
 
@@ -91,7 +99,7 @@ func (d *Daemon) handleSecretList(w http.ResponseWriter, r *http.Request) {
 // decoded size; the value buffer is zeroed after the Put returns.
 func (d *Daemon) handleSecretAdd(w http.ResponseWriter, r *http.Request) {
 	var body addSecretRequest
-	if err := decodeJSON(r, &body); err != nil {
+	if err := decodeJSONLimit(r, &body, maxSecretBody); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
 		return
 	}
@@ -105,48 +113,64 @@ func (d *Daemon) handleSecretAdd(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "input", "secret value is empty")
 		return
 	}
-	if err := broker.ValidateRef(body.Ref); err != nil {
-		writeSecretError(w, err)
-		return
-	}
 	meta := broker.PutMeta{Provider: body.Provider, Scope: body.Scope, TTL: body.TTL}
-	// An overwrite of an existing ref IS a rotation, whatever verb the caller used.
-	// It previously went straight to d.secrets.Put, bypassing the service — so
-	// `secrets add <ref> --overwrite` replaced a live credential with no audit
-	// record and none of the atomicity the rotate path has. Route it through the
-	// service so one operation cannot have two different safety levels depending on
-	// which verb reached it.
+	// An overwrite of an existing ref IS a rotation, whatever verb the caller used,
+	// so it goes through the service and is audited as one. It is a SINGLE call:
+	// composing it from rotate-then-create-on-ErrNotFound stored an all-zero value
+	// (the rotation path zeroizes the caller's plaintext, correctly, and the create
+	// that followed reused the wiped buffer) and reported 201 Created.
 	if body.Overwrite && d.secretsSvc != nil {
-		if err := d.secretsSvc.Rotate(r.Context(), body.Ref, value, meta); err != nil {
-			// A ref that does not exist yet is a plain create, not a rotation.
-			if !errors.Is(err, broker.ErrNotFound) {
-				writeSecretError(w, err)
-				return
-			}
-			if err := d.secrets.Put(r.Context(), body.Ref, value, meta, false); err != nil {
-				writeSecretError(w, err)
-				return
-			}
+		stored, replaced, err := d.secretsSvc.Upsert(r.Context(), body.Ref, value, meta)
+		if err != nil {
+			writeSecretError(w, err)
+			return
 		}
-	} else if err := d.secrets.Put(r.Context(), body.Ref, value, meta, body.Overwrite); err != nil {
+		// 200 for a replacement, 201 for a create: the code the caller gets should
+		// describe what happened, not which verb they typed.
+		status := http.StatusCreated
+		if replaced {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, secretMetaResp(stored))
+		return
+	}
+	if err := d.secrets.Put(r.Context(), body.Ref, value, meta, false); err != nil {
 		writeSecretError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, secretMetaResponse{
-		Ref: body.Ref, Provider: body.Provider, Scope: body.Scope, TTL: body.TTL,
-	})
+	// Echo the STORED record, not the request. Returning the request meant every
+	// add reported created_at of year 1, and an --overwrite echoed the caller's
+	// (often empty) provider/scope while the real record carried the previous
+	// values forward.
+	writeJSON(w, http.StatusCreated, secretMetaResp(d.storedMeta(r, body.Ref, meta)))
+}
+
+// handleSecretDeleteByQuery removes a secret whose ref arrives as a query
+// parameter rather than a path segment. See the route registration for why.
+func (d *Daemon) handleSecretDeleteByQuery(w http.ResponseWriter, r *http.Request) {
+	ref := r.URL.Query().Get("ref")
+	if ref == "" {
+		writeAPIError(w, http.StatusBadRequest, "input",
+			"DELETE /v1/secrets requires ?ref= (use it only for refs that cannot be expressed as a path)")
+		return
+	}
+	d.deleteSecret(w, r, ref)
 }
 
 // handleSecretDelete removes a secret by ref.
 func (d *Daemon) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
-	ref := r.PathValue("ref")
-	// Validate at the route. Relying on the lookup to 404 conflates "no such
-	// secret" with "that was never a valid ref", and leaves the guard depending on
-	// storage behaviour rather than on an explicit rule.
-	if err := broker.ValidateRef(ref); err != nil {
-		writeSecretError(w, err)
-		return
-	}
+	d.deleteSecret(w, r, r.PathValue("ref"))
+}
+
+// deleteSecret is the single guarded delete, shared by the path and query forms
+// so the two transports cannot drift into different permissions.
+func (d *Daemon) deleteSecret(w http.ResponseWriter, r *http.Request, ref string) {
+	// Deliberately NO ValidateRef here. It bought nothing — the lookup already
+	// 404s a ref that cannot be stored, and the ref never reaches a filesystem or
+	// a second URL from this handler — while it made a secret stored under an
+	// earlier, looser rule permanently UN-DELETABLE: listed, live, resolvable, and
+	// refused with a 400 even with force. Deletion must always be reachable, or
+	// the only escape is hand-editing an encrypted vault file.
 	// With the F8.3 service wired the delete is GUARDED: a ref something still
 	// addresses is refused unless ?force=true, and the refusal names the
 	// consumers. Without it, the F5.6 behaviour is unchanged.
@@ -164,6 +188,22 @@ func (d *Daemon) handleSecretDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// storedMeta looks up what was actually persisted for ref, falling back to the
+// requested metadata if the listing cannot be read. The response describing the
+// record rather than the request is what makes created_at and a carried-forward
+// provider truthful.
+func (d *Daemon) storedMeta(r *http.Request, ref string, requested broker.PutMeta) broker.SecretMeta {
+	metas, err := d.secrets.List(r.Context())
+	if err == nil {
+		for _, m := range metas {
+			if m.Ref == ref {
+				return m
+			}
+		}
+	}
+	return broker.SecretMeta{Ref: ref, Provider: requested.Provider, Scope: requested.Scope, TTL: requested.TTL}
 }
 
 // writeSecretError maps a broker error to a layer-tagged HTTP status. Every secret
@@ -245,13 +285,13 @@ func (d *Daemon) handleSecretConsumers(w http.ResponseWriter, r *http.Request) {
 // handleSecretRotate replaces the value under an existing ref. Consumers address
 // the ref, so nothing downstream changes — which is the point.
 func (d *Daemon) handleSecretRotate(w http.ResponseWriter, r *http.Request) {
+	// No ValidateRef here either: the write path enforces what may be STORED, and
+	// a ref that fails it cannot be rotated in any case — but the refusal should
+	// come from the vault with its own message rather than from a route-level copy
+	// of the same rule. See handleSecretDelete.
 	ref := r.PathValue("ref")
-	if err := broker.ValidateRef(ref); err != nil {
-		writeSecretError(w, err)
-		return
-	}
 	var body rotateSecretRequest
-	if err := decodeJSON(r, &body); err != nil {
+	if err := decodeJSONLimit(r, &body, maxSecretBody); err != nil {
 		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
 		return
 	}

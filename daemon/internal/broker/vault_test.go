@@ -277,3 +277,53 @@ func TestEnvKeySourceDecoding(t *testing.T) {
 		t.Fatal("expected error for short key")
 	}
 }
+
+// TestRotateMasterKeyRollsBackBothHalves pins N12. The doc promised a rotation is
+// all-or-nothing, and it was not: on a persist failure only the in-memory KEK was
+// restored, leaving the running vault holding DEKs re-wrapped under the NEW key
+// while kek was the OLD one. Every subsequent resolve then failed to unwrap —
+// every credential injection broken until a restart, from an operation that
+// returned an error and claimed to have changed nothing.
+func TestRotateMasterKeyRollsBackBothHalves(t *testing.T) {
+	v, path := newTestVault(t)
+	ctx := context.Background()
+	mustPut(t, v, "tok", "the-value", "gitlab")
+
+	// Make persist fail: the vault writes via a temp file in its own directory.
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Skipf("cannot make the vault dir read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	newKEK := make([]byte, 32)
+	for i := range newKEK {
+		newKEK[i] = byte(200 - i)
+	}
+	if err := v.RotateMasterKey(newKEK); err == nil {
+		t.Fatal("a rotation that cannot persist must return an error")
+	}
+
+	// The vault must still WORK. This is the whole claim: a failed rotation leaves
+	// a usable vault, not one that has silently lost every credential.
+	got, _, err := v.Get(ctx, "tok")
+	if err != nil {
+		t.Fatalf("after a failed rotation every resolve broke: %v", err)
+	}
+	if string(got) != "the-value" {
+		t.Fatalf("resolved %q, want %q", got, "the-value")
+	}
+	// And a second attempt, once the disk recovers, must succeed.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.RotateMasterKey(newKEK); err != nil {
+		t.Fatalf("a retry after recovery must succeed: %v", err)
+	}
+	if got, _, err = v.Get(ctx, "tok"); err != nil || string(got) != "the-value" {
+		t.Fatalf("after a successful rotation: %q %v", got, err)
+	}
+}

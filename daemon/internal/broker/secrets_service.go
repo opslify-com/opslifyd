@@ -76,6 +76,13 @@ func (s *SecretsService) logger() *slog.Logger {
 	return s.log
 }
 
+// SecretUpserter stores a value whether or not the ref exists, reporting the
+// stored metadata and whether it REPLACED an existing record. One call, so a
+// create and a rotation cannot end up sharing a plaintext buffer.
+type SecretUpserter interface {
+	Upsert(ctx context.Context, ref string, value []byte, meta PutMeta) (SecretMeta, bool, error)
+}
+
 // SecretView is a secret's metadata plus who uses it. It carries no value and no
 // way to obtain one.
 type SecretView struct {
@@ -122,29 +129,20 @@ func (s *SecretsService) Consumers(ref string) ([]Consumer, error) {
 // either the old value or the new one, never a partial.
 func (s *SecretsService) Rotate(ctx context.Context, ref string, value []byte, meta PutMeta) error {
 	defer Zeroize(value)
-	existing, err := s.find(ctx, ref)
-	if err != nil {
-		return err
-	}
-	// Carry forward metadata the caller did not restate, so a rotation cannot
-	// silently drop a provider or a TTL bound.
-	if meta.Provider == "" {
-		meta.Provider = existing.Provider
-	}
-	if meta.Scope == "" {
-		meta.Scope = existing.Scope
-	}
-	if meta.TTL == "" {
-		meta.TTL = existing.TTL
-	}
+	// No existence pre-check and no manual metadata carry-forward here. Both used
+	// to live in this function and both were dead weight that merely LOOKED like
+	// checks: Update re-tests existence under the mutex it writes under (so a
+	// pre-check's answer is stale by the time it matters), and the write path
+	// carries forward provider/scope/TTL from the record itself. A mutation making
+	// the old lookup match by prefix changed nothing observable — the clearest
+	// possible signal that it was not the control it appeared to be.
+	//
 	// The atomic path is REQUIRED, not preferred. The old fallback to
-	// Put(overwrite=true) had two defects that only a backend without Update could
-	// exhibit: a Delete landing between find() above and the write was silently
-	// undone (the ref came back holding the value the operator believed they had
-	// removed), and a find() that wrongly matched let a rotation CREATE a ref —
-	// leaving the real credential un-rotated while the operator believed otherwise.
-	// Refusing is correct: a backend that cannot rotate atomically cannot offer
-	// this operation safely, and saying so is better than doing it unsafely.
+	// Put(overwrite=true) let a Delete landing mid-rotation be silently undone (the
+	// ref came back holding the value the operator believed they had removed), and
+	// let a rotation CREATE a ref — leaving the real credential un-rotated while
+	// the operator believed otherwise. A backend that cannot rotate atomically
+	// cannot offer this operation safely, and saying so beats doing it unsafely.
 	u, ok := s.secrets.(SecretUpdater)
 	if !ok {
 		return fmt.Errorf("%w: this secret backend does not support atomic rotation", ErrDenied)
@@ -152,9 +150,45 @@ func (s *SecretsService) Rotate(ctx context.Context, ref string, value []byte, m
 	if err := u.Update(ctx, ref, value, meta); err != nil {
 		return err
 	}
+	stored, err := s.find(ctx, ref)
+	if err != nil {
+		// The rotation succeeded; only the audit detail is unavailable.
+		stored = SecretMeta{Ref: ref, Provider: meta.Provider}
+	}
 	cs, _ := s.Consumers(ref) // best-effort: the rotation already succeeded
-	s.audit("rotate", ref, meta.Provider, len(cs))
+	s.audit("rotate", ref, stored.Provider, len(cs))
 	return nil
+}
+
+// Upsert stores a value under ref, creating or replacing it, and returns the
+// stored metadata plus whether it replaced an existing record. A replacement is
+// audited as a rotation, because that is what it is — `secrets add --overwrite`
+// replaces a live credential just as `rotate` does, and one operation must not
+// have two audit stories depending on which verb reached it.
+//
+// This is deliberately ONE backend call rather than a rotate-then-create pair.
+// The pair corrupted data: Rotate zeroizes the caller's plaintext (correct
+// hygiene), so the create that followed on ErrNotFound wrote an all-zero value
+// and reported success. It also had a race the single call does not — two
+// concurrent --overwrite requests on a fresh ref could make one of them lose to
+// ErrExists.
+func (s *SecretsService) Upsert(ctx context.Context, ref string, value []byte, meta PutMeta) (SecretMeta, bool, error) {
+	defer Zeroize(value)
+	u, ok := s.secrets.(SecretUpserter)
+	if !ok {
+		return SecretMeta{}, false, fmt.Errorf("%w: this secret backend does not support atomic upsert", ErrDenied)
+	}
+	stored, replaced, err := u.Upsert(ctx, ref, value, meta)
+	if err != nil {
+		return SecretMeta{}, false, err
+	}
+	action := "create"
+	if replaced {
+		action = "rotate"
+	}
+	cs, _ := s.Consumers(ref) // best-effort: the write already succeeded
+	s.audit(action, ref, stored.Provider, len(cs))
+	return stored, replaced, nil
 }
 
 // Delete removes a ref. It REFUSES while anything still addresses it unless force

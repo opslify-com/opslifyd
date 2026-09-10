@@ -242,8 +242,8 @@ func newUIServer(socketPath, token string) (http.Handler, error) {
 	// operator's browser cannot drive the sandbox through the loopback bridge even
 	// though the daemon itself still serves those routes to the CLI.
 	guardedProxy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !allowedProxyRoute(r.Method, r.URL.Path) {
-			http.Error(w, "opslify ui: endpoint not exposed by the local UI (see the F7.4 allowlist)", http.StatusForbidden)
+		if reason := admitProxyRequest(r.Method, r.URL); reason != "" {
+			http.Error(w, reason, http.StatusForbidden)
 			return
 		}
 		proxy.ServeHTTP(w, r)
@@ -292,6 +292,30 @@ func newUIServer(socketPath, token string) (http.Handler, error) {
 // REFUSED — the F3.5/F3.6 raw-workspace-read hole must not reopen. File upload
 // (PUT/POST …/files) is likewise not exposed to the browser; host↔sandbox file
 // movement is driven only by the guarded `/ui/link` sync path, never a raw proxy.
+// admitProxyRequest is the proxy's COMPLETE admission decision: the method/path
+// allowlist plus every rule that depends on more than the path. It returns the
+// operator-facing refusal reason, or "" to admit.
+//
+// It exists as one function so a test can exercise the real decision. A test that
+// re-implemented "allowlist AND not force" would pass while production checked
+// only the allowlist — which is exactly the bug this closes.
+func admitProxyRequest(method string, u *url.URL) string {
+	if !allowedProxyRoute(method, u.Path) {
+		return "opslify ui: endpoint not exposed by the local UI (see the F7.4 allowlist)"
+	}
+	// The allowlist matches on METHOD and PATH, so a query parameter that changes
+	// what a route DOES has to be refused separately. ?force=true turns the guarded
+	// secret delete into an unguarded one — F8.3's headline control, bypassed from
+	// a browser page. Deliberate narrowing: forcing is a CLI-only action, where the
+	// operator is shown exactly which consumers they break before it happens. A
+	// page that cannot display that should not be able to do it.
+	if u.Query().Has("force") {
+		return "opslify ui: ?force is not permitted through the local UI — " +
+			"run `opslify secrets rm <ref> --force`, which reports what the removal breaks"
+	}
+	return ""
+}
+
 func allowedProxyRoute(method, p string) bool {
 	// --- collection-level routes (exact path) ---
 	switch p {
@@ -303,6 +327,13 @@ func allowedProxyRoute(method, p string) bool {
 		// GET = list NAMES/metadata (never a value); POST = add a value once.
 		return method == http.MethodGet || method == http.MethodPost
 	case "/v1/workspaces":
+		return method == http.MethodGet
+	}
+	// --- /v1/secrets/consumers : GET who addresses each ref (metadata only) ---
+	// Checked BEFORE the by-ref branch below, which would otherwise classify it as
+	// a delete target. The UI needs this: without it the page could force a
+	// removal but could not show what the removal would break.
+	if p == "/v1/secrets/consumers" {
 		return method == http.MethodGet
 	}
 	// --- /v1/secrets/{ref…} : DELETE by ref (a ref may contain slashes) ---

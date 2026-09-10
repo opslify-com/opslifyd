@@ -184,7 +184,27 @@ func OpenVault(path string, ks KeySource) (*Vault, error) {
 	if err := v.load(); err != nil {
 		return nil, err
 	}
+	v.warnLegacyRefs()
 	return v, nil
+}
+
+// warnLegacyRefs surfaces stored refs that the CURRENT rule would refuse.
+//
+// The ref rule was tightened (no leading/trailing slash, no empty or "." path
+// segment) to stop a ref being URL- or path-shaped. A secret stored under the
+// older rule keeps working — Get does not re-validate, deliberately, because
+// breaking a live credential injection to enforce a naming rule would be a
+// self-inflicted outage — but it can no longer be ROTATED. That is a fact an
+// operator needs at startup, not at the moment they try to rotate it.
+func (v *Vault) warnLegacyRefs() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for ref := range v.data.Secrets {
+		if err := validRef(ref); err != nil {
+			v.logger().Warn("broker: stored secret has a ref the current naming rule refuses; it still resolves but cannot be rotated — delete it and re-add under a valid ref",
+				"ref", ref, "reason", err)
+		}
+	}
 }
 
 // load reads and parses the vault file if it exists. A missing file is a fresh
@@ -344,7 +364,28 @@ func (v *Vault) Put(ctx context.Context, ref string, value []byte, meta PutMeta,
 
 // putLocked is the single write path. mustExist makes the write conditional on the
 // ref still existing AT THE MOMENT OF THE WRITE (see Update).
-func (v *Vault) putLocked(_ context.Context, ref string, value []byte, meta PutMeta, overwrite, mustExist bool) error {
+func (v *Vault) putLocked(ctx context.Context, ref string, value []byte, meta PutMeta, overwrite, mustExist bool) error {
+	if err := v.validatePut(ref, value, meta); err != nil {
+		return err
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if _, ok := v.data.Secrets[ref]; ok && !overwrite {
+		return fmt.Errorf("%w: %s", ErrExists, ref)
+	} else if !ok && mustExist {
+		// Deleted between the caller's check and here. Writing now would silently
+		// bring a removed credential back to life.
+		return fmt.Errorf("%w: %s (removed concurrently)", ErrNotFound, ref)
+	}
+	_ = ctx
+	return v.writeLocked(ref, value, meta)
+}
+
+// validatePut checks everything that does not need the mutex. Split out so every
+// write path — Put, Update, Upsert — applies exactly the same rules; a second
+// entry point with its own inlined subset of these checks is how a bound quietly
+// stops applying to one verb.
+func (v *Vault) validatePut(ref string, value []byte, meta PutMeta) error {
 	if err := validRef(ref); err != nil {
 		return err
 	}
@@ -359,19 +400,12 @@ func (v *Vault) putLocked(_ context.Context, ref string, value []byte, meta PutM
 	if err := validateMetaField("provider", meta.Provider); err != nil {
 		return err
 	}
-	if err := validateMetaField("scope", meta.Scope); err != nil {
-		return err
-	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if _, ok := v.data.Secrets[ref]; ok && !overwrite {
-		return fmt.Errorf("%w: %s", ErrExists, ref)
-	} else if !ok && mustExist {
-		// Deleted between the caller's check and here. Writing now would silently
-		// bring a removed credential back to life.
-		return fmt.Errorf("%w: %s (removed concurrently)", ErrNotFound, ref)
-	}
+	return validateMetaField("scope", meta.Scope)
+}
 
+// writeLocked seals the value and commits the record. The caller MUST hold mu and
+// must already have decided that the write is permitted.
+func (v *Vault) writeLocked(ref string, value []byte, meta PutMeta) error {
 	// Fresh per-secret data key; sealed value under it; DEK wrapped under the KEK.
 	dek := make([]byte, masterKeyLen)
 	if _, err := io.ReadFull(rand.Reader, dek); err != nil {
@@ -404,6 +438,19 @@ func (v *Vault) putLocked(_ context.Context, ref string, value []byte, meta PutM
 		rec.CreatedAt = existing.CreatedAt
 		rec.LastUsed = existing.LastUsed
 		rec.RotatedAt = time.Now().UTC()
+		// Metadata the caller did not restate is CARRIED FORWARD, never blanked. A
+		// rotation that silently dropped a provider or a TTL bound would relax a
+		// constraint nobody chose to relax, and `secrets add <ref> --overwrite`
+		// legitimately restates only the value.
+		if meta.Provider == "" {
+			rec.Provider = existing.Provider
+		}
+		if meta.Scope == "" {
+			rec.Scope = existing.Scope
+		}
+		if meta.TTL == "" {
+			rec.TTL = existing.TTL
+		}
 	}
 	v.data.Secrets[ref] = rec
 	// Forget the flush marker, symmetric with Delete. Without this, a resolve of a
@@ -459,6 +506,32 @@ func (v *Vault) logger() *slog.Logger {
 		return slog.Default()
 	}
 	return v.log
+}
+
+// Upsert stores value under ref, replacing it if it already exists, and reports
+// the stored metadata plus whether it REPLACED an existing record.
+//
+// It exists so that "store, creating or replacing" is ONE call. Composing it from
+// a rotate-then-create-on-ErrNotFound pair corrupted data: the rotation path
+// zeroizes the caller's plaintext buffer (correct hygiene), so the create that
+// followed wrote an all-zero value and reported 201 Created. The credential then
+// failed only at the next resolve, in production.
+//
+// The existence test and the write happen under one hold of the mutex, so the
+// replaced/created answer describes the write that actually occurred rather than
+// a guess made before it — and two concurrent upserts of a fresh ref cannot make
+// one of them lose to ErrExists.
+func (v *Vault) Upsert(_ context.Context, ref string, value []byte, meta PutMeta) (SecretMeta, bool, error) {
+	if err := v.validatePut(ref, value, meta); err != nil {
+		return SecretMeta{}, false, err
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	_, replaced := v.data.Secrets[ref]
+	if err := v.writeLocked(ref, value, meta); err != nil {
+		return SecretMeta{}, false, err
+	}
+	return metaOf(v.data.Secrets[ref]), replaced, nil
 }
 
 // Update replaces the value under an EXISTING ref atomically: the existence check
@@ -555,11 +628,18 @@ func (v *Vault) RotateMasterKey(newKEK []byte) error {
 		// rec.Value is UNTOUCHED — no value is re-encrypted.
 		rewrapped[ref] = rec
 	}
+	// Commit both halves together, and roll back BOTH on failure. Restoring only
+	// the KEK left the running vault holding DEKs wrapped under the NEW key while
+	// v.kek was the OLD one, so every subsequent Get failed "unwrap data key" —
+	// every credential injection broken until a restart, from a rotation that
+	// reported an error and claimed to have changed nothing.
 	prevKEK := v.kek
+	prevSecrets := v.data.Secrets
 	v.data.Secrets = rewrapped
 	v.kek = append([]byte(nil), newKEK...)
 	if err := v.persist(); err != nil {
-		v.kek = prevKEK // roll back the in-memory KEK if the write failed
+		v.kek = prevKEK
+		v.data.Secrets = prevSecrets
 		return err
 	}
 	Zeroize(prevKEK)

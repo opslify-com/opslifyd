@@ -552,12 +552,14 @@ func TestValidateRefAcceptsLegitimateRefs(t *testing.T) {
 
 // --- find() (F8) --------------------------------------------------------------
 
-// TestRotateRefusesUnknownRefInAPopulatedVault pins that the ref LOOKUP works,
-// not just that an empty vault has nothing to find. A `find` that matched the
-// wrong record made a rotation silently inherit another secret's provider, scope
-// and TTL — and on a backend without atomic Update it let a rotation CREATE a
-// ref, leaving the real credential un-rotated while the operator believed it had
-// been replaced.
+// TestRotateRefusesUnknownRefInAPopulatedVault pins that a rotation of an absent
+// ref is refused even when the vault HOLDS other secrets — an empty vault would
+// have nothing to match against, so the earlier version of this test proved
+// nothing about matching.
+//
+// The refusal comes from the atomic write path (Update re-tests existence under
+// the mutex it writes under), not from a pre-check. That is deliberate: a
+// pre-check's answer is stale by the time the write happens.
 func TestRotateRefusesUnknownRefInAPopulatedVault(t *testing.T) {
 	v, _ := newTestVault(t)
 	mustPut(t, v, "real-token", "real-value", "gitlab")
@@ -785,5 +787,190 @@ func TestDeleteClearsTheFlushMarker(t *testing.T) {
 	metas, _ := reopened.List(ctx)
 	if len(metas) != 1 || metas[0].LastUsed.IsZero() {
 		t.Fatal("a re-added ref must flush its last-used stamp on first use")
+	}
+}
+
+// --- legacy refs stay removable (N5) -----------------------------------------
+
+// TestLegacyRefRemainsDeletable pins the escape hatch. The ref rule was tightened
+// after these could be stored, and for a while the delete route re-applied the
+// new rule and 400'd before consulting the vault — leaving a secret that was
+// listed, live, resolvable and permanently UN-DELETABLE, removable only by hand-
+// editing an encrypted file. Enforcement belongs on the WRITE path.
+func TestLegacyRefRemainsDeletable(t *testing.T) {
+	ctx := context.Background()
+	for _, legacy := range []string{"/etc/passwd", "a//b", "trail/", "./tok", "x/../y"} {
+		t.Run(legacy, func(t *testing.T) {
+			v, path := newTestVault(t)
+			// The current rule must refuse to STORE it...
+			if err := v.Put(ctx, legacy, []byte("v"), PutMeta{}, false); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("the write path must refuse %q, got %v", legacy, err)
+			}
+			// ...but one already on disk must still resolve and still be removable.
+			plantLegacyRef(t, v, path, legacy)
+
+			if _, _, err := v.Get(ctx, legacy); err != nil {
+				t.Errorf("a legacy ref must keep resolving — breaking a live injection to enforce a naming rule is a self-inflicted outage: %v", err)
+			}
+			svc := NewSecretsService(v, nil)
+			if _, err := svc.Delete(ctx, legacy, false); err != nil {
+				t.Fatalf("a legacy ref must be deletable: %v", err)
+			}
+			metas, _ := v.List(ctx)
+			for _, m := range metas {
+				if m.Ref == legacy {
+					t.Fatal("the legacy ref survived deletion")
+				}
+			}
+		})
+	}
+}
+
+// plantLegacyRef writes a record under a ref the current rule refuses, by reusing
+// the vault's own sealing path under a temporarily-relaxed name. It exercises the
+// real on-disk format rather than a hand-rolled fixture, so the test cannot pass
+// against a shape the loader would reject.
+func plantLegacyRef(t *testing.T, v *Vault, path, legacy string) {
+	t.Helper()
+	ctx := context.Background()
+	const stand = "legacy-stand-in"
+	if err := v.Put(ctx, stand, []byte("v"), PutMeta{Provider: "gitlab"}, false); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	v.mu.Lock()
+	rec := v.data.Secrets[stand]
+	delete(v.data.Secrets, stand)
+	rec.Ref = legacy
+	v.data.Secrets[legacy] = rec
+	err := v.persist()
+	v.mu.Unlock()
+	if err != nil {
+		t.Fatalf("persist: %v", err)
+	}
+	// Prove it survives a reload, i.e. that this is a real on-disk state and not
+	// just an in-memory contrivance.
+	reopened, err := OpenVault(path, StaticKeySource(testKey()))
+	if err != nil {
+		t.Fatalf("reopen with a legacy ref must work: %v", err)
+	}
+	metas, _ := reopened.List(ctx)
+	var found bool
+	for _, m := range metas {
+		if m.Ref == legacy {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the planted legacy ref %q did not survive a reload", legacy)
+	}
+}
+
+// TestLegacyRefIsWarnedAboutAtStartup: an operator must learn about it at load
+// time, not at the moment a rotation fails.
+func TestLegacyRefIsWarnedAboutAtStartup(t *testing.T) {
+	v, path := newTestVault(t)
+	plantLegacyRef(t, v, path, "trail/")
+
+	var buf bytes.Buffer
+	reopened, err := OpenVault(path, StaticKeySource(testKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.log = slog.New(slog.NewTextHandler(&buf, nil))
+	reopened.warnLegacyRefs()
+	if !strings.Contains(buf.String(), "trail/") {
+		t.Errorf("startup must warn about a ref the current rule refuses; log:\n%s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "cannot be rotated") {
+		t.Errorf("the warning must say what is actually broken; log:\n%s", buf.String())
+	}
+}
+
+// TestOverwriteCarriesMetadataForward pins that an overwrite which restates only
+// the value keeps the provider, scope and TTL. Blanking them would relax a
+// constraint nobody chose to relax — a dropped TTL bound in particular turns a
+// short-lived credential into a permanent one, silently.
+func TestOverwriteCarriesMetadataForward(t *testing.T) {
+	ctx := context.Background()
+	for _, name := range []string{"Put-overwrite", "Upsert", "Rotate"} {
+		t.Run(name, func(t *testing.T) {
+			v, _ := newTestVault(t)
+			if err := v.Put(ctx, "tok", []byte("v1"),
+				PutMeta{Provider: "gitlab", Scope: "tripon/prod", TTL: "1h"}, false); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			switch name {
+			case "Put-overwrite":
+				err = v.Put(ctx, "tok", []byte("v2"), PutMeta{}, true)
+			case "Upsert":
+				_, _, err = v.Upsert(ctx, "tok", []byte("v2"), PutMeta{})
+			case "Rotate":
+				err = NewSecretsService(v, nil).Rotate(ctx, "tok", []byte("v2"), PutMeta{})
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			metas, _ := v.List(ctx)
+			if len(metas) != 1 {
+				t.Fatalf("want 1 secret, got %d", len(metas))
+			}
+			m := metas[0]
+			if m.Provider != "gitlab" || m.Scope != "tripon/prod" || m.TTL != "1h" {
+				t.Errorf("%s blanked metadata: provider=%q scope=%q ttl=%q", name, m.Provider, m.Scope, m.TTL)
+			}
+			if m.RotatedAt.IsZero() {
+				t.Errorf("%s must stamp RotatedAt", name)
+			}
+			// A restated value must still win, or carry-forward would make metadata
+			// unchangeable.
+			if name == "Upsert" {
+				if _, _, err := v.Upsert(ctx, "tok", []byte("v3"), PutMeta{Provider: "azure"}); err != nil {
+					t.Fatal(err)
+				}
+				metas, _ = v.List(ctx)
+				if metas[0].Provider != "azure" {
+					t.Errorf("a restated provider must win, got %q", metas[0].Provider)
+				}
+				if metas[0].TTL != "1h" {
+					t.Errorf("an unrestated TTL must still carry forward, got %q", metas[0].TTL)
+				}
+			}
+		})
+	}
+}
+
+// TestRefLookupIsExactNotPrefix: a ref that is a PREFIX of a stored ref must not
+// match it. Prefix matching would let `secrets rm gitlab` report success against
+// `gitlab-token`, or attribute a rotation's audit record to the wrong credential.
+func TestRefLookupIsExactNotPrefix(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	mustPut(t, v, "gitlab-token", "v", "gitlab")
+	mustPut(t, v, "gitlab-token-staging", "v", "gitlab")
+	svc := NewSecretsService(v, nil)
+
+	for _, probe := range []string{"gitlab", "gitlab-", "gitlab-tok", "g"} {
+		if _, err := svc.Delete(ctx, probe, false); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Delete(%q) must be ErrNotFound — it is only a prefix of a stored ref, got %v", probe, err)
+		}
+	}
+	// Nothing may have been removed.
+	metas, _ := v.List(ctx)
+	if len(metas) != 2 {
+		t.Fatalf("a prefix probe removed a secret: %d remain", len(metas))
+	}
+	// The audit record for a rotation must name the ref that was rotated, with its
+	// OWN provider, not a prefix-matched neighbour's.
+	var buf bytes.Buffer
+	svc = NewSecretsService(v, nil).WithLogger(slog.New(slog.NewTextHandler(&buf, nil)))
+	if err := v.Put(ctx, "gitlab-token-staging", []byte("v"), PutMeta{Provider: "gitlab-staging"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Rotate(ctx, "gitlab-token-staging", []byte("new"), PutMeta{}); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if !strings.Contains(buf.String(), "provider=gitlab-staging") {
+		t.Errorf("the audit record attributed the wrong provider; log:\n%s", buf.String())
 	}
 }

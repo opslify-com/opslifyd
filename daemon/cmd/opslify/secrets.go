@@ -111,10 +111,15 @@ func secretsLsCmd() *cobra.Command {
 				return err
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "REF\tPROVIDER\tSCOPE\tTTL\tCREATED")
+			// LAST USED and ROTATED are the rotation-hygiene signals: together they
+			// answer "which credentials are stale, and has the new one been picked
+			// up?" — the question the stamps exist for, previously unanswerable from
+			// the primary listing verb.
+			fmt.Fprintln(tw, "REF\tPROVIDER\tSCOPE\tTTL\tCREATED\tLAST USED\tROTATED")
 			for _, s := range secrets {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-					s.Ref, orDash(s.Provider), orDash(s.Scope), orDash(s.TTL), orDash(s.CreatedAt))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					s.Ref, orDash(s.Provider), orDash(s.Scope), orDash(s.TTL), orDash(s.CreatedAt),
+					orNever(s.LastUsed), orNever(s.RotatedAt))
 			}
 			return tw.Flush()
 		},
@@ -137,10 +142,34 @@ func secretsRmCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c := newClient(socket)
-			if err := c.removeSecretForce(cmd.Context(), args[0], force); err != nil {
+			ref := args[0]
+			// With --force the consumers are read and PRINTED first. A 204 carries no
+			// body, so the daemon cannot report them after the fact — and telling an
+			// operator what they broke only in a daemon log they never read is not
+			// telling them. Read-then-delete has a race, but the alternative is a
+			// force that silently breaks a grant, and force already means "proceed".
+			if force {
+				switch cs, err := c.consumersOf(cmd.Context(), ref); {
+				case err != nil:
+					fmt.Fprintf(cmd.ErrOrStderr(),
+						"warning: could not determine what uses %s (%v); forcing removal anyway\n", ref, err)
+				case len(cs) == 0:
+					fmt.Fprintf(cmd.ErrOrStderr(), "nothing currently uses %s; --force was not needed\n", ref)
+				default:
+					fmt.Fprintf(cmd.ErrOrStderr(), "forcing removal of %s, breaking %d consumer(s):\n", ref, len(cs))
+					for _, con := range cs {
+						scope := con.Scope
+						if scope == "" {
+							scope = "daemon"
+						}
+						fmt.Fprintf(cmd.ErrOrStderr(), "  %s %s (%s)\n", con.Kind, con.Name, scope)
+					}
+				}
+			}
+			if err := c.removeSecretForce(cmd.Context(), ref, force); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "removed secret %s\n", args[0])
+			fmt.Fprintf(cmd.OutOrStdout(), "removed secret %s\n", ref)
 			return nil
 		},
 	}
@@ -350,4 +379,13 @@ func dashIfEmpty(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// orNever renders an optional timestamp, distinguishing "never happened" from a
+// zero time that would otherwise print as year 1 and read like real data.
+func orNever(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return "never"
+	}
+	return t.UTC().Format(time.RFC3339)
 }

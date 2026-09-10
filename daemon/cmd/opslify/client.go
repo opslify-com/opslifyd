@@ -209,7 +209,11 @@ func (c *client) listProjects(ctx context.Context) ([]projectView, error) {
 // getProject GETs /v1/projects/{id}.
 func (c *client) getProject(ctx context.Context, id string) (projectView, error) {
 	var out projectView
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/projects/"+url.PathEscape(id), nil)
+	seg, err := pathSeg("project id", id)
+	if err != nil {
+		return projectView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/projects/"+seg, nil)
 	if err != nil {
 		return out, err
 	}
@@ -231,7 +235,11 @@ func (c *client) getProject(ctx context.Context, id string) (projectView, error)
 func (c *client) addEnvironment(ctx context.Context, projectID string, req addEnvReq) (environmentView, error) {
 	var out environmentView
 	body, _ := json.Marshal(req)
-	u := c.baseURL + "/v1/projects/" + url.PathEscape(projectID) + "/environments"
+	seg, err := pathSeg("project id", projectID)
+	if err != nil {
+		return environmentView{}, err
+	}
+	u := c.baseURL + "/v1/projects/" + seg + "/environments"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return out, err
@@ -253,7 +261,11 @@ func (c *client) addEnvironment(ctx context.Context, projectID string, req addEn
 
 // listEnvironments GETs /v1/projects/{id}/environments.
 func (c *client) listEnvironments(ctx context.Context, projectID string) ([]environmentView, error) {
-	u := c.baseURL + "/v1/projects/" + url.PathEscape(projectID) + "/environments"
+	seg, err := pathSeg("project id", projectID)
+	if err != nil {
+		return nil, err
+	}
+	u := c.baseURL + "/v1/projects/" + seg + "/environments"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -336,7 +348,11 @@ func (c *client) registryAllowed(ctx context.Context, ecosystem, name string) (r
 
 // removeWorkspace DELETEs /v1/workspaces/{name}.
 func (c *client) removeWorkspace(ctx context.Context, name string) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/workspaces/"+name, nil)
+	seg, err := pathSeg("workspace name", name)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/workspaces/"+seg, nil)
 	if err != nil {
 		return err
 	}
@@ -376,7 +392,11 @@ type downloadFileResp struct {
 
 // fetchManifest GETs /v1/sessions/{id}/manifest — the F7.3 workspace manifest.
 func (c *client) fetchManifest(ctx context.Context, id string) ([]manifestEntry, error) {
-	u := c.baseURL + "/v1/sessions/" + id + "/manifest"
+	seg, err := pathSeg("session id", id)
+	if err != nil {
+		return nil, err
+	}
+	u := c.baseURL + "/v1/sessions/" + seg + "/manifest"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -400,7 +420,11 @@ func (c *client) fetchManifest(ctx context.Context, id string) ([]manifestEntry,
 // reused by the F7.3 sync engine for host→sandbox writes).
 func (c *client) uploadFile(ctx context.Context, id, relPath string, content []byte) error {
 	body, _ := json.Marshal(uploadFileReq{Path: relPath, ContentB64: base64.StdEncoding.EncodeToString(content)})
-	u := c.baseURL + "/v1/sessions/" + id + "/files"
+	seg, err := pathSeg("session id", id)
+	if err != nil {
+		return err
+	}
+	u := c.baseURL + "/v1/sessions/" + seg + "/files"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -420,7 +444,11 @@ func (c *client) uploadFile(ctx context.Context, id, relPath string, content []b
 // downloadFile GETs a /workspace-confined file from a session (F2.1 transfer,
 // reused by the F7.3 sync engine for sandbox→host writes).
 func (c *client) downloadFile(ctx context.Context, id, relPath string) ([]byte, error) {
-	u := c.baseURL + "/v1/sessions/" + id + "/files?path=" + url.QueryEscape(relPath)
+	seg, err := pathSeg("session id", id)
+	if err != nil {
+		return nil, err
+	}
+	u := c.baseURL + "/v1/sessions/" + seg + "/files?path=" + url.QueryEscape(relPath)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
@@ -503,7 +531,11 @@ func (c *client) listSessions(ctx context.Context) ([]sessionView, error) {
 
 // destroySession DELETEs /v1/sessions/{id}.
 func (c *client) destroySession(ctx context.Context, id string) error {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/sessions/"+id, nil)
+	seg, err := pathSeg("session id", id)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/sessions/"+seg, nil)
 	if err != nil {
 		return err
 	}
@@ -564,7 +596,15 @@ func (c *client) listApprovals(ctx context.Context) ([]approvalView, error) {
 func (c *client) resolveApproval(ctx context.Context, id, execID, decision, comment string) (approvalView, error) {
 	var out approvalView
 	body, _ := json.Marshal(resolveApprovalReq{Decision: decision, Comment: comment})
-	u := c.baseURL + "/v1/sessions/" + id + "/approvals/" + execID
+	seg, err := pathSeg("session id", id)
+	if err != nil {
+		return approvalView{}, err
+	}
+	execSeg, err := pathSeg("exec id", execID)
+	if err != nil {
+		return approvalView{}, err
+	}
+	u := c.baseURL + "/v1/sessions/" + seg + "/approvals/" + execSeg
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
 	if err != nil {
 		return out, err
@@ -594,6 +634,11 @@ type secretMeta struct {
 	Scope     string `json:"scope,omitempty"`
 	TTL       string `json:"ttl,omitempty"`
 	CreatedAt string `json:"created_at"`
+	// LastUsed and RotatedAt are absent when a secret has never been resolved or
+	// never rotated, which is why they are pointers: a zero time would render as
+	// year 1 and read as data rather than as "never".
+	LastUsed  *time.Time `json:"last_used,omitempty"`
+	RotatedAt *time.Time `json:"rotated_at,omitempty"`
 }
 
 // addSecretReq is the POST /v1/secrets body. The value is base64 so it may be
@@ -661,10 +706,22 @@ type secretConsumer struct {
 // secretView is metadata plus who addresses the ref — still never a value.
 type secretView struct {
 	secretMeta
-	LastUsed  *time.Time       `json:"last_used,omitempty"`
-	RotatedAt *time.Time       `json:"rotated_at,omitempty"`
 	Consumers []secretConsumer `json:"consumers,omitempty"`
 	InUse     bool             `json:"in_use"`
+}
+
+// consumersOf returns who addresses one ref, for the pre-force report.
+func (c *client) consumersOf(ctx context.Context, ref string) ([]secretConsumer, error) {
+	views, err := c.listSecretsWithConsumers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range views {
+		if v.Ref == ref {
+			return v.Consumers, nil
+		}
+	}
+	return nil, nil
 }
 
 // rotateSecretReq carries the NEW value inward. Like add, a value only ever
@@ -676,16 +733,97 @@ type rotateSecretReq struct {
 	TTL      string `json:"ttl,omitempty"`
 }
 
-// escapeRef makes a ref safe to concatenate into a request path. A ref may
-// legitimately contain '/' (e.g. "aws/deploy"), which must survive as path
-// segments, but '?' and '#' must NOT — without this, `secrets rm 'x?force=true'`
-// rewrote the query string and bypassed the in-use guard.
+// escapeRef percent-escapes a ref per path SEGMENT, so a legitimate '/' (e.g.
+// "aws/deploy") survives as separators while '?' and '#' inside a segment cannot
+// introduce a query or fragment.
+//
+// It is no longer the control that stops query forging — broker.ValidateRef, via
+// refPath, refuses those characters outright before this runs. Escaping remains
+// as defence in depth and to transport the shapes validation does allow.
 func escapeRef(ref string) string {
 	parts := strings.Split(ref, "/")
 	for i, p := range parts {
 		parts[i] = url.PathEscape(p)
 	}
 	return strings.Join(parts, "/")
+}
+
+// pathSeg validates and escapes ONE path segment of a request URL.
+//
+// Every id, name and exec id the operator supplies goes through here. Escaping
+// alone is not enough: url.PathEscape leaves "." and ".." intact, and Go's
+// ServeMux 301-redirects an uncleaned path — which the CLI's http.Client
+// follows. That turned a scoped verb into a weapon against another route:
+//
+//	opslify session kill '../secrets/gitlab-token?force=true'
+//	  -> DELETE /v1/sessions/../secrets/gitlab-token?force=true
+//	  -> 301 -> DELETE /v1/secrets/gitlab-token?force=true -> 204
+//
+// One request, exit 0, "killed ..." printed, and an in-use secret deleted past
+// the guard that would have returned 409. Validating here — not per-route — is
+// what makes that unrepresentable rather than fixed in the one place someone
+// remembered.
+func pathSeg(kind, v string) (string, error) {
+	if v == "" {
+		return "", fmt.Errorf("%s must not be empty", kind)
+	}
+	if v == "." || v == ".." {
+		return "", fmt.Errorf("%s %q is a path segment, not a name", kind, v)
+	}
+	if strings.ContainsAny(v, `/\`) || strings.ContainsRune(v, 0) {
+		return "", fmt.Errorf("%s %q must not contain a path separator", kind, v)
+	}
+	if strings.Contains(v, "..") {
+		return "", fmt.Errorf("%s %q must not contain ..", kind, v)
+	}
+	// PathEscape is the backstop, not the control: it turns "/" into "%2F", so an
+	// escaped value cannot traverse even if a check above were removed. The checks
+	// exist so a hostile or typo'd id is an immediate, legible client-side error
+	// rather than a confusing 404 from a route it was never meant to reach.
+	// Mutation testing shows the "/" and ".." checks are redundant with each other
+	// but not with the pair — removing both loses the early refusal.
+	return url.PathEscape(v), nil
+}
+
+// deleteSecretURL picks how to address a ref for deletion.
+//
+// Normally the ref is a path segment. But a ref stored by an earlier release may
+// contain a "." or ".." segment, a leading slash or an empty segment — shapes the
+// current rule refuses to store, and which no URL PATH can carry, because
+// ServeMux normalises the path before routing. Those go to the query form, so a
+// secret can always be removed rather than being listed, live and un-deletable.
+// The daemon applies the same in-use guard either way.
+func deleteSecretURL(baseURL, ref string) (string, error) {
+	if ref == "" {
+		return "", fmt.Errorf("secret ref must not be empty")
+	}
+	// Deletion must NOT require the ref to be storable under the current rule. A
+	// secret written by an earlier release can have a shape that rule now refuses,
+	// and refusing to delete it is how a credential becomes listed, live and
+	// unremovable. So: the path form only when the ref is a clean path segment
+	// sequence, and otherwise the query form — which cannot retarget a route,
+	// because the ref travels as an escaped query value rather than as path.
+	if err := broker.ValidateRef(ref); err == nil && !refNeedsQueryForm(ref) {
+		path, err := refPath(ref)
+		if err != nil {
+			return "", err
+		}
+		return baseURL + path, nil
+	}
+	return baseURL + "/v1/secrets?ref=" + url.QueryEscape(ref), nil
+}
+
+// refNeedsQueryForm reports a ref that cannot survive URL path normalisation.
+func refNeedsQueryForm(ref string) bool {
+	if strings.HasPrefix(ref, "/") || strings.Contains(ref, "//") {
+		return true
+	}
+	for _, seg := range strings.Split(ref, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // refPath validates a ref and returns the request path for it.
@@ -757,13 +895,20 @@ func (c *client) rotateSecret(ctx context.Context, ref string, req rotateSecretR
 
 // removeSecretForce DELETEs a ref, optionally past the in-use guard.
 func (c *client) removeSecretForce(ctx context.Context, ref string, force bool) error {
-	path, err := refPath(ref)
+	u, err := deleteSecretURL(c.baseURL, ref)
 	if err != nil {
 		return err
 	}
-	u := c.baseURL + path
 	if force {
-		u += "?force=true"
+		// The query form already carries ?ref=, so the separator depends on the URL
+		// we picked. Appending "?force=true" unconditionally produced two "?" and a
+		// force that the daemon never saw — the removal would then be refused with a
+		// 409 the operator had explicitly overridden.
+		sep := "?"
+		if strings.Contains(u, "?") {
+			sep = "&"
+		}
+		u += sep + "force=true"
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
 	if err != nil {
@@ -790,7 +935,11 @@ type traceResp struct {
 // client-side (never trusting the daemon's own claim of integrity).
 func (c *client) fetchTrace(ctx context.Context, id string) (traceResp, error) {
 	var out traceResp
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/sessions/"+id+"/trace", nil)
+	seg, err := pathSeg("session id", id)
+	if err != nil {
+		return traceResp{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/sessions/"+seg+"/trace", nil)
 	if err != nil {
 		return out, err
 	}
@@ -881,7 +1030,11 @@ type execResult struct {
 func (c *client) execStream(ctx context.Context, id string, req execReq, stdout, stderr io.Writer) (execResult, error) {
 	var res execResult
 	body, _ := json.Marshal(req)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/sessions/"+id+"/exec", bytes.NewReader(body))
+	seg, err := pathSeg("session id", id)
+	if err != nil {
+		return execResult{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/sessions/"+seg+"/exec", bytes.NewReader(body))
 	if err != nil {
 		return res, err
 	}
