@@ -85,3 +85,32 @@ func PolicyConsumers(scopes []PolicyScope) ConsumerSource {
 		return out, nil
 	})
 }
+
+// ConnectionConsumers reports every secret ref a connection resolves, so the
+// F8.3 delete guard refuses to remove a credential a live connection depends on.
+//
+// This is why ConsumerKind already had a Connection value before any connection
+// existed: the guard has to be complete on the day the first connection is
+// created, not retrofitted after an operator has deleted something that was in
+// use. Scope is carried through so the refusal can say WHICH project and
+// environment would break, not merely that something would.
+func ConnectionConsumers(conns []ConnectionSpec) ConsumerSource {
+	return ConsumerSourceFunc(func() (map[string][]Consumer, error) {
+		out := map[string][]Consumer{}
+		for _, c := range conns {
+			if c.SecretRef == "" {
+				continue
+			}
+			scope := c.ProjectID
+			if c.EnvironmentID != "" {
+				scope = c.EnvironmentID
+			}
+			out[c.SecretRef] = append(out[c.SecretRef], Consumer{
+				Kind:  ConsumerConnection,
+				Name:  string(c.Kind) + ":" + c.Name,
+				Scope: scope,
+			})
+		}
+		return out, nil
+	})
+}
