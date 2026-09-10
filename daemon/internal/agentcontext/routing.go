@@ -86,6 +86,10 @@ func Route(caps CapabilityMap, roles []string, available []string) Routing {
 	return Routing{Roles: wantRoles, Tools: tools, Selected: selected, Missing: missing}
 }
 
+// sortStrings is sort.Strings, named locally so scaffold.go does not need its own
+// sort import.
+func sortStrings(s []string) { sort.Strings(s) }
+
 func dedupeSorted(in []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(in))
