@@ -77,6 +77,11 @@ type Options struct {
 	// 404. There is deliberately no route that returns a secret value — Get is
 	// daemon-internal (session.Manager.ResolveSecret), not part of this surface.
 	Secrets broker.SecretManager
+	// Connections is the F8.2 operator surface: define how a credential reaches an
+	// upstream without the sandbox holding it. nil => the routes are not
+	// registered at all, rather than registered and answering 404 — an endpoint
+	// that exists but never works is worse than one that does not exist.
+	Connections ConnectionService
 	// SecretsSvc is the F8.3 operator surface over the same vault: listing with
 	// consumers, rotation, and a delete guarded by them. It is metadata-only by
 	// construction — it holds the same Get-less SecretManager. nil leaves the F8.3
@@ -98,6 +103,7 @@ type Daemon struct {
 	projects     ProjectService
 	secrets      broker.SecretManager
 	secretsSvc   *broker.SecretsService
+	connections  ConnectionService
 
 	version  string
 	tier     string
@@ -129,6 +135,7 @@ func New(opts Options) (*Daemon, error) {
 		projects:     opts.Projects,
 		secrets:      opts.Secrets,
 		secretsSvc:   opts.SecretsSvc,
+		connections:  opts.Connections,
 		version:      orDefault(opts.Version, "dev"),
 		tier:         opts.Config.Tier,
 	}

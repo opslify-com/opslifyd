@@ -45,6 +45,11 @@ func (d *Daemon) Handler() http.Handler {
 	mux.HandleFunc("GET /"+APIVersion+"/health", d.handleHealth)
 	d.registerSessionRoutes(mux)
 	d.registerSecretRoutes(mux)
+	// Registered at the TOP LEVEL, not inside the secret routes: connections are
+	// independent of whether a secret backend is wired, and nesting them there
+	// meant every connection route 404'd on a daemon with no vault — which is
+	// exactly the state an operator setting one up for the first time is in.
+	d.registerConnectionRoutes(mux)
 	d.registerProjectRoutes(mux)
 	return mux
 }

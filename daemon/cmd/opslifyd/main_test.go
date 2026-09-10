@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/policy"
@@ -163,7 +164,7 @@ func TestSecretsServiceIndexesConfigAndPolicyConsumers(t *testing.T) {
 func TestDaemonOptionsWireSecretsService(t *testing.T) {
 	cfg := secretsWiringConfig()
 	svc := mustBuildSecretsService(t, cfg, nil, newTestProjectService(t), policy.Policy{})
-	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, discardLog())
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, nil, discardLog())
 
 	if opts.SecretsSvc == nil {
 		t.Fatal("daemon.Options.SecretsSvc is nil: the in-use delete guard is not wired into the running daemon")
@@ -187,7 +188,7 @@ func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
 	mgr := &session.Manager{}
 	verifier := stubVerifier{}
 
-	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", verifier, mgr, projects, vault, svc, discardLog())
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", verifier, mgr, projects, vault, svc, nil, discardLog())
 
 	if opts.SocketPath != "/run/opslify/api.sock" {
 		t.Errorf("SocketPath = %q", opts.SocketPath)
@@ -222,7 +223,7 @@ func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
 // the wiring tests exercise the actual type rather than nil.
 func mustBuildSecretsService(t *testing.T, cfg install.Config, vault broker.SecretManager, projects *project.Service, base policy.Policy) *broker.SecretsService {
 	t.Helper()
-	svc, err := buildSecretsService(cfg, vault, projects, base)
+	svc, err := buildSecretsService(cfg, vault, projects, base, newTestConnService(t))
 	if err != nil {
 		t.Fatalf("buildSecretsService: %v", err)
 	}
@@ -235,9 +236,24 @@ func mustBuildSecretsService(t *testing.T, cfg install.Config, vault broker.Secr
 // permitted without a 409. The daemon always has one, so nil is a wiring bug and
 // must fail loudly at startup rather than degrade the guard in silence.
 func TestSecretsServiceRequiresProjectService(t *testing.T) {
-	if _, err := buildSecretsService(secretsWiringConfig(), nil, nil, policy.Policy{}); err == nil {
+	if _, err := buildSecretsService(secretsWiringConfig(), nil, nil, policy.Policy{}, newTestConnService(t)); err == nil {
 		t.Fatal("a nil project service must be refused, not silently accepted")
 	}
+}
+
+// newTestConnService builds a real ConnectionService over a temp store, so the
+// wiring tests exercise the actual type.
+func newTestConnService(t *testing.T) *broker.ConnectionService {
+	t.Helper()
+	store, err := broker.NewConnectionStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewConnectionStore: %v", err)
+	}
+	svc, err := broker.NewConnectionService(store, broker.DefaultRegistry(nil), nil)
+	if err != nil {
+		t.Fatalf("NewConnectionService: %v", err)
+	}
+	return svc
 }
 
 func newTestProjectService(t *testing.T) *project.Service {
@@ -360,7 +376,7 @@ func TestBuildDaemonOptionsWiresTheWholeSurface(t *testing.T) {
 	projects := newTestProjectService(t)
 	mgr := &session.Manager{}
 
-	opts, err := buildDaemonOptions(cfg, "/run/opslify/api.sock", "opslify", stubVerifier{}, mgr, projects, vault, discardLog())
+	opts, err := buildDaemonOptions(cfg, "/run/opslify/api.sock", "opslify", stubVerifier{}, mgr, projects, vault, newTestConnService(t), discardLog())
 	if err != nil {
 		t.Fatalf("buildDaemonOptions: %v", err)
 	}
@@ -402,7 +418,141 @@ func TestBuildDaemonOptionsFailsClosedOnABadPolicy(t *testing.T) {
 	}
 	cfg := secretsWiringConfig()
 	cfg.PolicyFile = bad
-	if _, err := buildDaemonOptions(cfg, "/s", "g", stubVerifier{}, nil, newTestProjectService(t), &noopSecretManager{}, discardLog()); err == nil {
+	if _, err := buildDaemonOptions(cfg, "/s", "g", stubVerifier{}, nil, newTestProjectService(t), &noopSecretManager{}, newTestConnService(t), discardLog()); err == nil {
 		t.Fatal("an invalid daemon policy must abort startup, not fall back to a permissive default")
+	}
+}
+
+// --- F8.2 composition root ---------------------------------------------------
+//
+// These exist because the composition root has been the weak spot on every
+// feature so far: building a service correctly is worthless if nothing hands it
+// to the thing that uses it, and an inlined literal makes that invisible to every
+// test while the suite stays green.
+
+// TestDaemonOptionsWireTheConnectionService: without it the connection routes are
+// not registered at all, so `opslify connection add` fails against a daemon that
+// otherwise looks healthy.
+func TestDaemonOptionsWireTheConnectionService(t *testing.T) {
+	conns := newTestConnService(t)
+	opts, err := buildDaemonOptions(secretsWiringConfig(), "/run/opslify/api.sock", "opslify",
+		stubVerifier{}, &session.Manager{}, newTestProjectService(t), &noopSecretManager{}, conns, discardLog())
+	if err != nil {
+		t.Fatalf("buildDaemonOptions: %v", err)
+	}
+	if opts.Connections == nil {
+		t.Fatal("Connections is nil: the F8.2 routes are not registered, so every connection command fails")
+	}
+}
+
+// TestSecretsServiceIndexesConnectionConsumers is the cross-feature guarantee.
+// The F8.3 delete guard must be complete the moment a connection can exist — not
+// retrofitted after an operator has deleted a credential that was in use.
+func TestSecretsServiceIndexesConnectionConsumers(t *testing.T) {
+	conns := newTestConnService(t)
+	if err := conns.Add(broker.ConnectionSpec{
+		Name: "gitlab", Kind: broker.KindHTTP, SecretRef: "gitlab-token",
+		Hosts: []string{"gitlab.example.com"}, ProjectID: "tripon", EnvironmentID: "tripon.prod",
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	svc, err := buildSecretsService(secretsWiringConfig(), nil, newTestProjectService(t), policy.Policy{}, conns)
+	if err != nil {
+		t.Fatalf("buildSecretsService: %v", err)
+	}
+	cs, err := svc.Consumers("gitlab-token")
+	if err != nil {
+		t.Fatalf("Consumers: %v", err)
+	}
+	var found bool
+	for _, c := range cs {
+		if c.Kind == broker.ConsumerConnection {
+			found = true
+			if c.Scope != "tripon.prod" {
+				t.Errorf("the consumer must name which environment would break, got %q", c.Scope)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("a connection's secret must be reported as in use; consumers = %+v", cs)
+	}
+}
+
+// TestSecretsServiceRequiresTheConnectionService: a nil one silently drops every
+// connection from the consumer index, so a credential a live connection depends
+// on reports zero consumers and its delete is permitted without a 409.
+func TestSecretsServiceRequiresTheConnectionService(t *testing.T) {
+	_, err := buildSecretsService(secretsWiringConfig(), nil, newTestProjectService(t), policy.Policy{}, nil)
+	if err == nil {
+		t.Fatal("a nil connection service must be refused, not silently accepted")
+	}
+	if !strings.Contains(err.Error(), "connection") {
+		t.Errorf("the refusal must name the missing dependency: %v", err)
+	}
+}
+
+// TestSessionManagerRequiresAConnectionSource: without it every connection an
+// operator defined is silently ignored, and the failure surfaces inside the
+// agent's work rather than anywhere pointing at the cause.
+func TestSessionManagerRequiresAConnectionSource(t *testing.T) {
+	_, err := buildSessionManager(install.Config{}, discardLog(), nil, nil, nil, nil, nil, nil,
+		newTestProjectService(t), nil)
+	if err == nil {
+		t.Fatal("a nil connection source must be refused at startup")
+	}
+	if !strings.Contains(err.Error(), "connection") {
+		t.Errorf("the refusal must name the missing dependency: %v", err)
+	}
+}
+
+// TestConnectionServiceUsesTheVaultAsAResolver: a kind resolves its credential
+// daemon-side at build time. Without a resolver the ssh kind cannot load a key at
+// all, and the failure would look like a broken connection rather than missing
+// wiring.
+func TestConnectionServiceUsesTheVaultAsAResolver(t *testing.T) {
+	cfg := install.Config{WorkspaceDir: filepath.Join(t.TempDir(), "workspaces")}
+	key := make([]byte, 32)
+	v, err := broker.OpenVault(filepath.Join(t.TempDir(), "vault.db"), broker.StaticKeySource(key))
+	if err != nil {
+		t.Fatalf("OpenVault: %v", err)
+	}
+	svc, err := buildConnectionService(cfg, v, discardLog())
+	if err != nil {
+		t.Fatalf("buildConnectionService: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("nil service")
+	}
+	// A backend that cannot resolve is refused rather than accepted and later
+	// mysterious.
+	if _, err := buildConnectionService(cfg, &noopSecretManager{}, discardLog()); err == nil {
+		t.Error("a backend with no resolve path must be refused: connection kinds need daemon-side resolution")
+	}
+}
+
+// TestConnectionStoreLivesBesideTheProjectRecords: it names hosts and secret
+// refs, which together describe an estate's shape, so it belongs in
+// daemon-private state and not under the workspace the sandbox can reach.
+func TestConnectionStoreLivesBesideTheProjectRecords(t *testing.T) {
+	base := t.TempDir()
+	cfg := install.Config{WorkspaceDir: filepath.Join(base, "workspaces")}
+	key := make([]byte, 32)
+	v, err := broker.OpenVault(filepath.Join(base, "vault.db"), broker.StaticKeySource(key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildConnectionService(cfg, v, discardLog()); err != nil {
+		t.Fatalf("buildConnectionService: %v", err)
+	}
+	dir := filepath.Join(base, "connections")
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("the connection store must be created outside the workspace: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("mode = %o, want 0700 (daemon-private)", info.Mode().Perm())
+	}
+	if strings.HasPrefix(dir, cfg.WorkspaceDir) {
+		t.Error("the store must not live inside the workspace the sandbox can reach")
 	}
 }

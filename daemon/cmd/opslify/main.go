@@ -67,6 +67,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(vaultCmd())
 	root.AddCommand(projectCmd())
 	root.AddCommand(envCmd())
+	root.AddCommand(connectionCmd())
 	return root
 }
 

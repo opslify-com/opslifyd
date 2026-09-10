@@ -162,7 +162,14 @@ func run() error {
 		return err
 	}
 
-	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject, projects)
+	// F8.2 connections must exist before the session manager: a session resolves
+	// the connections in force for its scope at create time.
+	connSvc, err := buildConnectionService(cfg, vault, log)
+	if err != nil {
+		return err
+	}
+	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject, projects,
+		connSvc.ForScope)
 	if err != nil {
 		return err
 	}
@@ -175,7 +182,7 @@ func run() error {
 	// connections register here later without changing any caller. It is built
 	// over LIVE config and policy rather than cached, so a delete guard can never
 	// consult a stale picture and permit a removal that breaks a running grant.
-	opts, err := buildDaemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, log)
+	opts, err := buildDaemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, connSvc, log)
 	if err != nil {
 		return err
 	}
@@ -419,6 +426,36 @@ func buildEgressInject(cfg install.Config, brk *broker.Broker, log *slog.Logger)
 // live alongside the session state dir (0700, daemon-private) and survive a
 // restart, which is what lets the reconciler attribute an orphan sandbox to the
 // environment that governed it. project_dir overrides the location.
+// buildConnectionService builds the F8.2 connection broker.
+//
+// REQUIRED, like the project service: a daemon without it silently ignores every
+// connection an operator defined, and the failure then surfaces as an agent
+// lacking access rather than as anything pointing at the cause.
+//
+// The store sits beside the project records rather than under the workspace: a
+// connection names hosts and secret refs, which together describe an estate's
+// shape, so it is daemon-private even though it holds no value.
+func buildConnectionService(cfg install.Config, vault broker.SecretManager, log *slog.Logger) (*broker.ConnectionService, error) {
+	dir := filepath.Join(filepath.Dir(cfg.WorkspaceDir), "connections")
+	store, err := broker.NewConnectionStore(dir)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: connection store: %w", err)
+	}
+	// The vault is handed over as a RESOLVER — the narrow read view a kind needs
+	// to resolve its own credential daemon-side at build time. A kind never gets
+	// the manager, so it cannot list, enumerate or delete secrets.
+	resolver, ok := vault.(broker.SecretResolver)
+	if !ok {
+		return nil, fmt.Errorf("opslifyd: the secret backend cannot resolve values; connection kinds need daemon-side resolution")
+	}
+	svc, err := broker.NewConnectionService(store, broker.DefaultRegistry(nil), resolver)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: connection broker: %w", err)
+	}
+	log.Info("F8.2 connection broker active", "dir", dir, "kinds", broker.DefaultRegistry(nil).Kinds())
+	return svc, nil
+}
+
 func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service, error) {
 	dir := cfg.ProjectDir
 	if dir == "" {
@@ -436,7 +473,14 @@ func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service
 	return svc, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service) (*session.Manager, error) {
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service, connections session.ContextConnectionSource) (*session.Manager, error) {
+	// REQUIRED in the daemon. Without it every connection an operator defined is
+	// silently ignored, and the failure surfaces inside the agent's work rather
+	// than anywhere that points at the cause. (The call site itself is not covered
+	// by a test, so making the mistake LOUD is the mitigation, not coverage.)
+	if connections == nil {
+		return nil, errors.New("opslifyd: a connection source is required (F8.2)")
+	}
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
 		return nil, fmt.Errorf("opslifyd: invalid session_ttl %q: %w", cfg.SessionTTL, err)
@@ -477,6 +521,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 		EgressInject:   egressInject,       // F5.7: credential-blind HTTP egress path
 		RegistryInject: registryInject,     // F7.5: operator package-install path
 		Projects:       projects,           // F8.1: project/environment scoping
+		Connections:    connections,        // F8.2: connections in force for the scope
 	})
 }
 
@@ -635,6 +680,7 @@ func buildDaemonOptions(
 	mgr *session.Manager,
 	projects *project.Service,
 	vault broker.SecretManager,
+	conns *broker.ConnectionService,
 	log *slog.Logger,
 ) (daemon.Options, error) {
 	// LIVE config and policy rather than a cached snapshot, so the delete guard
@@ -644,11 +690,11 @@ func buildDaemonOptions(
 	if err != nil {
 		return daemon.Options{}, err
 	}
-	secretsSvc, err := buildSecretsService(cfg, vault, projects, basePolicy)
+	secretsSvc, err := buildSecretsService(cfg, vault, projects, basePolicy, conns)
 	if err != nil {
 		return daemon.Options{}, err
 	}
-	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc, log), nil
+	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc, conns, log), nil
 }
 
 // daemonOptions assembles the Options literal. Kept separate from
@@ -663,6 +709,7 @@ func daemonOptions(
 	projects *project.Service,
 	vault broker.SecretManager,
 	secretsSvc *broker.SecretsService,
+	connections daemon.ConnectionService,
 	log *slog.Logger,
 ) daemon.Options {
 	return daemon.Options{
@@ -674,6 +721,10 @@ func daemonOptions(
 		Projects:    projects,
 		Secrets:     vault, // narrow management surface (Put/List/Delete — no Get)
 		SecretsSvc:  secretsSvc,
+		// F8.2: the connection routes. Passed here rather than constructed inside
+		// daemon.New so the composition root shows every operator surface in one
+		// place — and so a test can assert this one is wired.
+		Connections: connections,
 		Ready:       sdNotifyReady,
 		Version:     version,
 		Logger:      log,
@@ -693,9 +744,16 @@ func daemonOptions(
 // grant, the exact failure the guard exists to prevent. The daemon always has a
 // project service (F8.1 bootstraps a default project), so nil is never
 // legitimate here; refusing turns a silent degradation into a startup failure.
-func buildSecretsService(cfg install.Config, vault broker.SecretManager, projects *project.Service, base policy.Policy) (*broker.SecretsService, error) {
+func buildSecretsService(cfg install.Config, vault broker.SecretManager, projects *project.Service, base policy.Policy, conns *broker.ConnectionService) (*broker.SecretsService, error) {
 	if projects == nil {
 		return nil, errors.New("opslifyd: a project service is required to index secret consumers")
+	}
+	if conns == nil {
+		// The F8.3 delete guard has to be complete the moment a connection can
+		// exist. Without this source a credential a live connection depends on
+		// reports zero consumers, and its delete is permitted without a 409 —
+		// breaking the connection at the next session.
+		return nil, errors.New("opslifyd: a connection service is required to index secret consumers")
 	}
 	egress := make([]broker.EgressInjectRef, 0, len(cfg.EgressInject))
 	for _, r := range cfg.EgressInject {
@@ -735,5 +793,7 @@ func buildSecretsService(cfg install.Config, vault broker.SecretManager, project
 	return broker.NewSecretsService(vault, broker.NewConsumerIndex(
 		broker.ConfigConsumers(egress, upstreams),
 		policySrc,
+		// F8.2: every stored connection's secret ref.
+		broker.ConsumerSourceFunc(conns.Consumers),
 	)), nil
 }

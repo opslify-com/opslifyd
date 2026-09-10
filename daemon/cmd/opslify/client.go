@@ -1100,3 +1100,116 @@ func frameStreamLabel(s string) string {
 	}
 	return s
 }
+
+// --- F8.2 connections ---------------------------------------------------------
+
+// addConnectionReq is the POST /v1/connections body. It carries a secret REF and
+// has no field that could hold a value — the same structural choice as the
+// stored record.
+type addConnectionReq struct {
+	Name          string            `json:"name"`
+	Kind          string            `json:"kind"`
+	SecretRef     string            `json:"secret_ref"`
+	Hosts         []string          `json:"hosts,omitempty"`
+	ProjectID     string            `json:"project_id,omitempty"`
+	EnvironmentID string            `json:"environment_id,omitempty"`
+	Config        map[string]string `json:"config,omitempty"`
+}
+
+// connectionView is a connection as the daemon reports it: refs and metadata,
+// never a value.
+type connectionView struct {
+	Name      string   `json:"name"`
+	Kind      string   `json:"kind"`
+	SecretRef string   `json:"secret_ref"`
+	Hosts     []string `json:"hosts,omitempty"`
+	Scope     string   `json:"scope,omitempty"`
+}
+
+func (c *client) addConnection(ctx context.Context, req addConnectionReq) (connectionView, error) {
+	return c.connectionWrite(ctx, "/v1/connections", req)
+}
+
+// testConnection validates without storing.
+func (c *client) testConnection(ctx context.Context, req addConnectionReq) (connectionView, error) {
+	return c.connectionWrite(ctx, "/v1/connections/test", req)
+}
+
+func (c *client) connectionWrite(ctx context.Context, path string, req addConnectionReq) (connectionView, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return connectionView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return connectionView{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return connectionView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return connectionView{}, c.decodeError(resp)
+	}
+	var out connectionView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return connectionView{}, err
+	}
+	return out, nil
+}
+
+func (c *client) listConnections(ctx context.Context) ([]connectionView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/connections", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []connectionView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// removeConnection deletes by scope and name. The name goes through pathSeg for
+// the same reason every other operator input does: escaping alone does not stop
+// a "." or ".." segment retargeting the request to another route.
+func (c *client) removeConnection(ctx context.Context, projectID, environmentID, name string) error {
+	seg, err := pathSeg("connection name", name)
+	if err != nil {
+		return err
+	}
+	u := c.baseURL + "/v1/connections/" + seg
+	q := url.Values{}
+	if projectID != "" {
+		q.Set("project", projectID)
+	}
+	if environmentID != "" {
+		q.Set("env", environmentID)
+	}
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}
