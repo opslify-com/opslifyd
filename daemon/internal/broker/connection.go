@@ -363,3 +363,18 @@ func validateHost(h string) error {
 	}
 	return nil
 }
+
+// DefaultRegistry returns the kinds the daemon ships.
+//
+// The set is explicit rather than assembled by init() side effects, so what a
+// build actually supports is readable in one place — and a kind cannot be added
+// to a running daemon by linking a package.
+//
+// sshRunner is the OpenSSH seam for the ssh kind; nil uses the local tooling.
+func DefaultRegistry(sshRunner SSHRunner) *Registry {
+	reg := NewRegistry()
+	reg.Register(KindHTTP, NewHTTPConnection)
+	reg.Register(KindKubernetes, NewKubernetesConnection)
+	reg.Register(KindSSH, NewSSHConnection(sshRunner))
+	return reg
+}

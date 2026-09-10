@@ -3,6 +3,8 @@ package broker
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -299,5 +301,95 @@ func TestConnectionsRegisterAsSecretConsumers(t *testing.T) {
 	svc := NewSecretsService(v, idx)
 	if _, err := svc.Delete(context.Background(), "gitlab-token", false); !errors.Is(err, ErrInUse) {
 		t.Fatalf("deleting a secret a connection uses must be refused, got %v", err)
+	}
+}
+
+// TestDefaultRegistryShipsTheDocumentedKinds: the spec says v1 ships http,
+// kubernetes and ssh. A kind that is implemented but not registered is invisible
+// to an operator, and one registered without an implementation is worse.
+func TestDefaultRegistryShipsTheDocumentedKinds(t *testing.T) {
+	reg := DefaultRegistry(nil)
+	got := reg.Kinds()
+	want := []string{"http", "kubernetes", "ssh"}
+	if len(got) != len(want) {
+		t.Fatalf("kinds = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kinds = %v, want %v", got, want)
+		}
+	}
+	// The deferred kinds must NOT be registered: a connection an operator can
+	// create but which does nothing is the worst of both worlds.
+	for _, deferred := range []Kind{"database", "network", "cloud"} {
+		if _, err := reg.Build(ConnectionSpec{Name: "c", Kind: deferred, SecretRef: "r"}, nil); err == nil {
+			t.Errorf("kind %q is declared but deferred and must not build", deferred)
+		}
+	}
+}
+
+// TestEveryRegisteredKindAnswersTheInvariant: a kind ships only if it can say
+// what the sandbox receives. This asserts the two structural halves of that for
+// every kind at once — no kind may place a value in the environment, and each
+// must exclude its own secret from environment injection.
+func TestEveryRegisteredKindAnswersTheInvariant(t *testing.T) {
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kh := filepath.Join(base, "known_hosts")
+	if err := os.WriteFile(kh, []byte("h ssh-ed25519 AAAA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "CANARY-value-no-kind-may-hand-over"
+
+	specs := map[Kind]ConnectionSpec{
+		KindHTTP:       {Name: "h", Kind: KindHTTP, SecretRef: "r", Hosts: []string{"h.example.com"}},
+		KindKubernetes: {Name: "k", Kind: KindKubernetes, SecretRef: "r", Hosts: []string{"api.example.com:6443"}},
+		KindSSH:        {Name: "s", Kind: KindSSH, SecretRef: "r", Hosts: []string{"host-1"}, Config: map[string]string{"known_hosts_path": kh}},
+	}
+	reg := DefaultRegistry(&fakeSSHRunner{major: 9, minor: 6})
+	sc := SessionContext{
+		SessionID:    "s1",
+		WorkspaceDir: ws,
+		ProxyAddr:    "172.17.0.1:41234",
+		ProxyCAPEM:   []byte("-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n"),
+	}
+	for kind, spec := range specs {
+		t.Run(string(kind), func(t *testing.T) {
+			c, err := reg.Build(spec, staticSecrets{ref: "r", value: secret})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			inj, closer, err := c.BuildForSession(context.Background(), sc)
+			if err != nil {
+				t.Fatalf("BuildForSession: %v", err)
+			}
+			if closer != nil {
+				defer closer.Close()
+			}
+			for k, v := range inj.Env {
+				if strings.Contains(v, secret) {
+					t.Fatalf("%s handed the credential to the sandbox in %s", kind, k)
+				}
+			}
+			for _, f := range inj.Files {
+				if strings.Contains(string(f.Content), secret) {
+					t.Fatalf("%s wrote the credential into %s", kind, f.Path)
+				}
+			}
+			// Every kind must keep its own secret out of environment injection,
+			// or the value it resolves at a boundary is also placed in the sandbox.
+			var excluded bool
+			for _, ref := range inj.ExcludeRefs {
+				if ref == "r" {
+					excluded = true
+				}
+			}
+			if !excluded {
+				t.Errorf("%s must exclude its secret from env injection; got %v", kind, inj.ExcludeRefs)
+			}
+		})
 	}
 }
