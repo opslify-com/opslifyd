@@ -26,6 +26,7 @@
 package egressproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -304,6 +305,18 @@ func (p *Proxy) serveTerminate(ctx context.Context, host string, clientConn net.
 			_ = writeError(tlsConn, ferr)
 			return ferr
 		}
+		// An UPGRADE ends the request/response loop: after 101 the connection is a
+		// raw bidirectional stream, not a sequence of HTTP messages.
+		//
+		// Without this the failure is nastily selective — `kubectl get pods` works
+		// while `kubectl exec`, `attach`, `port-forward` and `cp` hang, because only
+		// those use SPDY/WebSocket upgrades. An operator sees "kubernetes works" and
+		// one class of command mysteriously broken.
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			err := p.spliceUpgrade(tlsConn, resp)
+			resp.Body.Close()
+			return err
+		}
 		if err := resp.Write(tlsConn); err != nil {
 			resp.Body.Close()
 			return fmt.Errorf("egress: write response %s: %w", host, err)
@@ -313,6 +326,56 @@ func (p *Proxy) serveTerminate(ctx context.Context, host string, clientConn net.
 			return nil
 		}
 	}
+}
+
+// spliceUpgrade completes a protocol upgrade through the terminating proxy: it
+// writes the 101 head to the client, then copies bytes both ways until either
+// side closes.
+//
+// Go's http.Transport gives a 101 response a Body that is an io.ReadWriteCloser
+// precisely so a proxy can do this. The injected credential rode the upstream
+// request that produced the 101 and appears in neither direction of the spliced
+// stream, so this path adds no new place it could surface.
+func (p *Proxy) spliceUpgrade(client net.Conn, resp *http.Response) error {
+	upstream, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		// Fail rather than degrade. Writing the 101 and then being unable to carry
+		// the stream would leave the client waiting on a connection that will never
+		// speak — harder to diagnose than an outright error.
+		return fmt.Errorf("egress: upstream returned 101 but its body is not writable; cannot complete the upgrade")
+	}
+	// Write the response head by hand. resp.Write would try to copy the body, which
+	// is the stream we are about to splice.
+	var head bytes.Buffer
+	proto := resp.Proto
+	if proto == "" {
+		proto = "HTTP/1.1"
+	}
+	fmt.Fprintf(&head, "%s %s\r\n", proto, resp.Status)
+	if err := resp.Header.Write(&head); err != nil {
+		return fmt.Errorf("egress: render upgrade response head: %w", err)
+	}
+	head.WriteString("\r\n")
+	if _, err := client.Write(head.Bytes()); err != nil {
+		return fmt.Errorf("egress: write upgrade response head: %w", err)
+	}
+
+	// Copy both directions until either side closes. A closed peer is the normal
+	// end of an upgraded stream, so it is not reported as a failure.
+	errc := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(upstream, client)
+		errc <- err
+	}()
+	go func() {
+		_, err := io.Copy(client, upstream)
+		errc <- err
+	}()
+	err := <-errc
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("egress: upgraded stream ended abnormally: %w", err)
+	}
+	return nil
 }
 
 // servePassthrough SNI-validates the ClientHello against the allowlist and then
