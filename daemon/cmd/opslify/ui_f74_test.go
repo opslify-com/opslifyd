@@ -369,7 +369,13 @@ func allowedProxyRouteWithQuery(t *testing.T, method, rawURL string) bool {
 // page which, worse, was ALSO blocked from the one route that could tell it what
 // it was breaking.
 func TestUIProxyRefusesForceDelete(t *testing.T) {
-	for _, q := range []string{"?force=true", "?force=1", "?x=1&force=true", "?force="} {
+	// Case variants included: the daemon happens to ignore them, but a proxy that
+	// is exactly as strict as what it protects stops protecting it the moment the
+	// other side is relaxed.
+	for _, q := range []string{
+		"?force=true", "?force=1", "?x=1&force=true", "?force=",
+		"?FORCE=true", "?Force=true", "?fOrCe=true", "?%66orce=true",
+	} {
 		if allowedProxyRouteWithQuery(t, http.MethodDelete, "/v1/secrets/gitlab-token"+q) {
 			t.Errorf("DELETE %q must be refused through the UI proxy: forcing is a CLI-only action", q)
 		}

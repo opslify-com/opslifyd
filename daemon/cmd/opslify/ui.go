@@ -309,9 +309,16 @@ func admitProxyRequest(method string, u *url.URL) string {
 	// a browser page. Deliberate narrowing: forcing is a CLI-only action, where the
 	// operator is shown exactly which consumers they break before it happens. A
 	// page that cannot display that should not be able to do it.
-	if u.Query().Has("force") {
-		return "opslify ui: ?force is not permitted through the local UI — " +
-			"run `opslify secrets rm <ref> --force`, which reports what the removal breaks"
+	// Case-INSENSITIVE on purpose. The daemon only honours exactly "force", so
+	// "?FORCE=true" is inert today — but that is a coincidence of two independent
+	// case decisions agreeing, not a guarantee. A proxy must be at least as strict
+	// as the thing it protects, never exactly as strict, or the day someone makes
+	// the daemon's parse lenient this quietly becomes a bypass.
+	for key := range u.Query() {
+		if strings.EqualFold(key, "force") {
+			return "opslify ui: ?force is not permitted through the local UI — " +
+				"run `opslify secrets rm <ref> --force`, which reports what the removal breaks"
+		}
 	}
 	return ""
 }

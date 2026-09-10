@@ -974,3 +974,125 @@ func TestRefLookupIsExactNotPrefix(t *testing.T) {
 		t.Errorf("the audit record attributed the wrong provider; log:\n%s", buf.String())
 	}
 }
+
+// TestWritePathFlagMatrix pins every combination across the three write verbs,
+// which now share one validate+write path. A shared path is worth having only if
+// the flags that distinguish the verbs still hold: a Put that could overwrite, or
+// an Update that could create, would each be a silent data-loss bug.
+func TestWritePathFlagMatrix(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("Put refuses to overwrite when not asked", func(t *testing.T) {
+		v, _ := newTestVault(t)
+		mustPut(t, v, "tok", "v1", "gitlab")
+		if err := v.Put(ctx, "tok", []byte("v2"), PutMeta{}, false); !errors.Is(err, ErrExists) {
+			t.Fatalf("want ErrExists, got %v", err)
+		}
+		got, _, _ := v.Get(ctx, "tok")
+		if string(got) != "v1" {
+			t.Fatalf("the refused write changed the value to %q", got)
+		}
+	})
+
+	t.Run("Update refuses to create", func(t *testing.T) {
+		v, _ := newTestVault(t)
+		if err := v.Update(ctx, "absent", []byte("v"), PutMeta{}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("want ErrNotFound, got %v", err)
+		}
+		if metas, _ := v.List(ctx); len(metas) != 0 {
+			t.Fatal("Update created a ref")
+		}
+	})
+
+	t.Run("Upsert reports create vs replace accurately", func(t *testing.T) {
+		v, _ := newTestVault(t)
+		if _, replaced, err := v.Upsert(ctx, "a", []byte("v"), PutMeta{}); err != nil || replaced {
+			t.Fatalf("first Upsert: replaced=%v err=%v — a new ref is a create", replaced, err)
+		}
+		if _, replaced, err := v.Upsert(ctx, "a", []byte("v2"), PutMeta{}); err != nil || !replaced {
+			t.Fatalf("second Upsert: replaced=%v err=%v — an existing ref is a replace", replaced, err)
+		}
+	})
+
+	t.Run("a bound can be tightened but not silently cleared", func(t *testing.T) {
+		v, _ := newTestVault(t)
+		if err := v.Put(ctx, "tok", []byte("v"), PutMeta{TTL: "1h", Scope: "prod"}, false); err != nil {
+			t.Fatal(err)
+		}
+		// Restating nothing keeps the bound.
+		if _, _, err := v.Upsert(ctx, "tok", []byte("v2"), PutMeta{}); err != nil {
+			t.Fatal(err)
+		}
+		if m, _ := v.List(ctx); m[0].TTL != "1h" || m[0].Scope != "prod" {
+			t.Fatalf("an unrestated bound was dropped: %+v", m[0])
+		}
+		// Tightening works.
+		if _, _, err := v.Upsert(ctx, "tok", []byte("v3"), PutMeta{TTL: "5m"}); err != nil {
+			t.Fatal(err)
+		}
+		if m, _ := v.List(ctx); m[0].TTL != "5m" {
+			t.Fatalf("TTL = %q, want the tightened 5m", m[0].TTL)
+		}
+		// Clearing requires an explicit delete + re-add. Documented in `secrets add
+		// --help`: a rotation must never silently relax a bound.
+		if err := v.Delete(ctx, "tok"); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.Put(ctx, "tok", []byte("v4"), PutMeta{}, false); err != nil {
+			t.Fatal(err)
+		}
+		if m, _ := v.List(ctx); m[0].TTL != "" {
+			t.Fatalf("delete + re-add must clear the bound, got TTL %q", m[0].TTL)
+		}
+	})
+}
+
+// TestConcurrentWritesAndDeletesStayConsistent races every write verb against
+// Delete and Get. The three verbs now share one write path, so a locking mistake
+// there would corrupt every one of them at once.
+func TestConcurrentWritesAndDeletesStayConsistent(t *testing.T) {
+	v, _ := newTestVault(t)
+	ctx := context.Background()
+	mustPut(t, v, "tok", "seed", "gitlab")
+	svc := NewSecretsService(v, nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 25; i++ {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			_, _, _ = v.Upsert(ctx, "tok", []byte("upserted"), PutMeta{Provider: "gitlab"})
+		}()
+		go func() { defer wg.Done(); _ = svc.Rotate(ctx, "tok", []byte("rotated"), PutMeta{}) }()
+		go func() { defer wg.Done(); _, _ = svc.Delete(ctx, "tok", true) }()
+		go func() {
+			defer wg.Done()
+			if val, _, err := v.Get(ctx, "tok"); err == nil {
+				// A resolve must never see a partial or zeroed value.
+				if len(val) == 0 {
+					t.Error("a resolve returned an empty value")
+					return
+				}
+				for _, b := range val {
+					if b != 0 {
+						return
+					}
+				}
+				t.Errorf("a resolve returned an all-zero value: the plaintext buffer was reused after being wiped")
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Whatever the interleaving, the vault must be readable and internally
+	// consistent — never a ref that lists but cannot be resolved.
+	metas, err := v.List(ctx)
+	if err != nil {
+		t.Fatalf("List after the race: %v", err)
+	}
+	for _, m := range metas {
+		if _, _, err := v.Get(ctx, m.Ref); err != nil {
+			t.Errorf("%s lists but cannot be resolved: %v", m.Ref, err)
+		}
+	}
+}

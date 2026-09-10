@@ -42,7 +42,14 @@ func secretsAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <ref>",
 		Short: "Store a secret (value from stdin or --from-file, NEVER an argument)",
-		Args:  cobra.ExactArgs(1),
+		Long: "Store a secret. The value is read from stdin or --from-file and NEVER from an\n" +
+			"argument, so it cannot appear in the process table, shell history or `ps`.\n\n" +
+			"With --overwrite on an existing ref this is a ROTATION: the ref and its history\n" +
+			"survive, consumers keep working, and metadata you do not restate is carried\n" +
+			"forward. That means a --ttl or --scope can be CHANGED but not CLEARED here — a\n" +
+			"rotation must never silently relax a bound nobody chose to relax. To remove a\n" +
+			"TTL or scope entirely, `secrets rm` the ref and add it again.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref := args[0]
 
