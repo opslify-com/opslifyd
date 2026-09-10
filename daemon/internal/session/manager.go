@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/broker"
+	"github.com/opslify-com/opslifyd/internal/egressproxy"
 	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/project"
 	"github.com/opslify-com/opslifyd/internal/regproxy"
@@ -171,7 +172,11 @@ type Manager struct {
 	// the egress rules are bridge-scoped (still default-deny + no direct DNS). Tests
 	// inject it to exercise source-scoped rule generation.
 	sandboxIP func(runtime.ContainerHandle) string
-	log       *slog.Logger
+	// connections resolves the F8.2 connections in force for a session's scope. A
+	// seam so this package keeps no knowledge of how they are stored; nil means no
+	// connections are configured.
+	connections ContextConnectionSource
+	log         *slog.Logger
 
 	// listenTCP binds a per-session credential-injecting listener (F5.8): the
 	// bridge-gateway-bound F5.1 creds endpoint and F5.7 egress proxy. It mirrors
@@ -279,7 +284,10 @@ type Options struct {
 	// SandboxIP resolves a container handle to its bridge address for source-scoped
 	// egress rules; nil => bridge-scoped rules (see Manager.sandboxIP).
 	SandboxIP func(runtime.ContainerHandle) string
-	Logger    *slog.Logger
+	// Connections wires the F8.2 connection broker. nil => no connections, which
+	// is every pre-P8 test path.
+	Connections ContextConnectionSource
+	Logger      *slog.Logger
 	// Trace is the F3.1 event sink. nil disables tracing. The daemon wires an
 	// in-memory sink whose Seal is signed by the F1.1 daemon identity.
 	Trace trace.TraceSink
@@ -332,6 +340,7 @@ func NewManager(opts Options) (*Manager, error) {
 		store:          opts.Store,
 		egress:         opts.Egress,
 		sandboxIP:      opts.SandboxIP,
+		connections:    opts.Connections,
 		log:            opts.Logger,
 		trace:          opts.Trace,
 		redactor:       opts.Redactor,
@@ -488,7 +497,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 		if s, err := m.pool.claim(ctx, tier, loc, mode, ttl, scope, resolved); err != nil {
 			return nil, err
 		} else if s != nil {
-			m.registerReady(s, "claimed")
+			if rerr := m.registerReady(s, "claimed"); rerr != nil {
+				m.rollbackUnregistered(ctx, s, rerr)
+				return nil, rerr
+			}
 			return s, nil
 		}
 		// Pool miss (empty or wrong rung): fall through to on-demand create.
@@ -507,7 +519,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Session, erro
 	if err != nil {
 		return nil, err
 	}
-	m.registerReady(s, "created")
+	if rerr := m.registerReady(s, "created"); rerr != nil {
+		m.rollbackUnregistered(ctx, s, rerr)
+		return nil, rerr
+	}
 	return s, nil
 }
 
@@ -776,7 +791,7 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 
 // registerReady adds a ready session to the live map. origin is "created" (fresh
 // on-demand) or "claimed" (from the warm pool) for the audit log.
-func (m *Manager) registerReady(s *Session, origin string) {
+func (m *Manager) registerReady(s *Session, origin string) error {
 	// Open the trace chain and emit session.start BEFORE the session is visible in
 	// the live map — so no concurrent exec can win seq 0. seq 0 is therefore always
 	// session.start, and its payload carries the session-binding fields the chain
@@ -813,6 +828,18 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	// the owning container. When the runtime exposes no NetworkInfo the result is
 	// "capability absent" and both paths keep their prior (loopback) behavior; when
 	// it IS exposed but no gateway is discoverable, both paths FAIL CLOSED.
+	// F8.2 connections are resolved FIRST, because the refs they resolve must be
+	// excluded from the credential injection that follows. Resolution is cheap and
+	// pure (building kinds from stored specs); nothing is allocated until the
+	// proxy exists.
+	conns, cerr := m.resolveConnections(s)
+	if cerr != nil {
+		// Fail closed. A session that silently runs without a connection an
+		// operator configured fails later, inside the agent's work, as a confusing
+		// authorization error.
+		m.log.Error("session: refusing to serve — connections could not be resolved", "session", s.ID, "err", cerr)
+		return cerr
+	}
 	sn := m.discoverSessionNet(context.Background(), s)
 	m.injectCredentials(context.Background(), s, sn)
 	// F5.7 credential-blind HTTP egress. If the resolved policy lights up an
@@ -820,7 +847,17 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	// sandbox through it (adds HTTPS_PROXY + a daemon-written CA file to credEnv —
 	// never the token). Also single-owner here (no exec can observe s yet), so
 	// s.credEnv/s.egress are set without a lock.
-	m.injectEgressProxy(s, sn)
+	m.injectEgressProxy(s, sn, connectionEgressRules(conns))
+	// F8.2 phase two: each kind is now given the bound proxy's address and CA so it
+	// can point the sandbox at it (the kubernetes kubeconfig) or hand over a socket
+	// (ssh). It runs after the proxy because the proxy is built FROM the rules the
+	// kinds supplied above.
+	if len(conns) > 0 {
+		if err := m.buildConnections(context.Background(), s, conns, s.proxyAddr, s.proxyCAPEM); err != nil {
+			m.log.Error("session: refusing to serve — connections could not be built", "session", s.ID, "err", err)
+			return err
+		}
+	}
 	// F7.5 operator package-install path. If the registry proxy is configured, build
 	// the per-session regproxy.Proxy + gateway listener and inject the ecosystem
 	// routing env (PIP_INDEX_URL/NPM_CONFIG_REGISTRY/GOPROXY) so a later operator
@@ -838,6 +875,25 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	m.sessions[s.ID] = s
 	m.mu.Unlock()
 	m.log.Info("session "+origin, "session", s.ID, "tier", s.Tier, "mode", s.Mode, "container", s.Handle.ID)
+	return nil
+}
+
+// rollbackUnregistered tears down a sandbox that never became a live session.
+//
+// It exists because registerReady can now refuse (F8.2 fail-closed), and a
+// refusal that left the container running would be the worst kind of leak: a
+// sandbox nobody is tracking, with credentials possibly already injected, that no
+// Destroy will ever reach.
+func (m *Manager) rollbackUnregistered(ctx context.Context, s *Session, cause error) {
+	_ = s.conns.close()
+	if s.egress != nil {
+		s.egress.close()
+	}
+	if rt, err := m.resolve(s.Tier, s.Location); err == nil {
+		_ = rt.Destroy(ctx, s.Handle)
+	}
+	m.cleanupWorkspace(s.WorkspaceDir)
+	m.log.Warn("session rolled back before it was served", "session", s.ID, "cause", cause)
 }
 
 // toolchainDigest returns the current signed toolchain digest under the digest
@@ -1099,19 +1155,25 @@ func (m *Manager) injectCredentials(ctx context.Context, s *Session, sn sessionN
 	// proxy (on the upstream leg) and must NEVER be placed in the sandbox env by the
 	// F5.1 env injector. Drop those refs before injecting — a durable secret meant
 	// for header injection can then never leak into the process env via the fallback.
+	// F8.2 adds a second source of the same exclusion: a ref an F8.2 connection
+	// resolves at its boundary (a proxy header, a kubeconfig, an ssh agent) must
+	// likewise never be resolved into the sandbox environment. Without this the
+	// value a connection exists to keep out of the sandbox would be placed in it
+	// anyway, by a different code path than the one the connection controls.
 	grants := s.policy.Creds
-	if m.egressInject != nil {
-		filtered := grants[:0:0]
-		for _, c := range grants {
-			if m.egressInject.isEgressInjectRef(c.Name) {
-				continue
-			}
-			filtered = append(filtered, c)
+	filtered := grants[:0:0]
+	for _, c := range grants {
+		if m.egressInject != nil && m.egressInject.isEgressInjectRef(c.Name) {
+			continue
 		}
-		grants = filtered
-		if len(grants) == 0 {
-			return
+		if s.isConnectionRef(c.Name) {
+			continue
 		}
+		filtered = append(filtered, c)
+	}
+	grants = filtered
+	if len(grants) == 0 {
+		return
 	}
 
 	// F5.8 endpoint binding. Decide WHERE the AWS blind-path creds endpoint the
@@ -1202,7 +1264,7 @@ func (m *Manager) injectCredentialsGateway(ctx context.Context, s *Session, sn s
 // failure injects no proxy env and no raw-secret fallback. A nil injector, or a
 // session with no applicable rule, is a clean no-op (no env change). Called before
 // the session enters the live map, so s.credEnv/s.egress are set without a lock.
-func (m *Manager) injectEgressProxy(s *Session, sn sessionNet) {
+func (m *Manager) injectEgressProxy(s *Session, sn sessionNet, extraRules []egressproxy.InjectRule) {
 	if m.egressInject == nil {
 		return
 	}
@@ -1222,7 +1284,7 @@ func (m *Manager) injectEgressProxy(s *Session, sn sessionNet) {
 		sourceIP = sn.containerIP
 		advertiseHost = sn.gatewayIP
 	}
-	se, err := m.egressInject.buildForSession(s.ID, s.policy, s.rec, listen, sourceIP, advertiseHost)
+	se, err := m.egressInject.buildForSession(s.ID, s.policy, s.rec, listen, sourceIP, advertiseHost, extraRules)
 	if err != nil {
 		// Fail-closed: the session runs with NO proxy env rather than a partial or
 		// insecure route. Non-HTTP egress stays under F1.4 default-deny regardless.
@@ -1246,6 +1308,11 @@ func (m *Manager) injectEgressProxy(s *Session, sn sessionNet) {
 		m.log.Warn("egress proxy disabled: cannot write per-session CA file", "session", s.ID, "err", err)
 		return
 	}
+	// Recorded for F8.2 phase two: a kind that points the sandbox at the proxy (the
+	// kubernetes kubeconfig) needs both, and neither exists until the listener is
+	// bound.
+	s.proxyAddr = se.addr
+	s.proxyCAPEM = se.caPEM
 	caSandboxPath := path.Join(sandboxWorkspaceMount, SandboxCAFileName)
 	proxyURL := "http://" + se.addr
 	noProxy := append([]string{"localhost", "127.0.0.1"}, m.egressInject.noProxy...)
@@ -1438,6 +1505,17 @@ func (m *Manager) teardown(ctx context.Context, s *Session, snapshot bool, reaso
 	if s.credEndpoint != nil {
 		s.credEndpoint.close()
 		s.credEndpoint = nil
+	}
+
+	// F8.2: tear down whatever the connection kinds allocated — ssh agents, their
+	// sockets, any listener a kind bound. This runs FIRST among the teardowns
+	// because an ssh agent socket is a live signing endpoint for as long as it
+	// exists, so it is the most urgent thing to remove.
+	if s.conns != nil {
+		if err := s.conns.close(); err != nil {
+			m.log.Warn("session: connection teardown reported an error", "session", s.ID, "err", err)
+		}
+		s.conns = nil
 	}
 
 	// F5.7: tear down this session's egress proxy + listener. The per-session CA is

@@ -166,20 +166,11 @@ func TestKubernetesInjectsTheTokenOnlyUpstream(t *testing.T) {
 	if r.HeaderName != "Authorization" || r.HeaderFormat != "Bearer %s" {
 		t.Errorf("kubernetes must inject a bearer token: %+v", r)
 	}
-	// And the same ref must be excluded from environment injection, or the token
-	// the proxy adds upstream would ALSO be placed in the sandbox env.
-	inj, _, err := c.BuildForSession(context.Background(), k8sSessionContext())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var excluded bool
-	for _, ref := range inj.ExcludeRefs {
-		if ref == "k8s-token" {
-			excluded = true
-		}
-	}
-	if !excluded {
-		t.Fatalf("the token must be excluded from env injection; ExcludeRefs = %v", inj.ExcludeRefs)
+	// And the ref must be reported, since the session layer derives the
+	// environment-injection exclusion from it — otherwise the token the proxy adds
+	// upstream would ALSO be placed in the sandbox env.
+	if refs := c.SecretRefs(); len(refs) != 1 || refs[0] != "k8s-token" {
+		t.Fatalf("SecretRefs = %v, want exactly the resolved ref", refs)
 	}
 }
 

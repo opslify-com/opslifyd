@@ -92,6 +92,15 @@ type Session struct {
 	// no in-memory chain) and when tracing is unwired. A nil *trace.Recorder is a
 	// valid no-op, so emit sites need no nil check. Set/read under the Manager
 	// mutex or after the session is solely owned (teardown).
+	// conns is the F8.2 per-session connection state: the closers that tear down
+	// what each kind allocated, and the refs those kinds resolve at a boundary
+	// (which must therefore never reach the sandbox environment).
+	conns *sessionConnections
+	// proxyAddr and proxyCAPEM are the bound per-session proxy, recorded so F8.2
+	// phase two can point the sandbox at it. Empty when no proxy was built.
+	proxyAddr  string
+	proxyCAPEM []byte
+
 	rec *trace.Recorder
 
 	// policyHash is the F4.1 policy_hash of the RESOLVED policy in force for this

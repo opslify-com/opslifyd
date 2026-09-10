@@ -91,8 +91,8 @@ func (c *httpConnection) EgressRules() []HeaderInjectRule {
 }
 
 func (c *httpConnection) BuildForSession(_ context.Context, _ SessionContext) (ConnectionInjection, io.Closer, error) {
-	return ConnectionInjection{
-		ExcludeRefs: []string{c.spec.SecretRef},
-		// No Env and no Files, deliberately: the sandbox receives nothing.
-	}, nil, nil
+	// No Env, no Files: the sandbox receives nothing. The exclusion of this
+	// connection's secret from environment injection is derived from SecretRefs by
+	// the session layer, so it cannot be forgotten here.
+	return ConnectionInjection{}, nil, nil
 }

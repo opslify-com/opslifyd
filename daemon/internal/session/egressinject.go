@@ -148,6 +148,17 @@ func (ei *EgressInjector) isEgressInjectRef(ref string) bool {
 // fail-closed drop BuildConfig applies, used here to decide whether to build a
 // proxy at all (no applicable rule => no proxy, no env change).
 func (ei *EgressInjector) applicable(resolved policy.Resolved) []egressproxy.InjectRule {
+	return applicableRules(ei.rules, resolved)
+}
+
+// applicableRules filters rules against the RESOLVED policy: a rule only applies
+// where the policy both allows the host and grants the cred.
+//
+// This is what keeps a connection from widening a session. An operator can define
+// a connection to any host, but if the resolved policy does not allow that host
+// and grant that cred, the rule is dropped — so a connection narrows or matches
+// policy and can never exceed it.
+func applicableRules(rules []egressproxy.InjectRule, resolved policy.Resolved) []egressproxy.InjectRule {
 	allow := map[string]struct{}{}
 	for _, d := range resolved.Egress.Domains {
 		allow[strings.ToLower(d)] = struct{}{}
@@ -157,7 +168,7 @@ func (ei *EgressInjector) applicable(resolved policy.Resolved) []egressproxy.Inj
 		granted[c.Name] = struct{}{}
 	}
 	var out []egressproxy.InjectRule
-	for _, r := range ei.rules {
+	for _, r := range rules {
 		if _, ok := allow[strings.ToLower(r.Host)]; !ok {
 			continue
 		}
@@ -188,11 +199,21 @@ func (ei *EgressInjector) applicable(resolved policy.Resolved) []egressproxy.Inj
 //     sandbox HTTPS_PROXY env: the gateway address, paired with the actual bound
 //     port, since the listener may be bound to an address the daemon-side Addr()
 //     does not name literally.
-func (ei *EgressInjector) buildForSession(sessionID string, resolved policy.Resolved, rec *trace.Recorder, listen func() (net.Listener, error), sourceIP, advertiseHost string) (*sessionEgress, error) {
-	if ei == nil || len(ei.rules) == 0 {
+//
+// extraRules are per-session header injections contributed by F8.2 connections.
+// They are merged with the daemon-config rules rather than replacing them, and a
+// session with ONLY connection-derived rules still gets a proxy — otherwise a
+// connection would be defined, stored, shown to the operator, and silently do
+// nothing.
+func (ei *EgressInjector) buildForSession(sessionID string, resolved policy.Resolved, rec *trace.Recorder, listen func() (net.Listener, error), sourceIP, advertiseHost string, extraRules []egressproxy.InjectRule) (*sessionEgress, error) {
+	if ei == nil {
 		return nil, nil
 	}
-	if len(ei.applicable(resolved)) == 0 {
+	rules := append(append([]egressproxy.InjectRule(nil), ei.rules...), extraRules...)
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	if len(applicableRules(rules, resolved)) == 0 {
 		return nil, nil
 	}
 	// Guard: never advertise (hence bind) a wildcard for this credential-injecting
@@ -202,7 +223,7 @@ func (ei *EgressInjector) buildForSession(sessionID string, resolved policy.Reso
 		return nil, fmt.Errorf("egress: refusing to bind proxy to non-reachable host %q", advertiseHost)
 	}
 	proxy, err := egressproxy.NewSessionProxy(sessionID, resolved, egressproxy.SessionConfig{
-		Rules:     ei.rules,
+		Rules:     rules,
 		NeverMITM: ei.neverMITM,
 	}, ei.broker, rec, ei.upstream)
 	if err != nil {

@@ -17,6 +17,16 @@ import (
 // qaManager wires a Manager WITH a real F5.1 credInjector (env-fallback path) plus
 // the F5.7 egress injector, so the exclusion probe exercises both.
 func qaManager(t *testing.T, domains []string, grants []policy.Cred) (*Manager, *broker.Vault, *fakeRuntime) {
+	return qaManagerWithRules(t, domains, grants, []egressproxy.InjectRule{gitlabRule()})
+}
+
+// qaManagerNoRules is qaManager with NO daemon-config egress rules, so a test can
+// prove an F8.2 connection alone is enough to build the proxy.
+func qaManagerNoRules(t *testing.T, domains []string, grants []policy.Cred) (*Manager, *broker.Vault, *fakeRuntime) {
+	return qaManagerWithRules(t, domains, grants, nil)
+}
+
+func qaManagerWithRules(t *testing.T, domains []string, grants []policy.Cred, rules []egressproxy.InjectRule) (*Manager, *broker.Vault, *fakeRuntime) {
 	t.Helper()
 	vpath := filepath.Join(t.TempDir(), "vault.db")
 	key := make([]byte, 32)
@@ -29,7 +39,7 @@ func qaManager(t *testing.T, domains []string, grants []policy.Cred) (*Manager, 
 	}
 	brk := broker.NewBroker(v)
 	ei := NewEgressInjector(EgressInjectConfig{
-		Rules:    []egressproxy.InjectRule{gitlabRule()},
+		Rules:    rules,
 		Broker:   brk,
 		Upstream: &captureUpstream{},
 	})

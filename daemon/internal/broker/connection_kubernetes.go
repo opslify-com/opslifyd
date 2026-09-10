@@ -135,7 +135,6 @@ func (c *kubernetesConnection) BuildForSession(_ context.Context, sc SessionCont
 			Mode:    0o600,
 			Content: cfg,
 		}},
-		ExcludeRefs: []string{c.spec.SecretRef},
 	}
 	if err := inj.Validate(); err != nil {
 		return ConnectionInjection{}, nil, err

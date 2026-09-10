@@ -63,24 +63,16 @@ func TestHTTPConnectionGivesTheSandboxNothing(t *testing.T) {
 	}
 }
 
-// TestHTTPConnectionExcludesItsSecretFromEnvInjection pins the load-bearing half.
-// Without the exclusion the SAME credential resolved at the proxy boundary would
-// also be resolved into the sandbox environment by the F5.1 injector — placing in
-// the sandbox exactly the value the connection exists to keep out of it.
-func TestHTTPConnectionExcludesItsSecretFromEnvInjection(t *testing.T) {
+// TestHTTPConnectionDeclaresItsSecretRef pins the load-bearing half. The session
+// layer derives the environment-injection exclusion from SecretRefs, so a
+// connection that under-reports here would have the SAME credential it resolves at
+// the proxy boundary ALSO resolved into the sandbox environment by the F5.1
+// injector — placing there exactly the value the connection exists to keep out.
+func TestHTTPConnectionDeclaresItsSecretRef(t *testing.T) {
 	c, _ := testRegistry().Build(httpSpec(), nil)
-	inj, _, err := c.BuildForSession(context.Background(), SessionContext{SessionID: "s1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, ref := range inj.ExcludeRefs {
-		if ref == "gitlab-token" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("the connection's secret must be excluded from env injection; ExcludeRefs = %v", inj.ExcludeRefs)
+	refs := c.SecretRefs()
+	if len(refs) != 1 || refs[0] != "gitlab-token" {
+		t.Fatalf("SecretRefs = %v, want exactly the connection's ref", refs)
 	}
 }
 
@@ -256,14 +248,13 @@ func TestMergeRefusesConflicts(t *testing.T) {
 	if err := same.Merge(ConnectionInjection{Env: map[string]string{"X": "1"}}); err != nil {
 		t.Errorf("identical values must merge cleanly: %v", err)
 	}
-	// Exclusions accumulate rather than conflict: two connections may each need a
-	// different ref kept out of the sandbox environment.
-	acc := ConnectionInjection{ExcludeRefs: []string{"r1"}}
-	if err := acc.Merge(ConnectionInjection{ExcludeRefs: []string{"r2"}}); err != nil {
+	// Files from different connections accumulate rather than conflict.
+	acc := ConnectionInjection{Files: []InjectedFile{{Path: "a"}}}
+	if err := acc.Merge(ConnectionInjection{Files: []InjectedFile{{Path: "b"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(acc.ExcludeRefs) != 2 {
-		t.Errorf("exclusions must accumulate: %+v", acc)
+	if len(acc.Files) != 2 {
+		t.Errorf("files from different connections must accumulate: %+v", acc)
 	}
 }
 
@@ -379,16 +370,12 @@ func TestEveryRegisteredKindAnswersTheInvariant(t *testing.T) {
 					t.Fatalf("%s wrote the credential into %s", kind, f.Path)
 				}
 			}
-			// Every kind must keep its own secret out of environment injection,
-			// or the value it resolves at a boundary is also placed in the sandbox.
-			var excluded bool
-			for _, ref := range inj.ExcludeRefs {
-				if ref == "r" {
-					excluded = true
-				}
-			}
-			if !excluded {
-				t.Errorf("%s must exclude its secret from env injection; got %v", kind, inj.ExcludeRefs)
+			// Every kind must REPORT the ref it resolves, because the session layer
+			// derives the environment-injection exclusion from it. A kind that
+			// under-reports gets its credential placed in the sandbox as well.
+			refs := c.SecretRefs()
+			if len(refs) != 1 || refs[0] != "r" {
+				t.Errorf("%s SecretRefs = %v, want exactly the resolved ref", kind, refs)
 			}
 		})
 	}

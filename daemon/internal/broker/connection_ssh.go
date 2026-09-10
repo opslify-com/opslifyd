@@ -189,7 +189,6 @@ func (c *sshConnection) BuildForSession(ctx context.Context, sc SessionContext) 
 			// ProxyJump credential.
 			"SSH_AUTH_SOCK": sockPath,
 		},
-		ExcludeRefs: []string{c.spec.SecretRef},
 	}
 	if err := inj.Validate(); err != nil {
 		_ = cleanup.Close()

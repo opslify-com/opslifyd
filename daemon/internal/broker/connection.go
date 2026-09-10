@@ -32,8 +32,21 @@ type Connection interface {
 	// Name is the operator-facing connection name, unique within a scope.
 	Name() string
 	// SecretRefs are the vault refs this connection resolves. They are REFS, never
-	// values — the F8.3 consumer index reads them to refuse a delete that would
-	// break a live connection.
+	// values.
+	//
+	// Two things read this, and both matter. The F8.3 consumer index uses it to
+	// refuse a delete that would break a live connection. The session layer uses it
+	// to EXCLUDE these refs from F5.1 environment injection — because a ref this
+	// connection resolves at a boundary must not also be resolved into the sandbox
+	// environment, which would place there exactly the value the connection exists
+	// to keep out.
+	//
+	// The exclusion is DERIVED rather than declared per kind on purpose. An earlier
+	// version had each kind return its own exclusion list from BuildForSession,
+	// which was both redundant (every kind's list was its SecretRefs) and
+	// mis-ordered: the exclusion is needed before the proxy exists, and
+	// BuildForSession runs after. Deriving it means a kind cannot resolve a secret
+	// and forget to exclude it.
 	SecretRefs() []string
 	// Validate checks the connection is usable before it is stored, so a broken
 	// definition is a create-time error rather than a session-time surprise.
@@ -140,11 +153,6 @@ type ConnectionInjection struct {
 	Env map[string]string
 	// Files are written into the workspace before the sandbox starts.
 	Files []InjectedFile
-	// ExcludeRefs are secret refs that must NOT be resolved into the sandbox
-	// environment by the F5.1 env injector, because this connection resolves them
-	// at a boundary instead. Getting this wrong would place in the sandbox exactly
-	// the value the connection exists to keep out of it.
-	ExcludeRefs []string
 }
 
 // Merge folds another injection into this one, refusing conflicts rather than
@@ -169,7 +177,6 @@ func (i *ConnectionInjection) Merge(other ConnectionInjection) error {
 		}
 		i.Files = append(i.Files, f)
 	}
-	i.ExcludeRefs = append(i.ExcludeRefs, other.ExcludeRefs...)
 	return nil
 }
 
