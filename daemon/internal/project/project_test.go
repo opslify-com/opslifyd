@@ -730,3 +730,103 @@ func TestStateDirIsTightenedEvenIfItAlreadyExists(t *testing.T) {
 		}
 	}
 }
+
+// --- F8.8: editing a project's tools after creation ----------------------------
+//
+// Capabilities used to be settable only at CreateProject, so adding a tool to an
+// existing project was impossible from anywhere. These pin the replace semantics
+// the wire operation depends on.
+
+func TestSetCapabilitiesReplacesTheWholeMap(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	if _, _, err := svc.CreateProject(ProjectSpec{
+		Name:         "tripon",
+		Capabilities: map[string]string{"git": "gitlab", "iac": "terraform"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace, not merge: "iac" is absent from the new map and must be gone.
+	p, err := svc.SetCapabilities("tripon", map[string]string{"git": "gitlab", "k8s": "kubernetes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"git": "gitlab", "k8s": "kubernetes"}
+	if len(p.Capabilities) != len(want) {
+		t.Fatalf("capabilities = %v, want %v", p.Capabilities, want)
+	}
+	for k, v := range want {
+		if p.Capabilities[k] != v {
+			t.Fatalf("capabilities = %v, want %v", p.Capabilities, want)
+		}
+	}
+	if _, still := p.Capabilities["iac"]; still {
+		t.Error("iac survived a replace — SetCapabilities must not merge")
+	}
+}
+
+func TestSetCapabilitiesPersists(t *testing.T) {
+	svc, store, _ := newTestService(t)
+	if _, _, err := svc.CreateProject(ProjectSpec{Name: "tripon"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetCapabilities("tripon", map[string]string{"deploy": "argocd"}); err != nil {
+		t.Fatal(err)
+	}
+	// Read through the STORE, not the returned value: a method that reports a
+	// change it did not write is the failure this catches.
+	got, ok, err := store.LoadProject("tripon")
+	if err != nil || !ok {
+		t.Fatalf("LoadProject: %v ok=%v", err, ok)
+	}
+	if got.Capabilities["deploy"] != "argocd" {
+		t.Fatalf("persisted capabilities = %v, want deploy=argocd", got.Capabilities)
+	}
+}
+
+func TestSetCapabilitiesClearsWithAnEmptyMap(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	if _, _, err := svc.CreateProject(ProjectSpec{
+		Name: "tripon", Capabilities: map[string]string{"git": "gitlab"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := svc.SetCapabilities("tripon", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Capabilities) != 0 {
+		t.Fatalf("capabilities = %v, want none — removing the last tool must be possible",
+			p.Capabilities)
+	}
+}
+
+func TestSetCapabilitiesValidates(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	if _, _, err := svc.CreateProject(ProjectSpec{Name: "tripon"}); err != nil {
+		t.Fatal(err)
+	}
+	// A capability map is rendered into traces and agent context, so an
+	// unvalidated value is an injection surface. The create path checks it; this
+	// path must check it identically or it becomes the way around that check.
+	for _, bad := range []map[string]string{
+		{"git": "gitlab; rm -rf /"},
+		{"ro le": "gitlab"},
+		{"git": ""},
+		{"": "gitlab"},
+		{"git": "../../etc/passwd"},
+		{"git": "a\nb"},
+	} {
+		if _, err := svc.SetCapabilities("tripon", bad); err == nil {
+			t.Errorf("SetCapabilities(%v) was accepted; it must validate as create does", bad)
+		}
+	}
+}
+
+func TestSetCapabilitiesOnAnUnknownProject(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	_, err := svc.SetCapabilities("nope", map[string]string{"git": "gitlab"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}

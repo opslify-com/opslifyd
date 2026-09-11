@@ -19,7 +19,7 @@ func projectCmd() *cobra.Command {
 		Use:   "project",
 		Short: "Manage projects (create, ls, show)",
 	}
-	cmd.AddCommand(projectCreateCmd(), projectLsCmd(), projectShowCmd())
+	cmd.AddCommand(projectCreateCmd(), projectLsCmd(), projectShowCmd(), projectToolsCmd())
 	return cmd
 }
 
@@ -67,6 +67,131 @@ func projectCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&policyFile, "policy", "", "absolute path to the project's policy layer (may only NARROW the daemon policy)")
 	cmd.Flags().StringSliceVar(&envs, "env", nil, "environment to create (repeatable; default: one named 'default')")
 	cmd.Flags().StringSliceVar(&caps, "capability", nil, "capability as role=tool (repeatable), e.g. git=gitlab, iac=terraform")
+	return cmd
+}
+
+// projectToolsCmd edits a project's role → tool map after creation.
+//
+// The map was previously settable only at `project create`, which meant adding a
+// tool to an existing project was impossible from anywhere — CLI or cockpit. The
+// wire operation is a whole-map PUT; add and rm read the current map, change one
+// entry and send the result, so the sub-commands people actually want exist
+// without a merge endpoint behind them.
+func projectToolsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "tools",
+		Short: "Manage a project's role → tool map (ls, add, rm)",
+	}
+	cmd.AddCommand(projectToolsLsCmd(), projectToolsAddCmd(), projectToolsRmCmd())
+	return cmd
+}
+
+func projectToolsLsCmd() *cobra.Command {
+	var socket string
+	cmd := &cobra.Command{
+		Use:   "ls <project>",
+		Short: "List a project's capabilities",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := newClient(socket).getProject(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if len(p.Capabilities) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no capabilities recorded")
+				return nil
+			}
+			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "ROLE\tTOOL")
+			roles := make([]string, 0, len(p.Capabilities))
+			for r := range p.Capabilities {
+				roles = append(roles, r)
+			}
+			sort.Strings(roles)
+			for _, r := range roles {
+				fmt.Fprintf(tw, "%s\t%s\n", r, p.Capabilities[r])
+			}
+			return tw.Flush()
+		},
+	}
+	cmd.Flags().StringVar(&socket, "socket", "", "daemon socket path")
+	return cmd
+}
+
+func projectToolsAddCmd() *cobra.Command {
+	var socket string
+	cmd := &cobra.Command{
+		Use:   "add <project> <role=tool>...",
+		Short: "Add or replace capabilities on a project",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			add, err := parseCapabilities(args[1:])
+			if err != nil {
+				return err
+			}
+			c := newClient(socket)
+			p, err := c.getProject(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			merged := make(map[string]string, len(p.Capabilities)+len(add))
+			for k, v := range p.Capabilities {
+				merged[k] = v
+			}
+			for k, v := range add {
+				merged[k] = v
+			}
+			out, err := c.setCapabilities(cmd.Context(), args[0], merged)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s capabilities: %s\n", out.ID, orDash(formatCapabilities(out.Capabilities)))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&socket, "socket", "", "daemon socket path")
+	return cmd
+}
+
+func projectToolsRmCmd() *cobra.Command {
+	var socket string
+	cmd := &cobra.Command{
+		Use:   "rm <project> <role>...",
+		Short: "Remove capabilities from a project",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c := newClient(socket)
+			p, err := c.getProject(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			left := make(map[string]string, len(p.Capabilities))
+			for k, v := range p.Capabilities {
+				left[k] = v
+			}
+			var missing []string
+			for _, role := range args[1:] {
+				if _, ok := left[role]; !ok {
+					missing = append(missing, role)
+					continue
+				}
+				delete(left, role)
+			}
+			// Naming a role that is not there is a typo, not a no-op: silently
+			// succeeding would leave the operator believing they removed something.
+			if len(missing) > 0 {
+				return fmt.Errorf("project %q has no capability for role(s): %s",
+					args[0], strings.Join(missing, ", "))
+			}
+			out, err := c.setCapabilities(cmd.Context(), args[0], left)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s capabilities: %s\n", out.ID, orDash(formatCapabilities(out.Capabilities)))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&socket, "socket", "", "daemon socket path")
 	return cmd
 }
 

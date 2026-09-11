@@ -126,88 +126,75 @@ label.fld .hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-
 .agentpill.none { border-color: var(--border); background: var(--panel2); }
 .agentpill.none .nm { color: var(--muted); }
 
-.body { flex: 1; display: grid; grid-template-columns: 50px 288px minmax(0, 1fr) 306px; min-height: 0; }
-.body.nochat { grid-template-columns: 50px 288px minmax(0, 1fr); }
+.body { flex: 1; display: grid; grid-template-columns: 252px minmax(0, 1fr) 312px; min-height: 0; }
 
-/* ----------------------------------------------------------------- rail --- */
-
-.rail {
-  border-right: 1px solid var(--border); background: var(--panel);
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 9px 0; overflow-y: auto;
-}
-.railbtn {
-  width: 32px; height: 32px; border-radius: 6px; border: 1px solid var(--border);
-  background: var(--panel2); color: var(--muted); display: flex; align-items: center;
-  justify-content: center; font-family: var(--mono); font-size: 11px; cursor: pointer;
-  flex: none; padding: 0;
-}
-.railbtn:hover { border-color: var(--accent); color: var(--accent); }
-.railbtn.on { border-color: var(--accent); color: var(--accent); background: #223052; }
-.railbtn.add { border-style: dashed; font-size: 15px; }
+/* The project switcher lives in the header crumb now that OptionC2 has no rail.
+ * A select rather than a list: the number of projects is small, and spending a
+ * 50px column on it costs more than it returns. */
+.projsel { background: transparent; border: 1px solid transparent; color: var(--fg);
+  font-family: var(--mono); font-size: 11.5px; padding: 1px 4px; width: auto;
+  cursor: pointer; }
+.projsel:hover { border-color: var(--border); background: var(--panel2); }
+.projsel:focus { border-color: var(--accent); background: var(--panel2); }
+.hdr .addproj { width: 17px; height: 17px; padding: 0; font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; border-style: dashed; }
 
 /* -------------------------------------------------------------- sidebar --- */
+/*
+ * OptionC2's explorer: a flat, dense list with section headers rather than
+ * accordions. Every section header carries a live count and a + that adds one of
+ * whatever the section holds, so adding a thing is where the things already are.
+ */
 
 .side { border-right: 1px solid var(--border); background: var(--panel);
-  display: flex; flex-direction: column; overflow-y: auto; }
-.grp { border-bottom: 1px solid var(--border); flex: none; }
-.gh { display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  cursor: pointer; user-select: none; }
-.gh .cv { width: 9px; color: var(--muted); font-size: 8px; }
-.gh .t { font-size: 10.5px; font-weight: 600; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .06em; }
-.gh .n { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--muted); }
-.gh:hover .t { color: var(--fg); }
-.gh .n:hover { color: var(--accent); }
-.gb { padding: 0 12px 11px; }
-.grp.shut .gb { display: none; }
-.grp.shut .gh { padding-bottom: 8px; }
+  display: flex; flex-direction: column; overflow-y: auto; padding: 6px 0; }
 
-.envrow { display: flex; gap: 6px; flex-wrap: wrap; }
-.env { flex: 1 1 auto; min-width: 62px; padding: 5px 6px; text-align: center;
+.esec { padding: 8px 12px 3px; font-size: 9.5px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .07em; font-weight: 600;
+  display: flex; align-items: center; gap: 6px; }
+.esec .n { margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0; }
+.esec .add { border: 1px solid var(--border); background: var(--panel2); color: var(--muted);
+  width: 15px; height: 15px; border-radius: 3px; font-size: 12px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  padding: 0; flex: none; }
+.esec .add:hover { border-color: var(--accent); color: var(--accent); background: #223052; }
+.esec .more { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0;
+  color: var(--muted); cursor: pointer; }
+.esec .more:hover { color: var(--accent); }
+
+.row { display: flex; align-items: center; gap: 7px; padding: 3.5px 12px;
+  font-size: 12px; color: var(--muted); cursor: pointer; }
+.row:hover { background: #1b2029; color: var(--fg); }
+.row.on { background: #223052; color: var(--fg); }
+.row .ind { width: 11px; font-size: 9px; flex: none; }
+.row .nm { font-family: var(--mono); font-size: 11.5px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.row .rt { margin-left: auto; font-family: var(--mono); font-size: 9.5px; flex: none; }
+.row .x { margin-left: auto; font-size: 10px; color: var(--muted); visibility: hidden; }
+.row:hover .x { visibility: visible; }
+.row .x:hover { color: var(--danger); }
+.row.none { color: var(--muted); font-style: italic; cursor: default; font-size: 11px; }
+.row.none:hover { background: none; color: var(--muted); }
+
+.kd { font-family: var(--mono); font-size: 9px; padding: 0 4px;
+  border: 1px solid var(--border); border-radius: 2px; flex: none;
+  color: var(--muted); min-width: 34px; text-align: center; }
+.kd.k8s, .kd.kubernetes { color: var(--k8s); border-color: #25455a; }
+.kd.ssh { color: var(--ssh); border-color: #3d2f5a; }
+.kd.aws, .kd.azure, .kd.gcp, .kd.cloud { color: var(--cloud); border-color: #5a3d25; }
+.kd.http { color: #7fb2ff; border-color: #2a3a5a; }
+.kd.db, .kd.postgres { color: var(--db); border-color: #25503a; }
+
+.envrow { display: flex; gap: 5px; flex-wrap: wrap; padding: 2px 12px 6px; }
+.env { flex: 1 1 auto; min-width: 56px; padding: 4px 6px; text-align: center;
   border: 1px solid var(--border); border-radius: 5px; background: var(--panel2);
-  color: var(--muted); font-size: 11.5px; cursor: pointer; }
+  color: var(--muted); font-size: 11px; cursor: pointer; }
 .env:hover { border-color: var(--accent); color: var(--accent); }
 .env.on { border-color: var(--warn); color: var(--warn); }
 .env.prod.on { border-color: var(--danger); color: var(--danger); }
 
-/* A sandbox card states isolation facts, not a name and a status light: tier,
- * caps, egress and TTL are what say how contained the thing actually is. */
-.sb { border: 1px solid var(--border); border-radius: 6px; background: var(--panel2);
-  padding: 8px 9px; margin-bottom: 7px; }
-.sb .top { display: flex; align-items: center; gap: 7px; }
-.sb .sid { font-family: var(--mono); font-size: 11.5px; color: var(--accent); }
-.sb .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin-top: 7px; }
-.sb .mrow { font-size: 10.5px; color: var(--muted); }
-.sb .mrow b { color: var(--fg); font-family: var(--mono); font-weight: 500; }
-.sb .iso { margin-top: 7px; font-size: 10px; color: var(--muted); line-height: 1.4; }
-.sb .acts { display: flex; gap: 5px; margin-top: 8px; }
-
-.cn { display: flex; align-items: center; gap: 7px; padding: 4px 0; font-size: 11.5px; }
-.cn .kd { font-family: var(--mono); font-size: 9px; padding: 1px 4px;
-  border: 1px solid var(--border); border-radius: 2px; color: var(--muted);
-  flex: none; width: 54px; text-align: center; }
-.cn .kd.k8s { color: var(--k8s); border-color: #25455a; }
-.cn .kd.ssh { color: var(--ssh); border-color: #3d2f5a; }
-.cn .kd.aws, .cn .kd.azure, .cn .kd.gcp { color: var(--cloud); border-color: #5a3d25; }
-.cn .kd.http { color: #7fb2ff; border-color: #2a3a5a; }
-.cn .kd.db, .cn .kd.postgres { color: var(--db); border-color: #25503a; }
-.cn .nm { font-family: var(--mono); font-size: 11px; flex: 1; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-/* "blind" is the product's whole claim, stated per row: the daemon holds the
- * value and the sandbox never sees it. */
-.cn .se { font-size: 9.5px; color: var(--ok); }
-
-.chips { display: flex; flex-wrap: wrap; gap: 5px; }
-.chip { display: flex; align-items: center; gap: 5px; padding: 3px 7px;
-  border: 1px solid var(--border); border-radius: 5px; background: var(--panel2); font-size: 11px; }
-
-.sk { display: flex; align-items: center; gap: 7px; padding: 4px 0; font-size: 11.5px; }
-.sk .f { font-family: var(--mono); font-size: 10.5px; color: var(--skill); flex: 1;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sk .ln { font-family: var(--mono); font-size: 9.5px; color: var(--muted); }
-
-.tree { font-family: var(--mono); font-size: 10.5px; color: var(--muted); line-height: 1.7; }
+.tree { font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  line-height: 1.7; padding: 0 12px; }
 
 /* --------------------------------------------------------------- centre --- */
 

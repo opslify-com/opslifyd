@@ -259,6 +259,40 @@ func (c *client) addEnvironment(ctx context.Context, projectID string, req addEn
 	return out, nil
 }
 
+// setCapabilities PUTs the WHOLE role → tool map to
+// /v1/projects/{id}/capabilities. Replace, not merge — see project.SetCapabilities.
+func (c *client) setCapabilities(ctx context.Context, projectID string, caps map[string]string) (projectView, error) {
+	var out projectView
+	// A nil map marshals to null, which the daemon reads as "clear them". That is
+	// the intended meaning of `project tools rm` taking the last one away, so it is
+	// sent as-is rather than coerced to {}.
+	body, _ := json.Marshal(struct {
+		Capabilities map[string]string `json:"capabilities"`
+	}{Capabilities: caps})
+	seg, err := pathSeg("project id", projectID)
+	if err != nil {
+		return out, err
+	}
+	u := c.baseURL + "/v1/projects/" + seg + "/capabilities"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
 // listEnvironments GETs /v1/projects/{id}/environments.
 func (c *client) listEnvironments(ctx context.Context, projectID string) ([]environmentView, error) {
 	seg, err := pathSeg("project id", projectID)

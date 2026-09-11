@@ -211,6 +211,42 @@ func (s *Service) CreateProject(spec ProjectSpec) (Project, []Environment, error
 	return p, envs, nil
 }
 
+// SetCapabilities replaces a project's role → tool map.
+//
+// REPLACE, not merge. A merge endpoint needs a second one to remove, and the two
+// together let a caller reach a state neither of them describes; sending the
+// whole desired map makes the result a function of the request alone, which is
+// what makes retrying one safe.
+//
+// Capabilities are not a guardrail — they say which tools a project uses, and
+// F8.4 routes skill packs off them while F8.2 binds connections to them. Widening
+// them does not widen the policy, so this is not a Change: the gates and egress
+// that a tool implies are separate edits, and those ARE classified.
+func (s *Service) SetCapabilities(projectID string, caps map[string]string) (Project, error) {
+	if projectID == "" {
+		projectID = DefaultProjectID
+	}
+	clean, err := validateCapabilities(caps)
+	if err != nil {
+		return Project{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok, err := s.store.LoadProject(projectID)
+	if err != nil {
+		return Project{}, err
+	}
+	if !ok {
+		return Project{}, fmt.Errorf("%w: project %q", ErrNotFound, projectID)
+	}
+	p.Capabilities = clean
+	if err := s.store.SaveProject(p); err != nil {
+		return Project{}, err
+	}
+	s.log.Info("project capabilities set", "project", p.ID, "capabilities", len(clean))
+	return p, nil
+}
+
 // AddEnvironment validates and persists one environment inside an existing
 // project. The name must be UNIQUE within that project: two environments with the
 // same name would be two risk boundaries with one identity, which is exactly the

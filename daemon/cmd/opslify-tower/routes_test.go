@@ -101,6 +101,7 @@ func TestAllowlistedRoutesAreAdmitted(t *testing.T) {
 		// surface read-only — see the note on towerRoutes.
 		{http.MethodPost, "/v1/projects"},
 		{http.MethodPost, "/v1/projects/tripon/environments"},
+		{http.MethodPut, "/v1/projects/tripon/capabilities"},
 		{http.MethodDelete, "/v1/projects/tripon"},
 		{http.MethodDelete, "/v1/projects/tripon/environments/staging"},
 		{http.MethodPost, "/v1/connections"},
@@ -428,6 +429,7 @@ func TestEveryAllowlistedMutationIsOnTheDaemon(t *testing.T) {
 	daemonServes := map[string]bool{
 		"POST /v1/projects":                    true,
 		"POST /v1/projects/*/environments":     true,
+		"PUT /v1/projects/*/capabilities":      true,
 		"DELETE /v1/projects/*":                true,
 		"DELETE /v1/projects/*/environments/*": true,
 		"POST /v1/connections":                 true,
@@ -451,5 +453,81 @@ func TestEveryAllowlistedMutationIsOnTheDaemon(t *testing.T) {
 		if !daemonServes[key] {
 			t.Errorf("the cockpit may call %s but the daemon does not serve it — dead button", key)
 		}
+	}
+}
+
+// TestEveryClickHookIsWired: every data-* attribute the SPA renders as a click
+// target must appear in the delegated listener's selector, and every selector
+// entry must be acted on.
+//
+// This is here because the + buttons shipped dead once already: the sidebar was
+// rewritten to OptionC2's explorer, the handlers were consolidated behind one
+// data-add dispatcher, and two screens kept emitting the old data-addconn /
+// data-addsecret attributes that nothing listened for any more. The page looked
+// finished and two of its buttons did nothing.
+func TestEveryClickHookIsWired(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+
+	sel := regexp.MustCompile(`(?s)ev\.target\.closest\((.*?)\);`).FindStringSubmatch(js)
+	if sel == nil {
+		t.Fatal("could not find the delegated click listener's selector")
+	}
+	inSelector := map[string]bool{}
+	for _, m := range regexp.MustCompile(`data-([a-z]+)\]`).FindAllStringSubmatch(sel[1], -1) {
+		inSelector[m[1]] = true
+	}
+
+	acted := map[string]bool{}
+	for _, m := range regexp.MustCompile(`a\('data-([a-z]+)'\)`).FindAllStringSubmatch(js, -1) {
+		acted[m[1]] = true
+	}
+
+	// Attributes read off an element rather than clicked. Listed explicitly so
+	// adding one is a decision, not an accident.
+	readOnly := map[string]bool{"chg": true, "wizref": true, "wizval": true, "tab": true}
+
+	emitted := map[string]bool{}
+	for _, m := range regexp.MustCompile(`data-([a-z]+)=`).FindAllStringSubmatch(js, -1) {
+		emitted[m[1]] = true
+	}
+
+	for name := range emitted {
+		if readOnly[name] || inSelector[name] {
+			continue
+		}
+		t.Errorf("the SPA renders data-%s but the click listener does not select it — dead control", name)
+	}
+	for name := range inSelector {
+		if !acted[name] && name != "tab" {
+			t.Errorf("data-%s is in the selector but nothing acts on it", name)
+		}
+	}
+}
+
+// TestTheExplorerOffersAnAddForEverySectionThatHasOne: the sections an operator
+// creates things in must each carry a +, and the dispatcher must know them all.
+func TestTheExplorerOffersAnAddForEverySectionThatHasOne(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+	for _, kind := range []string{"env", "tool", "conn", "secret", "session"} {
+		if !strings.Contains(js, `'`+kind+`'`) && !strings.Contains(js, kind+":") {
+			t.Errorf("the add dispatcher has no entry for %q", kind)
+		}
+		if !strings.Contains(js, `data-add="'+esc(addAction)`) &&
+			!strings.Contains(js, "esc(addAction)") {
+			t.Fatal("the section header does not render a + at all")
+		}
+	}
+	// Agents deliberately have no +: registering one runs a command on the host.
+	if regexp.MustCompile(`esec\('Agents', [^,]+, '`).MatchString(js) {
+		t.Error("the Agents section offers a + — registering an agent runs a command " +
+			"on the host and must stay on the CLI")
 	}
 }

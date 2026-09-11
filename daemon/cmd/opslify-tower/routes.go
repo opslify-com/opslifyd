@@ -86,6 +86,10 @@ var towerRoutes = []towerRoute{
 	// and never make one. A read-only console is not an operator surface.
 	{http.MethodPost, "/v1/projects", "opslify project create <name>", entitle.FeatureCockpit},
 	{http.MethodPost, "/v1/projects/*/environments", "opslify project env add <id> <env>", entitle.FeatureCockpit},
+	// Tools are the project's role → tool map. Editing it is not a policy change:
+	// it records which tools a project uses, and the gates and egress a tool
+	// implies are separate edits that ARE classified.
+	{http.MethodPut, "/v1/projects/*/capabilities", "opslify project tools add|rm <id>", entitle.FeatureCockpit},
 	{http.MethodDelete, "/v1/projects/*", "opslify project rm <id>", entitle.FeatureCockpit},
 	{http.MethodDelete, "/v1/projects/*/environments/*", "opslify project env rm <id> <env>", entitle.FeatureCockpit},
 	{http.MethodPost, "/v1/connections", "opslify connection add", entitle.FeatureConnections},

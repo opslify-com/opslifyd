@@ -86,7 +86,6 @@ const S = {
   health: null,
   tabs: [],          // [{id, label, kind, arg}]
   activeTab: null,
-  shut: {},          // sidebar accordion state, by group id
   drawerShut: false,
   loadError: null,
 };
@@ -187,11 +186,18 @@ function render() {
 
 function renderHeader() {
   const p = project(); const e = environment();
-  $('crumbs').innerHTML = p
-    ? '<span class="crumb">' + esc(p.name) + '</span><span class="tag">/</span>' +
+  // OptionC2 has no project rail, so the crumb IS the switcher. The + beside it
+  // is the only way into the wizard now, which makes it load-bearing rather than
+  // decorative.
+  $('crumbs').innerHTML = (S.projects.length
+    ? '<select class="projsel" id="projsel">' + S.projects.map((x) =>
+        '<option value="' + esc(x.id) + '"' + (x.id === S.projectID ? ' selected' : '') + '>' +
+        esc(x.name) + '</option>').join('') + '</select>'
+    : '<span class="tag">no project yet</span>') +
+    '<button class="addproj" data-wizard="1" title="new project">+</button>' +
+    (p ? '<span class="tag">/</span>' +
       '<span class="crumb" style="color:var(--' + (e && e.production ? 'danger' : 'warn') + ');">' +
-      esc(e ? e.name : '—') + '</span>'
-    : '<span class="tag">no project yet</span>';
+      esc(e ? e.name : '—') + '</span>' : '');
 
   const a = S.boundAgent;
   const pill = $('agentpill');
@@ -220,31 +226,26 @@ function renderHeader() {
   }
 }
 
-function renderRail() {
-  const rail = $('rail');
-  rail.innerHTML = S.projects.map((p) => {
-    const initials = p.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 2).toUpperCase() || '??';
-    return '<button class="railbtn' + (p.id === S.projectID ? ' on' : '') +
-      '" data-proj="' + esc(p.id) + '" title="' + esc(p.name) + '">' + esc(initials) + '</button>';
-  }).join('') + '<button class="railbtn add" data-wizard="1" title="new project">+</button>';
+// esec renders one explorer section header: a label, a live count, and a + that
+// adds one of whatever the section holds. The + is the whole point — adding a
+// connection belongs where the connections are, not behind a screen you have to
+// know exists.
+function esec(title, count, addAction, moreTab) {
+  return '<div class="esec"><span>' + esc(title) + '</span>' +
+    (count != null ? '<span class="n">' + esc(String(count)) + '</span>' : '<span class="n"></span>') +
+    (moreTab ? '<span class="more" data-open="' + esc(moreTab) + '">all →</span>' : '') +
+    (addAction ? '<button class="add" data-add="' + esc(addAction) +
+      '" title="add">+</button>' : '') +
+    '</div>';
 }
 
-function group(id, title, count, body, action) {
-  const shut = S.shut[id] ? ' shut' : '';
-  return '<div class="grp' + shut + '" data-grp="' + id + '">' +
-    '<div class="gh" data-toggle="' + id + '">' +
-    '<span class="cv">' + (S.shut[id] ? '▸' : '▾') + '</span>' +
-    '<span class="t">' + esc(title) + '</span>' +
-    '<span class="n">' + (count != null ? esc(String(count)) : '') +
-    (action ? ' · <a href="#" data-open="' + esc(action[1]) + '">' + esc(action[0]) + ' →</a>' : '') +
-    '</span></div><div class="gb">' + body + '</div></div>';
-}
+const noneRow = (what) => '<div class="row none"><span class="nm">' + esc(what) + '</span></div>';
 
 function renderSide() {
   const p = project();
   if (!p) {
     $('side').innerHTML = '<div class="empty"><h3>No project yet</h3>' +
-      'A project is the unit everything else hangs off — environments, ' +
+      'A project is the unit everything else hangs off — environments, tools, ' +
       'connections, policy and changes.' +
       '<div style="margin-top:14px;"><button class="primary lg" data-wizard="1">' +
       'Create a project</button></div>' +
@@ -253,67 +254,84 @@ function renderSide() {
   }
 
   const envs = p.environments || [];
-  const envBody = '<div class="envrow">' + envs.map((e) =>
-    '<div class="env' + (e.id === S.envID ? ' on' : '') + (e.production ? ' prod' : '') +
-    '" data-env="' + esc(e.id) + '">' + esc(e.name) + '</div>').join('') +
-    '<div class="env" data-addenv="1" title="add an environment">+</div></div>';
-
   const live = S.sessions.filter(inScope);
-  const sbBody = live.length ? live.map((s) =>
-    '<div class="sb"><div class="top">' +
-    '<span class="dot' + (s.state === 'running' ? '' : ' off') + '"></span>' +
-    '<span class="sid">' + esc(short(s.id, 8)) + '</span>' +
-    '<span class="badge">' + esc(s.tier || '—') + '</span>' +
-    '<span class="spacer"></span><span class="tag" style="font-size:10px;">' +
-    esc(s.ttl || fmtAge(s.started)) + '</span></div>' +
-    '<div class="meta">' +
-    '<div class="mrow">mode <b>' + esc(s.mode || '—') + '</b></div>' +
-    '<div class="mrow">state <b>' + esc(s.state || '—') + '</b></div>' +
-    '</div>' +
-    '<div class="iso">' + esc(s.isolation || 'read-only rootfs · rootless · caps dropped') + '</div>' +
-    '<div class="acts"><button class="sm" data-killsession="' + esc(s.id) + '">Kill</button></div>' +
-    '</div>').join('')
-    : '<p class="tag" style="margin:0;">none running</p>';
-
   const conns = S.connections.filter(inScope);
-  const cnBody = conns.length ? conns.map((c) =>
-    '<div class="cn"><span class="kd ' + esc(c.kind) + '">' + esc(c.kind) + '</span>' +
-    '<span class="nm" title="' + esc(c.name) + '">' + esc(c.name) + '</span>' +
-    '<span class="se">blind</span></div>').join('')
-    : '<p class="tag" style="margin:0;">none bound</p>';
-
   const pending = S.changes.filter((c) => inScope(c) && c.status === 'awaiting_approval');
+  const caps = p.capabilities || {};
+  const roles = Object.keys(caps).sort();
 
-  $('side').innerHTML =
-    group('env', 'Environment', envs.length, envBody) +
-    group('sandbox', 'Live sandbox', live.length, sbBody, ['all', 'sandboxes']) +
-    group('conn', 'Connections', conns.length, cnBody, ['manage', 'connections']) +
-    group('chg', 'Changes', pending.length + ' open', pending.length
-      ? pending.map((c) => '<div class="sk"><span class="f" style="color:var(--warn)">' +
-          esc(short(c.id, 22)) + '</span><button class="sm" data-open="change:' + esc(c.id) +
-          '">open</button></div>').join('')
-      : '<p class="tag" style="margin:0;">nothing awaiting you</p>', ['all', 'changes']) +
-    group('sec', 'Secrets', S.secrets.length,
-      S.secrets.length
-        ? S.secrets.map((s) => '<div class="sk"><span class="f">' + esc(s.ref) +
-            '</span><span class="ln">' + esc(s.provider || 'ref') + '</span></div>').join('') +
-          '<div style="margin-top:6px;font-size:10px;color:var(--muted);line-height:1.45;">' +
-          'The daemon holds the values. No route returns one.</div>'
-        : '<p class="tag" style="margin:0;">none stored</p>', ['manage', 'secrets']) +
-    group('pol', 'Policy', S.policy ? short(S.policy.hash, 8) : '—',
-      S.policy
-        ? (S.policy.layers || []).map((l) => '<div class="sk"><span class="f" style="color:' +
-            (l.editable ? 'var(--accent)' : 'var(--muted)') + '">' + esc(l.layer) + '</span>' +
-            '<span class="ln">' + (l.editable ? 'editable' : 'locked') + '</span></div>').join('')
-        : '<p class="tag" style="margin:0;">unavailable</p>', ['edit', 'policy']) +
-    group('agent', 'Agents', S.agents.length,
-      S.agents.length
-        ? S.agents.map((a) => '<div class="sk"><span class="f">' + esc(a.name) + '</span>' +
-            '<span class="ln">' + esc(a.locality || 'unknown') + '</span></div>').join('')
-        : '<p class="tag" style="margin:0;">none registered</p>' +
-          '<div style="margin-top:6px;font-size:10px;color:var(--muted);line-height:1.45;">' +
-          'Registering an agent runs its command, so it stays on the CLI.</div>',
-      ['all', 'agents']);
+  let html = '';
+
+  // --- environments -----------------------------------------------------------
+  html += esec('Environments', envs.length, 'env');
+  html += '<div class="envrow">' + envs.map((e) =>
+    '<div class="env' + (e.id === S.envID ? ' on' : '') + (e.production ? ' prod' : '') +
+    '" data-env="' + esc(e.id) + '" title="' + (e.production ? 'production' : 'non-production') +
+    '">' + esc(e.name) + '</div>').join('') + '</div>';
+
+  // --- tools ------------------------------------------------------------------
+  // Tools are the project's role → tool map. Until F8.8 there was no way to edit
+  // one after `project create`, from any surface.
+  html += esec('Tools', roles.length, 'tool', 'tools');
+  html += roles.length ? roles.map((r) =>
+    '<div class="row" data-open="tools"><span class="kd">' + esc(r) + '</span>' +
+    '<span class="nm">' + esc(caps[r]) + '</span>' +
+    '<span class="x" data-rmtool="' + esc(r) + '" title="remove">✕</span></div>').join('')
+    : noneRow('no tools recorded');
+
+  // --- sandboxes --------------------------------------------------------------
+  html += esec('Sandboxes', live.length ? live.length + ' live' : 0, 'session', 'sandboxes');
+  html += live.length ? live.map((sx) =>
+    '<div class="row" data-open="sandboxes">' +
+    '<span class="dot' + (sx.state === 'running' ? '' : ' off') + '"></span>' +
+    '<span class="nm">' + esc(short(sx.id, 8)) + '</span>' +
+    '<span class="rt" style="color:var(--db);">' + esc(sx.tier || '—') + '</span></div>').join('')
+    : noneRow('none running');
+
+  // --- connections ------------------------------------------------------------
+  html += esec('Connections', conns.length, 'conn', 'connections');
+  html += conns.length ? conns.map((c) =>
+    '<div class="row" data-open="connections"><span class="kd ' + esc(c.kind) + '">' +
+    esc(c.kind) + '</span><span class="nm" title="' + esc(c.name) + '">' + esc(c.name) + '</span>' +
+    '<span class="x" data-rmconn="' + esc(c.name) + '" title="remove">✕</span></div>').join('')
+    : noneRow('none bound');
+
+  // --- secrets ----------------------------------------------------------------
+  html += esec('Secrets', S.secrets.length, 'secret', 'secrets');
+  html += S.secrets.length ? S.secrets.map((x) =>
+    '<div class="row" data-open="secrets"><span class="kd">ref</span>' +
+    '<span class="nm">' + esc(x.ref) + '</span>' +
+    '<span class="rt">' + esc(x.provider || '') + '</span></div>').join('')
+    : noneRow('none stored');
+
+  // --- policy -----------------------------------------------------------------
+  html += esec('Policy', S.policy ? short(S.policy.hash, 8) : null, 'policy', 'policy');
+  html += S.policy ? (S.policy.layers || []).map((l) =>
+    '<div class="row" data-open="policy"><span class="ind">' + (l.editable ? '✎' : '🔒') + '</span>' +
+    '<span class="nm" style="color:' + (l.editable ? 'var(--accent)' : 'var(--muted)') + '">' +
+    esc(l.layer) + '</span><span class="rt">' + (l.editable ? 'editable' : 'locked') +
+    '</span></div>').join('') : noneRow('unavailable');
+
+  // --- changes ----------------------------------------------------------------
+  html += esec('Changes', pending.length ? pending.length + ' open' : 0, null, 'changes');
+  html += pending.length ? pending.map((c) =>
+    '<div class="row" data-open="change:' + esc(c.id) + '">' +
+    '<span class="dot warn"></span><span class="nm">' + esc(short(c.id, 18)) + '</span>' +
+    '<span class="rt" style="color:var(--warn);">approve</span></div>').join('')
+    : noneRow('nothing awaiting you');
+
+  // --- agents -----------------------------------------------------------------
+  // No + here: registering an agent runs its command on the host, so it is the
+  // one thing on this sidebar the cockpit deliberately cannot do.
+  html += esec('Agents', S.agents.length, null, 'agents');
+  html += S.agents.length ? S.agents.map((a) =>
+    '<div class="row' + (S.boundAgent && S.boundAgent.name === a.name ? ' on' : '') +
+    '" data-open="agents"><span class="dot' + (a.locality === 'local' ? '' : ' warn') + '"></span>' +
+    '<span class="nm">' + esc(a.name) + '</span>' +
+    '<span class="rt">' + esc(a.locality || 'unknown') + '</span></div>').join('')
+    : noneRow('none — opslify agent add');
+
+  $('side').innerHTML = html;
 }
 
 function renderTabs() {
@@ -428,7 +446,7 @@ function emptyState(title, body, cli, action) {
 SCREENS.sandboxes = () => {
   const rows = S.sessions.filter(inScope);
   return screenHead('sandboxes', [rows.length + ' in scope'],
-    '<button class="primary" data-newsession="1">New sandbox</button>') +
+    '<button class="primary" data-add="session">New sandbox</button>') +
     '<div class="scroll">' + (rows.length
       ? '<table><thead><tr><th>id</th><th>state</th><th>tier</th><th>mode</th>' +
         '<th>scope</th><th>ttl</th><th></th></tr></thead><tbody>' +
@@ -523,7 +541,7 @@ SCREENS.connections = () => {
   const rows = S.connections.filter(inScope);
   const consumersFor = (ref) => S.consumers.filter((c) => c.secret_ref === ref).length;
   return screenHead('connections', [rows.length + ' in scope'],
-    '<button class="primary" data-addconn="1">Add connection</button>') +
+    '<button class="primary" data-add="conn">Add connection</button>') +
     '<div class="capbar">a connection names a credential by <b>ref</b> · the daemon ' +
     'injects it at the egress proxy · <b>no value reaches the sandbox or this page</b></div>' +
     '<div class="scroll">' + (rows.length
@@ -541,13 +559,13 @@ SCREENS.connections = () => {
           'A connection binds a stored credential to a kind (http, kubernetes, ssh) ' +
           'and a set of hosts. The sandbox reaches the host; the daemon holds the value.',
           'opslify connection add --name <n> --kind http --secret-ref <ref>',
-          '<button class="primary lg" data-addconn="1">Add a connection</button>')) + '</div>';
+          '<button class="primary lg" data-add="conn">Add a connection</button>')) + '</div>';
 };
 
 SCREENS.secrets = () => {
   const rows = S.secrets;
   return screenHead('secrets', [rows.length + ' stored'],
-    '<button class="primary" data-addsecret="1">Store a secret</button>') +
+    '<button class="primary" data-add="secret">Store a secret</button>') +
     '<div class="capbar">Values are never shown here — this page holds <b>refs and ' +
     'metadata only</b>, no daemon route returns a value, and deletion and rotation ' +
     'are CLI-only</div>' +
@@ -571,7 +589,7 @@ SCREENS.secrets = () => {
           'A secret is stored once, encrypted under the daemon\'s vault key, and ' +
           'referenced by name forever after. Nothing reads it back out.',
           'opslify secrets add <ref> --provider <p>',
-          '<button class="primary lg" data-addsecret="1">Store a secret</button>')) + '</div>';
+          '<button class="primary lg" data-add="secret">Store a secret</button>')) + '</div>';
 };
 
 SCREENS.policy = () => {
@@ -611,6 +629,41 @@ SCREENS.policy = () => {
     '<p class="tag" style="margin-top:12px;">An applied edit changes the policy hash and ' +
     'binds into the NEXT session. Sandboxes already running keep the hash they started with.</p>' +
     '</div>';
+};
+
+SCREENS.tools = () => {
+  const p = project();
+  if (!p) return screenHead('tools') + '<div class="scroll">' +
+    emptyState('No project selected', 'Tools are recorded per project.') + '</div>';
+  const caps = p.capabilities || {};
+  const roles = Object.keys(caps).sort();
+  const known = (tool) => TOOLS.find((t) => t.id === tool);
+
+  return screenHead('tools · ' + p.name, [roles.length + ' recorded'],
+    '<button class="primary" data-add="tool">Add a tool</button>') +
+    '<div class="capbar">a tool is a <b>role → tool</b> entry on the project · F8.4 routes ' +
+    'skill packs off it and F8.2 binds connections to it · <b>it is not a guardrail</b></div>' +
+    '<div class="scroll">' + (roles.length
+      ? '<table><thead><tr><th>role</th><th>tool</th><th>implies</th><th></th></tr></thead><tbody>' +
+        roles.map((r) => {
+          const k = known(caps[r]);
+          return '<tr><td class="mono">' + esc(r) + '</td>' +
+            '<td class="mono">' + esc(caps[r]) + '</td>' +
+            '<td>' + (k
+              ? (k.gates.length ? '<span class="badge warn">' + k.gates.length + ' gate(s)</span> ' : '') +
+                (k.hosts.length ? '<span class="badge">' + k.hosts.length + ' host(s)</span> ' : '') +
+                (k.secret ? '<span class="badge accent">' + esc(k.secret.ref) + '</span>' : '')
+              : '<span class="tag">not in the catalogue</span>') + '</td>' +
+            '<td><button class="sm danger" data-rmtool="' + esc(r) + '">rm</button></td></tr>';
+        }).join('') + '</tbody></table>' +
+        '<p class="tag" style="margin-top:12px;">Recording a tool does not open anything. ' +
+        'The gates and egress it implies are separate policy edits — narrowing applies at ' +
+        'once, widening becomes a Change.</p>'
+      : emptyState('No tools recorded',
+          'A tool says which CLI this project uses for a role — git=gitlab, iac=terraform. ' +
+          'It is how skills and connections find each other.',
+          'opslify project tools add ' + p.id + ' git=gitlab',
+          '<button class="primary lg" data-add="tool">Add a tool</button>')) + '</div>';
 };
 
 SCREENS.agents = () => {
@@ -1066,6 +1119,67 @@ function addSecretModal() {
     });
 }
 
+// addToolModal writes the WHOLE capability map back, because that is what the
+// daemon route takes. Reading the current map and sending the result keeps the
+// page honest about what it is replacing.
+function addToolModal() {
+  const p = project();
+  if (!p) { toast('select a project first', 'bad'); return; }
+  const caps = p.capabilities || {};
+  const picked = TOOLS.filter((t) => caps[t.role] !== t.id);
+
+  modal('Add a tool to ' + p.name,
+    '<p class="hint">Pick one from the catalogue, or name a role and tool yourself. ' +
+    'What the tool implies — gates, egress, a credential — is shown, and none of it is ' +
+    'applied here: this records the capability only.</p>' +
+    '<div class="grid3" style="margin-bottom:14px;">' + picked.map((t) =>
+      '<div class="tool" data-picktool="' + esc(t.id) + '">' +
+      '<div class="top"><span class="box">✓</span><span class="nm">' + esc(t.name) + '</span></div>' +
+      '<div class="ds">' + esc(t.role) + ' = ' + esc(t.id) + '</div>' +
+      (t.gates.length || t.hosts.length
+        ? '<div class="im">' + (t.gates.length ? t.gates.length + ' gate(s) ' : '') +
+          (t.hosts.length ? t.hosts.length + ' host(s)' : '') + '</div>'
+        : '') +
+      '</div>').join('') +
+    (picked.length ? '' : '<p class="tag">every catalogue tool is already recorded</p>') +
+    '</div>' +
+    '<label class="fld"><span class="lb">role</span>' +
+    '<input id="m-trole" class="mono" placeholder="git"></label>' +
+    '<label class="fld"><span class="lb">tool</span>' +
+    '<input id="m-ttool" class="mono" placeholder="gitlab"></label>' +
+    '<label class="check"><input type="checkbox" id="m-tguard" checked> ' +
+    'also add the approval gates this tool implies</label>' +
+    '<div class="hint" style="margin-top:6px;">Gates narrow the policy, so they apply ' +
+    'immediately. Egress is never added here — that widens, and needs a Change.</div>',
+    'Add', async () => {
+      const role = $('m-trole').value.trim();
+      const tool = $('m-ttool').value.trim();
+      if (!role || !tool) throw new Error('a role and a tool are both required');
+      const next = Object.assign({}, caps);
+      next[role] = tool;
+      await send('PUT', '/v1/projects/' + encodeURIComponent(p.id) + '/capabilities',
+        { capabilities: next });
+
+      const cat = TOOLS.find((t) => t.id === tool);
+      if (cat && cat.gates.length && $('m-tguard').checked) {
+        try {
+          await send('POST', '/v1/policy/edit', {
+            project_id: p.id, reason: 'guardrails for tool ' + tool,
+            add_gates: cat.gates,
+          });
+          toast('tool ' + role + '=' + tool + ' added, with ' + cat.gates.length +
+            ' gate(s) applied', 'ok');
+          return;
+        } catch (e) {
+          // The capability landed; say so rather than implying the whole thing failed.
+          toast('tool added, but its gates did not apply: ' + e.message, 'bad');
+          return;
+        }
+      }
+      toast('tool ' + role + '=' + tool + ' added', 'ok');
+    });
+}
+
 function newSessionModal() {
   const e = environment();
   modal('New sandbox',
@@ -1093,27 +1207,57 @@ async function guard(fn) {
 }
 
 document.addEventListener('click', async (ev) => {
-  const t = ev.target.closest('[data-proj],[data-wizard],[data-toggle],[data-env],[data-addenv],' +
-    '[data-open],[data-tab],[data-close],[data-newtab],[data-drawer],[data-killsession],' +
-    '[data-decide],[data-addconn],[data-rmconn],[data-addsecret],[data-newsession],[data-bind],' +
-    '[data-poledit],[data-wiztool],[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],' +
-    '[data-wizcancel],[data-modalok],[data-modalcancel]');
+  const t = ev.target.closest('[data-wizard],[data-env],[data-add],[data-open],[data-tab],' +
+    '[data-close],[data-newtab],[data-drawer],[data-killsession],[data-decide],[data-rmconn],' +
+    '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
+    '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
+    '[data-modalok],[data-modalcancel]');
   if (!t) return;
   const a = (k) => t.getAttribute(k);
   ev.preventDefault();
 
-  if (a('data-proj')) {
-    S.projectID = a('data-proj'); S.envID = null; S.tabs = []; await refresh(); return;
-  }
   if (a('data-env')) { S.envID = a('data-env'); render(); return; }
-  if (a('data-toggle')) { const g = a('data-toggle'); S.shut[g] = !S.shut[g]; renderSide(); return; }
   if (a('data-drawer')) { S.drawerShut = !S.drawerShut; renderDrawer(); return; }
-
   if (a('data-wizard')) { wizReset(); W.open = true; renderWizard(); return; }
-  if (a('data-addenv')) { addEnvModal(); return; }
-  if (a('data-addconn')) { addConnModal(); return; }
-  if (a('data-addsecret')) { addSecretModal(); return; }
-  if (a('data-newsession')) { newSessionModal(); return; }
+
+  // One dispatcher for every + in the explorer, so a section header and its
+  // screen's button cannot drift into opening different things.
+  if (a('data-add')) {
+    ({
+      env: addEnvModal, tool: addToolModal, conn: addConnModal,
+      secret: addSecretModal, session: newSessionModal,
+      policy: () => openTab('policy', null, 'policy'),
+    }[a('data-add')] || (() => toast('nothing to add there', 'bad')))();
+    return;
+  }
+
+  // Picking a catalogue tile fills the role/tool fields rather than submitting:
+  // the operator still sees what they are about to add, and can change it.
+  if (a('data-picktool')) {
+    const cat = TOOLS.find((x) => x.id === a('data-picktool'));
+    if (cat) {
+      if ($('m-trole')) $('m-trole').value = cat.role;
+      if ($('m-ttool')) $('m-ttool').value = cat.id;
+      document.querySelectorAll('[data-picktool]').forEach((el) =>
+        el.classList.toggle('on', el.getAttribute('data-picktool') === cat.id));
+    }
+    return;
+  }
+
+  if (a('data-rmtool')) {
+    const role = a('data-rmtool');
+    const p = project();
+    if (!p) return;
+    await guard(async () => {
+      const next = Object.assign({}, p.capabilities || {});
+      delete next[role];
+      await send('PUT', '/v1/projects/' + encodeURIComponent(p.id) + '/capabilities',
+        { capabilities: next });
+      toast('tool ' + role + ' removed — the gates it added stay, and are removed from Policy', 'ok');
+      await refresh();
+    });
+    return;
+  }
 
   if (a('data-open')) {
     const v = a('data-open');
@@ -1238,6 +1382,15 @@ document.addEventListener('click', async (ev) => {
     if (!ok) { closeOverlay(); return; }
     await guard(async () => { await ok(); closeOverlay(); await refresh(); });
     return;
+  }
+});
+
+document.addEventListener('change', async (ev) => {
+  if (ev.target && ev.target.id === 'projsel') {
+    S.projectID = ev.target.value;
+    S.envID = null;
+    S.tabs = [];
+    await refresh();
   }
 });
 

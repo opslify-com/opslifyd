@@ -27,6 +27,8 @@ type ProjectService interface {
 	RemoveEnvironment(ctx context.Context, projectID, environmentID string) error
 	// RemoveProject refuses while anything under the project is live.
 	RemoveProject(ctx context.Context, projectID string) error
+	// SetCapabilities replaces the role → tool map.
+	SetCapabilities(projectID string, caps map[string]string) (project.Project, error)
 }
 
 // registerProjectRoutes adds the F8.1 endpoints to mux. With no project service
@@ -43,6 +45,7 @@ func (d *Daemon) registerProjectRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /"+APIVersion+"/projects/{id}/environments", d.handleEnvironmentAdd)
 	mux.HandleFunc("GET /"+APIVersion+"/projects/{id}/environments", d.handleEnvironmentList)
 	mux.HandleFunc("DELETE /"+APIVersion+"/projects/{id}/environments/{env}", d.handleEnvironmentDelete)
+	mux.HandleFunc("PUT /"+APIVersion+"/projects/{id}/capabilities", d.handleCapabilitiesSet)
 }
 
 // createProjectRequest is the POST /v1/projects body.
@@ -200,6 +203,27 @@ func (d *Daemon) handleEnvironmentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, environmentResp(e))
+}
+
+// setCapabilitiesRequest is the PUT /v1/projects/{id}/capabilities body. It
+// carries the WHOLE desired map, so the result is a function of the request and
+// retrying one is safe.
+type setCapabilitiesRequest struct {
+	Capabilities map[string]string `json:"capabilities"`
+}
+
+func (d *Daemon) handleCapabilitiesSet(w http.ResponseWriter, r *http.Request) {
+	var body setCapabilitiesRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
+		return
+	}
+	p, err := d.projects.SetCapabilities(r.PathValue("id"), body.Capabilities)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, projectResp(p, nil))
 }
 
 func (d *Daemon) handleEnvironmentList(w http.ResponseWriter, r *http.Request) {
