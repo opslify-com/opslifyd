@@ -1,0 +1,296 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:11px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .crumb{font-family:var(--mono);font-size:12px;}
+    .spacer{flex:1;}
+    .body{flex:1;display:grid;grid-template-columns:196px 1fr 342px;min-height:0;}
+    .nav{border-right:1px solid var(--border);background:var(--panel);padding:10px 0;}
+    .navitem{display:flex;align-items:center;gap:9px;padding:7px 14px;font-size:13px;color:var(--muted);
+      border-left:2px solid transparent;}
+    .navitem.on{color:var(--fg);border-left-color:var(--accent);background:var(--panel2);}
+    .navitem .n{margin-left:auto;font-family:var(--mono);font-size:11px;}
+    .navsec{padding:14px 14px 6px;font-size:10.5px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.07em;font-weight:600;}
+    .main{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .bar{display:flex;align-items:center;gap:11px;padding:13px 18px;border-bottom:1px solid var(--border);}
+    .bar h2{margin:0;font-size:15px;font-weight:600;}
+    .tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:13px 18px;
+      border-bottom:1px solid var(--border);}
+    .tile{border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:10px 12px;}
+    .tile .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+    .tile .v{font-size:20px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums;}
+    .tile .s{font-size:11px;color:var(--muted);margin-top:2px;}
+    .thead{display:grid;grid-template-columns:132px 116px 108px 1fr 122px 96px 130px;gap:11px;
+      padding:8px 18px;border-bottom:1px solid var(--border);background:var(--panel);
+      font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+    .rows{flex:1;overflow:hidden;}
+    .r{display:grid;grid-template-columns:132px 116px 108px 1fr 122px 96px 130px;gap:11px;
+      padding:11px 18px;border-bottom:1px solid var(--border);align-items:center;}
+    .r:hover{background:var(--panel2);}
+    .r.sel{background:#223052;}
+    .r.gone{opacity:.5;}
+    .sid{font-family:var(--mono);font-size:12px;color:var(--accent);}
+    .r.gone .sid{color:var(--muted);}
+    .envb{font-family:var(--mono);font-size:11px;padding:2px 7px;border:1px solid var(--border);
+      border-radius:10px;text-align:center;}
+    .tier{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border:1px solid var(--border);
+      border-radius:3px;text-align:center;color:var(--muted);}
+    .tier.gv{color:#9fe0b8;border-color:#25503a;}
+    .drv{display:flex;align-items:center;gap:7px;font-size:12px;min-width:0;}
+    .av{width:18px;height:18px;border-radius:4px;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:9px;color:var(--muted);display:flex;align-items:center;
+      justify-content:center;flex:none;}
+    .drv .what{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .st{font-size:11.5px;font-family:var(--mono);}
+    .res{font-family:var(--mono);font-size:11px;color:var(--muted);}
+    .acts{display:flex;gap:5px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:5px 11px;font-size:12px;cursor:pointer;}
+    button.sm{padding:3px 8px;font-size:11px;}
+    button.danger{border-color:#5a2a2a;color:var(--danger);}
+    button.primary{border-color:var(--accent);color:var(--accent);}
+    .badge{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .rail{border-left:1px solid var(--border);background:var(--panel);overflow:hidden;
+      display:flex;flex-direction:column;}
+    .rhdr{padding:13px 16px;border-bottom:1px solid var(--border);}
+    .rhdr .t{font-family:var(--mono);font-size:13px;color:var(--accent);}
+    .rhdr .s{font-size:11.5px;color:var(--muted);margin-top:3px;}
+    .rsec{padding:12px 16px;border-bottom:1px solid var(--border);}
+    .rsec .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;}
+    .kv{display:flex;align-items:baseline;gap:9px;padding:3px 0;font-size:12px;}
+    .kv .kk{color:var(--muted);min-width:86px;}
+    .kv .vv{font-family:var(--mono);font-size:11.5px;}
+    .iso{display:flex;flex-direction:column;gap:5px;}
+    .il{display:flex;align-items:center;gap:8px;font-size:11.5px;}
+    .il .ck{width:11px;height:11px;flex:none;}
+    .chips{display:flex;flex-wrap:wrap;gap:5px;}
+    .chip{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border:1px solid var(--border);
+      border-radius:3px;color:var(--muted);}
+    .foot{margin-top:auto;padding:12px 16px;border-top:1px solid var(--border);display:flex;gap:8px;}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span class="crumb">tripon</span><span class="tag">/</span>
+    <span class="crumb">sandboxes</span>
+    <span class="spacer"></span>
+    <span class="tag">warm pool 1 ready</span>
+    <span class="badge ok">egress enforced</span>
+  </div>
+
+  <div class="body">
+
+    <div class="nav">
+      <div class="navsec">Project</div>
+      <div class="navitem">Changes<span class="n">2</span></div>
+      <div class="navitem">Runbooks<span class="n">7</span></div>
+      <div class="navitem on">Sandboxes<span class="n">3</span></div>
+      <div class="navitem">Workspace</div>
+      <div class="navsec">Access</div>
+      <div class="navitem">Connections<span class="n">10</span></div>
+      <div class="navitem">Policy</div>
+      <div class="navitem">Audit</div>
+      <div class="navsec">Automation</div>
+      <div class="navitem">Triggers<span class="n">3</span></div>
+    </div>
+
+    <div class="main">
+      <div class="bar">
+        <h2>Sandboxes</h2>
+        <span class="badge">all environments</span>
+        <span class="spacer"></span>
+        <button class="sm">Snapshot all</button>
+        <button class="primary">New sandbox</button>
+      </div>
+
+      <div class="tiles">
+        <div class="tile"><div class="k">Running</div><div class="v">3</div>
+          <div class="s">2 agent-driven · 1 human</div></div>
+        <div class="tile"><div class="k">Warm &amp; idle</div><div class="v">1</div>
+          <div class="s">claims in ~0.4s</div></div>
+        <div class="tile"><div class="k">Memory in use</div><div class="v">2.1<span
+          style="font-size:13px;color:var(--muted);"> / 6 GB</span></div>
+          <div class="s">cap 2 GB per sandbox</div></div>
+        <div class="tile"><div class="k">Reaped today</div><div class="v">18</div>
+          <div class="s">all torn down cleanly</div></div>
+      </div>
+
+      <div class="thead">
+        <span>Sandbox</span><span>Environment</span><span>Isolation</span>
+        <span>Driven by</span><span>State · TTL</span><span>Mem / CPU</span><span></span>
+      </div>
+
+      <div class="rows">
+
+        <div class="r sel">
+          <span class="sid">6a1f2c94</span>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <span class="tier gv">gVisor</span>
+          <div class="drv"><span class="av" style="color:var(--accent);">ag</span>
+            <span class="what">claude · change #128</span></div>
+          <span class="st" style="color:var(--ok);">ready · 24m left</span>
+          <span class="res">412M · 0.3</span>
+          <span class="acts"><button class="sm">Shell</button><button class="sm danger">Kill</button></span>
+        </div>
+
+        <div class="r">
+          <span class="sid">b8d40e17</span>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <span class="tier gv">gVisor</span>
+          <div class="drv"><span class="av">qa</span>
+            <span class="what">qasim · workspace tripon</span></div>
+          <span class="st" style="color:var(--ok);">ready · 12m left</span>
+          <span class="res">1.1G · 0.9</span>
+          <span class="acts"><button class="sm">Shell</button><button class="sm danger">Kill</button></span>
+        </div>
+
+        <div class="r">
+          <span class="sid">3e97aa50</span>
+          <span class="envb">prod</span>
+          <span class="tier gv">gVisor</span>
+          <div class="drv"><span class="av" style="color:var(--accent);">ag</span>
+            <span class="what">claude · read-only audit</span></div>
+          <span class="st" style="color:var(--ok);">ready · 28m left</span>
+          <span class="res">602M · 0.1</span>
+          <span class="acts"><button class="sm">Shell</button><button class="sm danger">Kill</button></span>
+        </div>
+
+        <div class="r">
+          <span class="sid" style="color:var(--muted);">warm-pool</span>
+          <span class="envb" style="color:var(--muted);">—</span>
+          <span class="tier">runc</span>
+          <div class="drv"><span class="av">—</span><span class="what">unclaimed</span></div>
+          <span class="st" style="color:var(--muted);">paused · idle</span>
+          <span class="res">48M · 0.0</span>
+          <span class="acts"><button class="sm">Claim</button></span>
+        </div>
+
+        <div class="r gone">
+          <span class="sid">f0325bb1</span>
+          <span class="envb" style="border-color:#4a4020;">staging</span>
+          <span class="tier">runc</span>
+          <div class="drv"><span class="av">ag</span><span class="what">claude · change #126</span></div>
+          <span class="st" style="color:var(--muted);">ended 14:19</span>
+          <span class="res">— · —</span>
+          <span class="acts"><button class="sm">Trace</button></span>
+        </div>
+
+        <div class="r gone">
+          <span class="sid">c71ee208</span>
+          <span class="envb" style="border-color:#4a4020;">staging</span>
+          <span class="tier">runc</span>
+          <div class="drv"><span class="av">ag</span><span class="what">claude · change #124</span></div>
+          <span class="st" style="color:var(--danger);">killed · policy deny</span>
+          <span class="res">— · —</span>
+          <span class="acts"><button class="sm">Trace</button></span>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="rail">
+      <div class="rhdr">
+        <div class="t">6a1f2c94</div>
+        <div class="s">created 14:22 · claude via MCP · change #128</div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">Runtime</div>
+        <div class="kv"><span class="kk">Isolation</span><span class="vv"
+          style="color:#9fe0b8;">gVisor (runsc)</span></div>
+        <div class="kv"><span class="kk">Base image</span><span class="vv">opslify-base@sha256:ba68…</span></div>
+        <div class="kv"><span class="kk">Toolchain</span><span class="vv">signed · 5 tools</span></div>
+        <div class="kv"><span class="kk">Idle TTL</span><span class="vv">30m · 24m left</span></div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">Isolation in force</div>
+        <div class="iso">
+          <div class="il"><svg class="ck" viewBox="0 0 12 12" fill="none" stroke="#4bd07f"
+            stroke-width="1.7" stroke-linecap="round"><path d="M2 6.4 L4.6 9 L10 3"/></svg>
+            read-only rootfs · only <span style="font-family:var(--mono);">/workspace</span> writable</div>
+          <div class="il"><svg class="ck" viewBox="0 0 12 12" fill="none" stroke="#4bd07f"
+            stroke-width="1.7" stroke-linecap="round"><path d="M2 6.4 L4.6 9 L10 3"/></svg>
+            rootless · user namespace remapped</div>
+          <div class="il"><svg class="ck" viewBox="0 0 12 12" fill="none" stroke="#4bd07f"
+            stroke-width="1.7" stroke-linecap="round"><path d="M2 6.4 L4.6 9 L10 3"/></svg>
+            all capabilities dropped · no-new-privileges</div>
+          <div class="il"><svg class="ck" viewBox="0 0 12 12" fill="none" stroke="#4bd07f"
+            stroke-width="1.7" stroke-linecap="round"><path d="M2 6.4 L4.6 9 L10 3"/></svg>
+            seccomp profile applied</div>
+          <div class="il"><svg class="ck" viewBox="0 0 12 12" fill="none" stroke="#4bd07f"
+            stroke-width="1.7" stroke-linecap="round"><path d="M2 6.4 L4.6 9 L10 3"/></svg>
+            default-deny egress · no DNS in sandbox</div>
+        </div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">Network</div>
+        <div class="kv"><span class="kk">Address</span><span class="vv">10.89.0.6 on opslify0</span></div>
+        <div class="kv"><span class="kk">May reach</span><span class="vv">4 pinned hosts</span></div>
+        <div class="kv"><span class="kk">Via proxy</span><span class="vv">10.89.0.1:37011</span></div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">Connections attached</div>
+        <div class="chips">
+          <span class="chip" style="color:#8fd0ff;border-color:#25455a;">kubeconfig-stg</span>
+          <span class="chip" style="color:#c9a6ff;border-color:#3d2f5a;">ssh-web-fleet</span>
+          <span class="chip" style="color:#7fb2ff;border-color:#2a3a5a;">gitlab-token</span>
+          <span class="chip" style="color:#ffb98f;border-color:#5a3d25;">aws-scoped</span>
+        </div>
+        <div style="margin-top:9px;font-size:11.5px;color:var(--muted);line-height:1.5;">
+          None of their values are inside this sandbox — it holds a proxy address, an agent
+          socket and a credential-free kubeconfig.</div>
+      </div>
+
+      <div class="rsec" style="border-bottom:none;">
+        <div class="k">Workspace</div>
+        <div class="kv"><span class="kk">Mode</span><span class="vv">workspace · tripon</span></div>
+        <div class="kv"><span class="kk">Host link</span><span class="vv">~/tripon ↔ synced 2s ago</span></div>
+        <div class="kv"><span class="kk">Size</span><span class="vv">184 MB · 1,204 files</span></div>
+      </div>
+
+      <div class="foot">
+        <button class="sm">Open shell</button>
+        <button class="sm">Snapshot</button>
+        <button class="sm">Trace</button>
+        <span class="spacer"></span>
+        <button class="sm danger">Kill</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

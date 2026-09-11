@@ -1,0 +1,353 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --skill:#ffd08f;--lock:#ff9d7a;--k8s:#8fd0ff;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:8px 14px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:10px;font-size:12px;}
+    .hdr h1{font-size:13px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:11.5px;}
+    .crumb{font-family:var(--mono);font-size:11.5px;}
+    .spacer{flex:1;}
+    .badge{font-size:9.5px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.acc{color:var(--accent);border-color:#2a3a5a;}
+    .badge.lock{color:var(--lock);border-color:#5a3328;}
+    .agentpill{display:flex;align-items:center;gap:7px;padding:3px 9px;border:1px solid #2a3a5a;
+      border-radius:12px;background:#1a2130;font-size:11px;}
+    .agentpill .d{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+    .agentpill .nm{font-family:var(--mono);color:var(--accent);}
+    .body{flex:1;display:grid;grid-template-columns:186px 276px 1fr 330px;min-height:0;}
+    .nav{border-right:1px solid var(--border);background:var(--panel);padding:9px 0;}
+    .navitem{display:flex;align-items:center;gap:9px;padding:6px 14px;font-size:12.5px;color:var(--muted);
+      border-left:2px solid transparent;}
+    .navitem.on{color:var(--fg);border-left-color:var(--accent);background:var(--panel2);}
+    .navitem .n{margin-left:auto;font-family:var(--mono);font-size:10.5px;}
+    .navsec{padding:12px 14px 5px;font-size:10px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.07em;font-weight:600;}
+    /* precedence stack */
+    .srcs{border-right:1px solid var(--border);background:var(--panel);display:flex;
+      flex-direction:column;min-height:0;overflow:hidden;}
+    .sh{padding:11px 14px;border-bottom:1px solid var(--border);}
+    .sh h2{margin:0 0 3px;font-size:13px;font-weight:600;}
+    .sh p{margin:0;font-size:11px;color:var(--muted);line-height:1.5;}
+    .lay{padding:5px 0;}
+    .ly{display:grid;grid-template-columns:20px 1fr;gap:9px;padding:8px 14px;
+      border-left:2px solid transparent;align-items:start;}
+    .ly.on{background:#223052;border-left-color:var(--accent);}
+    .ly:hover{background:var(--panel2);}
+    .ly .ord{font-family:var(--mono);font-size:9.5px;color:var(--muted);padding-top:2px;}
+    .ly .nm{font-size:12.5px;display:flex;align-items:center;gap:7px;}
+    .ly .fn{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:3px;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .ly .mt{font-size:10px;color:var(--muted);margin-top:3px;}
+    .lk{width:10px;height:10px;flex:none;}
+    .nested{padding-left:29px;}
+    .nrow{display:flex;align-items:center;gap:7px;padding:3px 14px 3px 43px;font-size:11px;}
+    .nrow .f{font-family:var(--mono);font-size:10.5px;color:var(--skill);flex:1;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .nrow .l{font-family:var(--mono);font-size:9.5px;color:var(--muted);}
+    .sfoot{margin-top:auto;padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:7px;}
+    /* editor */
+    .ed{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .ebar{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);}
+    .ebar .fn{font-family:var(--mono);font-size:12.5px;color:var(--fg);}
+    .ebar .where{font-size:11px;color:var(--muted);}
+    .doc{flex:1;overflow:hidden;padding:14px 18px;font-family:var(--mono);font-size:11.5px;
+      line-height:1.68;white-space:pre-wrap;}
+    .h1{color:var(--fg);font-weight:600;font-size:13.5px;}
+    .h2{color:var(--accent);font-weight:600;}
+    .b{color:var(--fg);font-weight:600;}
+    .c{color:var(--muted);}
+    .cd{color:var(--k8s);}
+    .dg{color:var(--danger);}
+    .efoot{border-top:1px solid var(--border);background:var(--panel);padding:9px 16px;
+      display:flex;align-items:center;gap:11px;font-size:11.5px;color:var(--muted);}
+    /* assembled rail */
+    .rail{border-left:1px solid var(--border);background:var(--panel);display:flex;
+      flex-direction:column;min-height:0;overflow:hidden;}
+    .rh{padding:11px 14px;border-bottom:1px solid var(--border);}
+    .rh h3{margin:0 0 3px;font-size:12.5px;font-weight:600;}
+    .rh p{margin:0;font-size:11px;color:var(--muted);line-height:1.5;}
+    .asm{flex:1;overflow:hidden;padding:4px 0;}
+    .ab{display:flex;align-items:center;gap:9px;padding:7px 14px;border-bottom:1px solid var(--border);}
+    .ab .sw{width:3px;height:26px;border-radius:2px;flex:none;}
+    .ab .t{flex:1;min-width:0;}
+    .ab .t1{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .ab .t2{font-size:10px;color:var(--muted);margin-top:2px;}
+    .ab .tk{font-family:var(--mono);font-size:10.5px;color:var(--muted);}
+    .meter{padding:11px 14px;border-bottom:1px solid var(--border);}
+    .meter .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+      margin-bottom:8px;}
+    .bar{height:7px;border-radius:4px;background:var(--panel2);overflow:hidden;display:flex;}
+    .bar i{display:block;height:100%;}
+    .lg{display:flex;flex-wrap:wrap;gap:9px;margin-top:9px;font-size:10px;color:var(--muted);}
+    .lg span{display:flex;align-items:center;gap:5px;}
+    .lg em{width:7px;height:7px;border-radius:2px;font-style:normal;}
+    .rsec{padding:11px 14px;border-bottom:1px solid var(--border);}
+    .rsec .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+      margin-bottom:8px;}
+    .note{font-size:11.5px;color:var(--muted);line-height:1.55;margin:0;}
+    .note b{color:var(--fg);font-weight:600;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:5px 10px;font-size:11.5px;cursor:pointer;}
+    button.sm{padding:3px 8px;font-size:10.5px;}
+    button.primary{border-color:var(--accent);color:var(--accent);}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span style="width:1px;height:14px;background:var(--border);"></span>
+    <span class="crumb">tripon</span><span class="tag">/</span>
+    <span class="crumb" style="color:var(--warn);">staging</span><span class="tag">/</span>
+    <span class="crumb">agent</span>
+    <span class="spacer"></span>
+    <span class="agentpill"><span class="d"></span><span class="nm">claude-sonnet-4.6</span>
+      <span class="tag" style="font-size:10px;">· MCP · 7 tools · 5 skills</span></span>
+    <span class="badge ok">trace verified</span>
+  </div>
+
+  <div class="body">
+
+    <div class="nav">
+      <div class="navsec">Project</div>
+      <div class="navitem">Changes<span class="n">2</span></div>
+      <div class="navitem">Runbooks<span class="n">7</span></div>
+      <div class="navitem">Sandboxes<span class="n">3</span></div>
+      <div class="navitem">Workspace</div>
+      <div class="navsec">Agent</div>
+      <div class="navitem on">Instructions<span class="n">5</span></div>
+      <div class="navitem">Model</div>
+      <div class="navsec">Access</div>
+      <div class="navitem">Connections<span class="n">6</span></div>
+      <div class="navitem">Policy</div>
+      <div class="navitem">Audit</div>
+    </div>
+
+    <div class="srcs">
+      <div class="sh">
+        <h2>What the agent is told</h2>
+        <p>Layers, in the order they are applied. Later layers may add, never contradict an
+          earlier one.</p>
+      </div>
+
+      <div class="lay">
+
+        <div class="ly">
+          <span class="ord">1</span>
+          <div>
+            <div class="nm">House rules
+              <svg class="lk" viewBox="0 0 12 12" fill="none" stroke="#ff9d7a" stroke-width="1.4">
+                <rect x="2.5" y="5.5" width="7" height="5" rx="1"/><path d="M4.2 5.5V4a1.8 1.8 0 013.6 0v1.5"/>
+              </svg>
+              <span class="badge lock">read-only</span></div>
+            <div class="fn">daemon · /etc/opslify/house-rules.md</div>
+            <div class="mt">The agent cannot edit these. Neither can a repo commit.</div>
+          </div>
+        </div>
+
+        <div class="ly on">
+          <span class="ord">2</span>
+          <div>
+            <div class="nm">Project instructions <span class="badge acc">editing</span></div>
+            <div class="fn">repo · .opslify/instructions.md</div>
+            <div class="mt">Versioned with your code · reviewed in MRs</div>
+          </div>
+        </div>
+
+        <div class="ly">
+          <span class="ord">3</span>
+          <div>
+            <div class="nm">Environment overlay</div>
+            <div class="fn">repo · .opslify/env/staging.md</div>
+            <div class="mt">prod overlay is stricter · 11 lines</div>
+          </div>
+        </div>
+
+        <div class="ly">
+          <span class="ord">4</span>
+          <div>
+            <div class="nm">Skills <span class="badge">5 files</span></div>
+            <div class="fn">repo · .opslify/skills/</div>
+          </div>
+        </div>
+        <div class="nested">
+          <div class="nrow"><span class="f">ssh-fleet.md</span><span class="l">28</span></div>
+          <div class="nrow"><span class="f">kubernetes.md</span><span class="l">42</span></div>
+          <div class="nrow"><span class="f">terraform.md</span><span class="l">61</span></div>
+          <div class="nrow"><span class="f">gitlab.md</span><span class="l">24</span></div>
+          <div class="nrow"><span class="f">incident-runbook.md</span><span class="l">19</span></div>
+        </div>
+
+        <div class="ly">
+          <span class="ord">5</span>
+          <div>
+            <div class="nm">Tool contracts
+              <svg class="lk" viewBox="0 0 12 12" fill="none" stroke="#ff9d7a" stroke-width="1.4">
+                <rect x="2.5" y="5.5" width="7" height="5" rx="1"/><path d="M4.2 5.5V4a1.8 1.8 0 013.6 0v1.5"/>
+              </svg>
+              <span class="badge lock">generated</span></div>
+            <div class="fn">MCP · 7 tool descriptions</div>
+            <div class="mt">Written by the daemon from your tools and policy</div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="sfoot">
+        <button class="sm">+ Skill</button>
+        <button class="sm">History</button>
+        <button class="sm">Diff vs prod</button>
+      </div>
+    </div>
+
+    <div class="ed">
+      <div class="ebar">
+        <span class="fn">.opslify/instructions.md</span>
+        <span class="where">tripon · all environments</span>
+        <span class="spacer"></span>
+        <span class="tag">edited 2d ago by qasim · !409</span>
+        <button class="sm">Revert</button>
+        <button class="sm primary">Save</button>
+      </div>
+
+      <div class="doc"><span class="h1"># tripon — how to operate here</span>
+
+<span class="c">Everything you run happens inside an opslify sandbox. You never hold a
+credential; the daemon injects them at the network boundary.</span>
+
+<span class="h2">## Diagnose before you touch</span>
+- Say what you found <span class="b">before</span> proposing a fix, with the command that
+  produced it. Never diagnose and remediate in the same message.
+- Read the skill file for the system you are touching. <span class="cd">ssh-fleet.md</span> and
+  <span class="cd">kubernetes.md</span> describe how this estate is actually laid out —
+  they beat your priors about how infrastructure usually works.
+
+<span class="h2">## Proposing a change</span>
+- One change does one thing. Do not bundle a config fix with a version bump.
+- State blast radius in <span class="b">nodes, pods or resources</span> — never adjectives.
+  "1 deployment, 2 pods" not "small change".
+- <span class="b">If you cannot describe how to revert it, do not propose it.</span>
+- Prefer the smaller reversible action. Between two fixes that both work,
+  propose the one that is easier to undo.
+
+<span class="h2">## Stop and ask a human</span>
+- Anything touching <span class="cd">db-01</span> or the <span class="cd">prod</span> namespace.
+- Anything that would act on more than one node at a time.
+- <span class="dg">When the diagnosis is ambiguous.</span> Guessing costs more than asking.
+
+<span class="h2">## Tone</span>
+Short. No preamble, no restating the request. Findings as facts.
+
+<span class="c">&lt;!-- Anything written here is a rule the agent follows, not advice it weighs.
+     Keep it short: every line competes for the same context budget. --&gt;</span></div>
+
+      <div class="efoot">
+        <span>markdown · 34 lines · 780 tokens</span>
+        <span class="spacer"></span>
+        <span>changes here take effect on the next session — running sandboxes keep the version
+          they started with</span>
+      </div>
+    </div>
+
+    <div class="rail">
+      <div class="rh">
+        <h3>What the agent receives</h3>
+        <p>The assembled context, in order, before it does anything in this project.</p>
+      </div>
+
+      <div class="asm">
+        <div class="ab">
+          <span class="sw" style="background:var(--lock);"></span>
+          <span class="t"><span class="t1">House rules</span>
+            <span class="t2">daemon · locked</span></span>
+          <span class="tk">310</span>
+        </div>
+        <div class="ab" style="background:#223052;">
+          <span class="sw" style="background:var(--accent);"></span>
+          <span class="t"><span class="t1">Project instructions</span>
+            <span class="t2">repo · you are editing this</span></span>
+          <span class="tk">780</span>
+        </div>
+        <div class="ab">
+          <span class="sw" style="background:var(--warn);"></span>
+          <span class="t"><span class="t1">staging overlay</span>
+            <span class="t2">repo · looser than prod</span></span>
+          <span class="tk">240</span>
+        </div>
+        <div class="ab">
+          <span class="sw" style="background:var(--skill);"></span>
+          <span class="t"><span class="t1">5 skill files</span>
+            <span class="t2">repo · per tool</span></span>
+          <span class="tk">4.1k</span>
+        </div>
+        <div class="ab">
+          <span class="sw" style="background:var(--muted);"></span>
+          <span class="t"><span class="t1">7 tool contracts</span>
+            <span class="t2">MCP · generated</span></span>
+          <span class="tk">1.2k</span>
+        </div>
+      </div>
+
+      <div class="meter">
+        <div class="k">Context budget</div>
+        <div class="bar">
+          <i style="background:var(--lock);width:4%"></i>
+          <i style="background:var(--accent);width:11%"></i>
+          <i style="background:var(--warn);width:3%"></i>
+          <i style="background:var(--skill);width:57%"></i>
+          <i style="background:var(--muted);width:17%"></i>
+        </div>
+        <div class="lg">
+          <span><em style="background:var(--lock);"></em>house</span>
+          <span><em style="background:var(--accent);"></em>project</span>
+          <span><em style="background:var(--warn);"></em>env</span>
+          <span><em style="background:var(--skill);"></em>skills</span>
+          <span><em style="background:var(--muted);"></em>tools</span>
+        </div>
+        <div style="margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--muted);">
+          6.6k of 18k reserved · 11.4k left for the task</div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">Who can change what</div>
+        <p class="note"><b>House rules</b> are daemon-held and read-only — an agent with write access
+          to the repo still cannot edit the rule that says stop before touching db-01. Everything else
+          lives in the repo, so it versions, reviews in an MR and travels with a clone.</p>
+      </div>
+
+      <div class="rsec" style="border-bottom:none;">
+        <div class="k">Provenance</div>
+        <p class="note">Every change records the exact instruction set it ran under, by hash. When an
+          agent does something surprising you can open the change and read the rules it was actually
+          given — not the ones in the repo today.</p>
+        <button class="sm" style="margin-top:9px;">Preview assembled context</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,364 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --ssh:#c9a6ff;--k8s:#8fd0ff;--cloud:#ffb98f;--lock:#ff9d7a;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:8px 14px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:10px;font-size:12px;}
+    .hdr h1{font-size:13px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:11.5px;}
+    .crumb{font-family:var(--mono);font-size:11.5px;}
+    .spacer{flex:1;}
+    .badge{font-size:9.5px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .badge.acc{color:var(--accent);border-color:#2a3a5a;}
+    .badge.lock{color:var(--lock);border-color:#5a3328;}
+    .body{flex:1;display:grid;grid-template-columns:186px 1fr 384px;min-height:0;}
+    .nav{border-right:1px solid var(--border);background:var(--panel);padding:9px 0;}
+    .navitem{display:flex;align-items:center;gap:9px;padding:6px 14px;font-size:12.5px;color:var(--muted);
+      border-left:2px solid transparent;}
+    .navitem.on{color:var(--fg);border-left-color:var(--accent);background:var(--panel2);}
+    .navitem .n{margin-left:auto;font-family:var(--mono);font-size:10.5px;}
+    .navsec{padding:12px 14px 5px;font-size:10px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.07em;font-weight:600;}
+    .main{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .bar{display:flex;align-items:center;gap:11px;padding:11px 18px;border-bottom:1px solid var(--border);}
+    .bar h2{margin:0;font-size:15px;font-weight:600;}
+    .envt{display:flex;gap:2px;padding:0 18px;border-bottom:1px solid var(--border);background:var(--panel);}
+    .et{padding:8px 14px;font-size:12.5px;color:var(--muted);border-bottom:2px solid transparent;
+      display:flex;align-items:center;gap:8px;}
+    .et.on{color:var(--fg);border-bottom-color:var(--warn);}
+    .scroll{flex:1;overflow:hidden;}
+    .sec{border-bottom:1px solid var(--border);padding:14px 18px;}
+    .sech{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+    .sech h3{margin:0;font-size:12.5px;font-weight:600;}
+    .sech .d{font-size:11.5px;color:var(--muted);}
+    .rule{display:grid;grid-template-columns:1fr 168px 92px 66px;gap:11px;align-items:center;
+      padding:6px 0;font-size:12px;border-bottom:1px solid rgba(42,47,58,.5);}
+    .rule:last-child{border-bottom:none;}
+    .rule .v{font-family:var(--mono);font-size:11.5px;}
+    .rule .why{font-size:10.5px;color:var(--muted);font-family:var(--mono);}
+    .rule .src{font-size:9.5px;}
+    .rule .act{text-align:right;}
+    .new{background:#16281e;margin:0 -18px;padding:6px 18px;border-left:2px solid var(--ok);}
+    .gate{color:var(--warn);}
+    .dom{color:var(--k8s);}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:5px 11px;font-size:11.5px;cursor:pointer;}
+    button.sm{padding:3px 8px;font-size:10.5px;}
+    button.primary{border-color:var(--accent);color:var(--accent);}
+    button.approve{border-color:#2a4a37;color:var(--ok);}
+    button.deny{border-color:#5a2a2a;color:var(--danger);}
+    .addrow{display:flex;align-items:center;gap:9px;margin-top:9px;}
+    .inp{background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:5px;
+      padding:6px 9px;font-size:11.5px;font-family:var(--mono);flex:1;}
+    .rail{border-left:1px solid var(--border);background:var(--panel);display:flex;
+      flex-direction:column;min-height:0;overflow:hidden;}
+    .rh{padding:12px 15px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px;}
+    .rh h3{margin:0;font-size:13px;font-weight:600;}
+    .rb{flex:1;overflow:hidden;}
+    .fs{padding:12px 15px;border-bottom:1px solid var(--border);}
+    .fs .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px;
+      display:flex;align-items:center;gap:8px;}
+    .pend{border:1px solid var(--warn);border-radius:6px;background:#1d1c14;padding:11px;}
+    .pend .t{font-size:11.5px;color:var(--warn);font-family:var(--mono);margin-bottom:7px;}
+    .diff{font-family:var(--mono);font-size:11px;line-height:1.6;white-space:pre;background:var(--bg);
+      border:1px solid var(--border);border-radius:5px;padding:9px 10px;overflow:hidden;}
+    .add{color:var(--ok);} .del{color:var(--danger);} .cx{color:var(--muted);}
+    .arow{display:flex;gap:7px;margin-top:9px;}
+    .note{font-size:11.5px;color:var(--muted);line-height:1.55;margin:0;}
+    .note b{color:var(--fg);font-weight:600;}
+    .kv{display:flex;align-items:center;gap:9px;padding:3px 0;font-size:11.5px;}
+    .kv .kk{color:var(--muted);min-width:88px;}
+    .kv .vv{font-family:var(--mono);font-size:11px;}
+    .sh{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px 10px;
+      font-family:var(--mono);font-size:10.5px;line-height:1.7;white-space:pre;overflow:hidden;}
+    .pr{color:var(--ok);} .cm{color:var(--muted);} .hl{color:var(--accent);}
+    .lad{display:flex;flex-direction:column;gap:0;margin-top:3px;}
+    .lstep{display:grid;grid-template-columns:15px 1fr;gap:9px;font-size:11.5px;}
+    .lstep .ic{display:flex;flex-direction:column;align-items:center;}
+    .lstep .d2{width:7px;height:7px;border-radius:50%;margin-top:5px;flex:none;}
+    .lstep .ln{flex:1;width:1px;background:var(--border);min-height:13px;}
+    .lstep .tx{padding-bottom:10px;line-height:1.45;}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span style="width:1px;height:14px;background:var(--border);"></span>
+    <span class="crumb">tripon</span><span class="tag">/</span>
+    <span class="crumb" style="color:var(--warn);">staging</span><span class="tag">/</span>
+    <span class="crumb">policy</span>
+    <span class="spacer"></span>
+    <span class="tag">policy_hash</span>
+    <span class="badge acc">9c3e17b2</span>
+    <span class="badge warn">1 change pending</span>
+  </div>
+
+  <div class="body">
+
+    <div class="nav">
+      <div class="navsec">Project</div>
+      <div class="navitem">Changes<span class="n">3</span></div>
+      <div class="navitem">Runbooks<span class="n">7</span></div>
+      <div class="navitem">Sandboxes<span class="n">3</span></div>
+      <div class="navitem">Workspace</div>
+      <div class="navsec">Agent</div>
+      <div class="navitem">Instructions<span class="n">5</span></div>
+      <div class="navitem">Model</div>
+      <div class="navsec">Access</div>
+      <div class="navitem">Secrets<span class="n">7</span></div>
+      <div class="navitem">Connections<span class="n">6</span></div>
+      <div class="navitem on">Policy</div>
+      <div class="navitem">Audit</div>
+    </div>
+
+    <div class="main">
+      <div class="bar">
+        <h2>Policy</h2>
+        <span class="badge">what a session may do</span>
+        <span class="spacer"></span>
+        <button class="sm">View as YAML</button>
+        <button class="sm">Diff vs prod</button>
+        <button class="primary">Propose change</button>
+      </div>
+
+      <div class="envt">
+        <div class="et on">staging <span class="badge warn">looser</span></div>
+        <div class="et">prod <span class="badge">strict</span></div>
+        <div class="et" style="margin-left:auto;color:var(--muted);">+ environment</div>
+      </div>
+
+      <div class="scroll">
+
+        <div class="sec">
+          <div class="sech">
+            <h3>Egress allowlist</h3>
+            <span class="d">Hosts a sandbox may reach. Everything else is dropped —
+              there is no DNS inside the sandbox.</span>
+          </div>
+
+          <div class="rule">
+            <span class="v dom">gitlab.tripon.io</span>
+            <span class="why">needed by · gitlab-token</span>
+            <span class="src badge">from platform</span>
+            <span class="act"><button class="sm">Remove</button></span>
+          </div>
+          <div class="rule">
+            <span class="v dom">argocd.tripon.io</span>
+            <span class="why">needed by · argocd-token</span>
+            <span class="src badge">from platform</span>
+            <span class="act"><button class="sm">Remove</button></span>
+          </div>
+          <div class="rule">
+            <span class="v dom">k8s-stg.tripon.io:6443</span>
+            <span class="why">needed by · kubeconfig-stg</span>
+            <span class="src badge">from platform</span>
+            <span class="act"><button class="sm">Remove</button></span>
+          </div>
+          <div class="rule">
+            <span class="v dom">bastion.tripon.io</span>
+            <span class="why">needed by · ssh-web-fleet</span>
+            <span class="src badge">from platform</span>
+            <span class="act"><button class="sm">Remove</button></span>
+          </div>
+          <div class="rule">
+            <span class="v dom">sts.amazonaws.com</span>
+            <span class="why">needed by · aws-scoped</span>
+            <span class="src badge">from platform</span>
+            <span class="act"><button class="sm">Remove</button></span>
+          </div>
+          <div class="rule">
+            <span class="v dom">registry.terraform.io</span>
+            <span class="why">needed by · terraform init</span>
+            <span class="src badge">from tools</span>
+            <span class="act"><button class="sm">Remove</button></span>
+          </div>
+          <div class="rule new">
+            <span class="v dom">api.hetzner.cloud</span>
+            <span class="why">needed by · hcloud-token</span>
+            <span class="src badge" style="color:var(--ok);border-color:#2a4a37;">proposed</span>
+            <span class="act"><button class="sm">Undo</button></span>
+          </div>
+
+          <div class="addrow">
+            <input class="inp" value="add a host…  api.example.com" readonly>
+            <button class="sm">Resolve &amp; pin</button>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sech">
+            <h3>Approval gates</h3>
+            <span class="d">Commands that pause for a human. Fail-closed: an unanswered gate is denied.</span>
+          </div>
+          <div class="rule">
+            <span class="v gate">terraform apply · terraform destroy</span>
+            <span class="why">terraform</span>
+            <span class="src badge">generated</span>
+            <span class="act"><button class="sm">Edit</button></span>
+          </div>
+          <div class="rule">
+            <span class="v gate">kubectl delete · scale · patch</span>
+            <span class="why">kubernetes</span>
+            <span class="src badge">generated</span>
+            <span class="act"><button class="sm">Edit</button></span>
+          </div>
+          <div class="rule">
+            <span class="v gate">ssh · systemctl restart|stop · reboot</span>
+            <span class="why">VMs</span>
+            <span class="src badge">generated</span>
+            <span class="act"><button class="sm">Edit</button></span>
+          </div>
+          <div class="rule">
+            <span class="v gate">anything touching db-01</span>
+            <span class="why">house rules</span>
+            <span class="src badge lock">locked</span>
+            <span class="act"><button class="sm" disabled style="opacity:.4;">Edit</button></span>
+          </div>
+        </div>
+
+        <div class="sec">
+          <div class="sech">
+            <h3>Preview before apply</h3>
+            <span class="d">A failed preview blocks the command rather than warning.</span>
+          </div>
+          <div class="rule">
+            <span class="v"><span class="dom">terraform plan</span> → pinned into apply by hash</span>
+            <span class="why">terraform</span>
+            <span class="src badge">generated</span>
+            <span class="act"><button class="sm">Edit</button></span>
+          </div>
+          <div class="rule">
+            <span class="v"><span class="dom">kubectl diff</span> → shown in the approval</span>
+            <span class="why">kubernetes</span>
+            <span class="src badge">generated</span>
+            <span class="act"><button class="sm">Edit</button></span>
+          </div>
+        </div>
+
+        <div class="sec" style="border-bottom:none;">
+          <div class="sech">
+            <h3>Session limits</h3>
+          </div>
+          <div class="rule">
+            <span class="v">idle TTL <span class="dom">30m</span> · memory <span class="dom">2G</span> ·
+              tier <span class="dom">gVisor</span></span>
+            <span class="why">staging</span>
+            <span class="src badge">editable</span>
+            <span class="act"><button class="sm">Edit</button></span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="rail">
+      <div class="rh">
+        <h3>Pending policy change</h3>
+        <span class="badge warn">needs approval</span>
+      </div>
+
+      <div class="rb">
+        <div class="fs">
+          <div class="pend">
+            <div class="t">change #133 · policy · staging</div>
+            <div style="font-size:12px;margin-bottom:8px;">Allow the sandbox to reach Hetzner's API
+              so the new <span style="font-family:var(--mono);color:var(--accent);">hcloud-token</span>
+              connection can be used.</div>
+            <div class="diff"><span class="cx">egress:
+  domains:
+    - gitlab.tripon.io
+    - argocd.tripon.io</span>
+<span class="add">+   - api.hetzner.cloud</span>
+<span class="cx">creds:</span>
+<span class="add">+   - { name: hcloud-token, provider: hetzner }</span></div>
+            <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+              Widens egress by 1 host · proposed by qasim · 3m ago</div>
+            <div class="arow">
+              <button class="approve">Approve</button>
+              <button class="deny">Deny</button>
+              <button class="sm">Open change</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="fs">
+          <div class="k">Why this needs approving</div>
+          <p class="note">Editing a guardrail is <b>itself a Change</b> — same diff, same approval,
+            same signed trace. Nobody widens their own permissions quietly, and “who opened egress to
+            that host, and when” is answerable a year later.</p>
+          <p class="note" style="margin-top:9px;">Narrowing — removing a host, adding a gate — applies
+            without approval. Only <b>widening</b> is gated.</p>
+        </div>
+
+        <div class="fs">
+          <div class="k">Precedence</div>
+          <div class="lad">
+            <div class="lstep"><span class="ic"><span class="d2" style="background:var(--lock);"></span>
+              <span class="ln"></span></span>
+              <span class="tx"><b style="color:var(--fg);">Daemon default</b> — the outer bound.
+                Nothing below can exceed it.</span></div>
+            <div class="lstep"><span class="ic"><span class="d2" style="background:var(--accent);"></span>
+              <span class="ln"></span></span>
+              <span class="tx"><b style="color:var(--fg);">Project policy</b> — may only narrow.</span></div>
+            <div class="lstep"><span class="ic"><span class="d2" style="background:var(--warn);"></span>
+              <span class="ln"></span></span>
+              <span class="tx"><b style="color:var(--fg);">Environment</b> — prod narrows further.</span></div>
+            <div class="lstep"><span class="ic"><span class="d2" style="background:var(--muted);"></span></span>
+              <span class="tx"><b style="color:var(--fg);">Workspace file</b> — untrusted; may narrow,
+                never widen.</span></div>
+          </div>
+          <p class="note" style="margin-top:8px;">A repo that asks for more than the daemon allows is
+            clamped, and the clamp is recorded.</p>
+        </div>
+
+        <div class="fs">
+          <div class="k">Or from the shell</div>
+          <div class="sh"><span class="pr">$</span> opslify policy allow-egress \
+    <span class="hl">api.hetzner.cloud</span> --env staging
+<span class="cm">proposed change #133 — widening needs approval</span>
+
+<span class="pr">$</span> opslify policy show --env staging
+<span class="pr">$</span> opslify policy diff staging prod
+<span class="pr">$</span> opslify approve 133</div>
+        </div>
+
+        <div class="fs" style="border-bottom:none;">
+          <div class="k">In force right now</div>
+          <div class="kv"><span class="kk">policy_hash</span><span class="vv" style="color:var(--accent);">9c3e17b2</span></div>
+          <div class="kv"><span class="kk">Egress hosts</span><span class="vv">6 pinned</span></div>
+          <div class="kv"><span class="kk">Gates</span><span class="vv">9 · 1 locked</span></div>
+          <div class="kv"><span class="kk">Applied</span><span class="vv">2d ago · !411</span></div>
+          <p class="note" style="margin-top:8px;">Running sandboxes keep the hash they started with;
+            the new policy takes effect for the next session.</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

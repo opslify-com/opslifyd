@@ -1,0 +1,257 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:12px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .spacer{flex:1;}
+    .steps{display:flex;align-items:center;gap:0;padding:0 16px;border-bottom:1px solid var(--border);
+      background:var(--panel);}
+    .step{display:flex;align-items:center;gap:8px;padding:10px 16px 10px 0;font-size:12.5px;color:var(--muted);}
+    .step .num{width:19px;height:19px;border-radius:50%;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:10px;display:flex;align-items:center;justify-content:center;}
+    .step.done .num{border-color:#2a4a37;color:var(--ok);}
+    .step.on{color:var(--fg);} .step.on .num{border-color:var(--accent);color:var(--accent);background:#223052;}
+    .sep{width:22px;height:1px;background:var(--border);margin-right:16px;}
+    .body{flex:1;display:grid;grid-template-columns:1fr 552px;min-height:0;}
+    .left{padding:18px 20px;overflow:hidden;border-right:1px solid var(--border);}
+    .right{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    h2{font-size:14px;margin:0 0 5px;font-weight:600;}
+    .hint{color:var(--muted);font-size:12.5px;margin:0 0 16px;line-height:1.5;}
+    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;}
+    .tool{border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:11px 12px;
+      display:flex;flex-direction:column;gap:6px;}
+    .tool.on{border-color:var(--accent);background:#1a2130;}
+    .tool .top{display:flex;align-items:center;gap:8px;}
+    .box{width:15px;height:15px;border-radius:3px;border:1px solid var(--border);background:var(--panel2);
+      flex:none;display:flex;align-items:center;justify-content:center;}
+    .tool.on .box{border-color:var(--accent);background:#223052;}
+    .tick{width:9px;height:9px;}
+    .tool .nm{font-size:13px;font-weight:500;}
+    .tool .ds{font-size:11px;color:var(--muted);line-height:1.4;}
+    .tool .im{font-family:var(--mono);font-size:10px;color:var(--warn);}
+    .rhdr{padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px;}
+    .rhdr h3{margin:0;font-size:13px;font-weight:600;}
+    .badge{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.auto{color:var(--accent);border-color:#2a3a5a;}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .rbody{flex:1;overflow:hidden;}
+    .gsec{border-bottom:1px solid var(--border);padding:12px 16px;}
+    .gsec .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+      margin-bottom:8px;display:flex;align-items:center;gap:8px;}
+    .gitem{display:flex;align-items:center;gap:9px;padding:4px 0;font-size:12px;}
+    .gitem .why{margin-left:auto;font-size:10.5px;color:var(--muted);font-family:var(--mono);}
+    .mono{font-family:var(--mono);font-size:11.5px;}
+    .gate{color:var(--warn);}
+    .yaml{font-family:var(--mono);font-size:11px;line-height:1.6;white-space:pre;background:var(--bg);
+      border:1px solid var(--border);border-radius:6px;padding:11px 12px;margin:0;overflow:hidden;
+      color:var(--muted);}
+    .yk{color:var(--fg);} .yv{color:var(--accent);} .yc{color:#5a6472;}
+    .ftr{border-top:1px solid var(--border);background:var(--panel);padding:12px 20px;
+      display:flex;align-items:center;gap:11px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:7px 14px;font-size:12.5px;cursor:pointer;}
+    button.primary{border-color:var(--accent);color:var(--accent);}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">new project</span>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span style="font-family:var(--mono);font-size:12px;">tripon</span>
+    <span class="spacer"></span>
+    <span class="tag">step 3 of 4</span>
+  </div>
+
+  <div class="steps">
+    <div class="step done"><span class="num">✓</span>Project</div><span class="sep"></span>
+    <div class="step done"><span class="num">✓</span>Environments</div><span class="sep"></span>
+    <div class="step on"><span class="num">3</span>Tools &amp; guardrails</div><span class="sep"></span>
+    <div class="step"><span class="num">4</span>Credentials</div>
+  </div>
+
+  <div class="body">
+
+    <div class="left">
+      <h2>Which tools does this project use?</h2>
+      <p class="hint">Picking a tool installs it in the project's sandbox — and generates the
+        guardrails on the right. You can edit any of them before creating the project.</p>
+
+      <div class="grid">
+        <div class="tool on">
+          <div class="top">
+            <span class="box"><svg class="tick" viewBox="0 0 10 10" fill="none" stroke="#5aa0ff"
+              stroke-width="1.8" stroke-linecap="round"><path d="M1.5 5.2 L3.8 7.5 L8.5 2.5"/></svg></span>
+            <span class="nm">GitLab</span>
+          </div>
+          <div class="ds">Repos, MRs, pipelines on gitlab.tripon.io</div>
+          <div class="im">+ MR-only mode</div>
+        </div>
+
+        <div class="tool on">
+          <div class="top">
+            <span class="box"><svg class="tick" viewBox="0 0 10 10" fill="none" stroke="#5aa0ff"
+              stroke-width="1.8" stroke-linecap="round"><path d="M1.5 5.2 L3.8 7.5 L8.5 2.5"/></svg></span>
+            <span class="nm">Kubernetes</span>
+          </div>
+          <div class="ds">kubectl against the staging cluster</div>
+          <div class="im">+ 3 approval gates</div>
+        </div>
+
+        <div class="tool on">
+          <div class="top">
+            <span class="box"><svg class="tick" viewBox="0 0 10 10" fill="none" stroke="#5aa0ff"
+              stroke-width="1.8" stroke-linecap="round"><path d="M1.5 5.2 L3.8 7.5 L8.5 2.5"/></svg></span>
+            <span class="nm">Terraform</span>
+          </div>
+          <div class="ds">Plan and apply infrastructure</div>
+          <div class="im">+ plan pinning</div>
+        </div>
+
+        <div class="tool on">
+          <div class="top">
+            <span class="box"><svg class="tick" viewBox="0 0 10 10" fill="none" stroke="#5aa0ff"
+              stroke-width="1.8" stroke-linecap="round"><path d="M1.5 5.2 L3.8 7.5 L8.5 2.5"/></svg></span>
+            <span class="nm">ArgoCD</span>
+          </div>
+          <div class="ds">GitOps sync for tripon-staging</div>
+          <div class="im">+ 2 approval gates</div>
+        </div>
+
+        <div class="tool on">
+          <div class="top">
+            <span class="box"><svg class="tick" viewBox="0 0 10 10" fill="none" stroke="#5aa0ff"
+              stroke-width="1.8" stroke-linecap="round"><path d="M1.5 5.2 L3.8 7.5 L8.5 2.5"/></svg></span>
+            <span class="nm">Azure</span>
+          </div>
+          <div class="ds">az CLI with scoped, short-lived creds</div>
+          <div class="im">+ scope-down required</div>
+        </div>
+
+        <div class="tool">
+          <div class="top"><span class="box"></span><span class="nm">Helm</span></div>
+          <div class="ds">Chart templating and upgrades</div>
+        </div>
+
+        <div class="tool">
+          <div class="top"><span class="box"></span><span class="nm">AWS</span></div>
+          <div class="ds">STS AssumeRole, scoped per session</div>
+        </div>
+
+        <div class="tool">
+          <div class="top"><span class="box"></span><span class="nm">Docker</span></div>
+          <div class="ds">Build and push images</div>
+        </div>
+
+        <div class="tool" style="border-style:dashed;">
+          <div class="top"><span class="box" style="border-style:dashed;">+</span>
+            <span class="nm" style="color:var(--muted);">Custom tool</span></div>
+          <div class="ds">Any CLI from an allowlisted package</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="rhdr">
+        <h3>Guardrails</h3>
+        <span class="badge auto">generated from your 5 tools</span>
+        <span class="spacer"></span>
+        <button style="padding:4px 10px;font-size:11.5px;">Edit</button>
+      </div>
+
+      <div class="rbody">
+
+        <div class="gsec">
+          <div class="k">Requires human approval <span class="badge warn">7 rules</span></div>
+          <div class="gitem"><span class="mono gate">terraform apply</span><span class="why">terraform</span></div>
+          <div class="gitem"><span class="mono gate">terraform destroy</span><span class="why">terraform</span></div>
+          <div class="gitem"><span class="mono gate">kubectl delete</span><span class="why">kubernetes</span></div>
+          <div class="gitem"><span class="mono gate">kubectl scale</span><span class="why">kubernetes</span></div>
+          <div class="gitem"><span class="mono gate">kubectl patch</span><span class="why">kubernetes</span></div>
+          <div class="gitem"><span class="mono gate">argocd app delete</span><span class="why">argocd</span></div>
+          <div class="gitem"><span class="mono gate">az group delete</span><span class="why">azure</span></div>
+        </div>
+
+        <div class="gsec">
+          <div class="k">Preview before apply <span class="badge auto">dry-run</span></div>
+          <div class="gitem"><span class="mono">terraform plan</span>
+            <span class="why">hash-pinned into apply</span></div>
+          <div class="gitem"><span class="mono">kubectl diff</span>
+            <span class="why">shown in the approval</span></div>
+          <div class="gitem"><span class="mono">argocd app diff</span>
+            <span class="why">shown in the approval</span></div>
+        </div>
+
+        <div class="gsec">
+          <div class="k">Credentials to bind <span class="badge">step 4</span></div>
+          <div class="gitem"><span class="mono">gitlab-token</span>
+            <span class="badge ok" style="margin-left:auto;">reuse existing</span></div>
+          <div class="gitem"><span class="mono">kubeconfig-stg</span>
+            <span class="badge ok" style="margin-left:auto;">reuse existing</span></div>
+          <div class="gitem"><span class="mono">argocd-token</span>
+            <span class="badge ok" style="margin-left:auto;">reuse existing</span></div>
+          <div class="gitem"><span class="mono">azure-sp</span>
+            <span class="badge warn" style="margin-left:auto;">needs value</span></div>
+        </div>
+
+        <div class="gsec">
+          <div class="k">Network the sandbox may reach <span class="badge">default-deny</span></div>
+          <div class="gitem"><span class="mono">gitlab.tripon.io</span><span class="why">gitlab</span></div>
+          <div class="gitem"><span class="mono">argocd.tripon.io</span><span class="why">argocd</span></div>
+          <div class="gitem"><span class="mono">*.management.azure.com</span><span class="why">azure</span></div>
+          <div class="gitem"><span class="mono">registry.terraform.io</span><span class="why">terraform</span></div>
+        </div>
+
+        <div class="gsec" style="border-bottom:none;">
+          <div class="k">Policy file <span class="badge">opslify.policy.yaml</span></div>
+          <pre class="yaml"><span class="yc"># generated · edit anytime</span>
+<span class="yk">egress:</span>
+  <span class="yk">domains:</span> [<span class="yv">gitlab.tripon.io</span>, <span class="yv">argocd.tripon.io</span>, …]
+<span class="yk">creds:</span>
+  - { <span class="yk">name:</span> <span class="yv">gitlab-token</span>, <span class="yk">provider:</span> <span class="yv">gitlab</span> }
+  - { <span class="yk">name:</span> <span class="yv">azure-sp</span>, <span class="yk">provider:</span> <span class="yv">azure</span> }
+<span class="yk">approval_required:</span>
+  - <span class="yv">"terraform apply"</span>
+  - <span class="yv">"kubectl delete"</span></pre>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="ftr">
+    <button>Back</button>
+    <span class="spacer"></span>
+    <span class="tag">a sandbox and workspace are created for tripon / staging</span>
+    <button>Save as draft</button>
+    <button class="primary">Create project</button>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

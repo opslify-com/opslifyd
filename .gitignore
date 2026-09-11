@@ -30,12 +30,8 @@ secrets.*.yaml
 /flake.lock
 /opslify.env.yaml
 
-# Documentation & specs live on the `docs-src` branch and the published site
-# (gh-pages) — not on the code branch. Kept out of `main` to keep it code-only.
-/docs/
-/spec/
-/mkdocs.yml
-/INSTALL.md
+# Specs and docs live here in the tree, next to the code they describe.
+# Only the generated MkDocs output is ignored.
 /site/
 
 # Docs build venv
@@ -47,5 +43,16 @@ secrets.*.yaml
 # Scratch / external-tool experiments
 cline-test/
 
-# spec-graph hook lives with the spec on docs-src
-/.githooks/
+# Compiled binaries — build them, never commit them.
+#
+# Listed as explicit PATHS, one per place a build actually drops one. The obvious
+# shorthand is the binary's bare name, which matches at any depth — and also
+# matches the SOURCE DIRECTORIES cmd/opslify/ and cmd/opslify-tower/, quietly
+# ignoring every new file in them. A rule that hides the code it was meant to
+# protect is worse than the 31MB it was written to stop.
+/daemon/opslifyd
+/daemon/opslify
+/daemon/opslify-tower
+/daemon/cmd/opslifyd/opslifyd
+/daemon/cmd/opslify/opslify
+/daemon/cmd/opslify-tower/opslify-tower

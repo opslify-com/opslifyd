@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:12px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .sel{display:flex;align-items:center;gap:7px;padding:4px 9px;border:1px solid var(--border);
+      border-radius:5px;background:var(--panel2);font-family:var(--mono);font-size:12px;}
+    .spacer{flex:1;}
+    .envtabs{display:flex;gap:2px;padding:0 16px;border-bottom:1px solid var(--border);background:var(--panel);}
+    .envtab{padding:8px 14px;font-size:12.5px;color:var(--muted);border-bottom:2px solid transparent;
+      display:flex;align-items:center;gap:8px;}
+    .envtab.on{color:var(--fg);border-bottom-color:var(--warn);}
+    .envtab .n{font-family:var(--mono);font-size:11px;padding:0 5px;border:1px solid var(--border);
+      border-radius:10px;}
+    .board{flex:1;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1px;
+      background:var(--border);min-height:0;}
+    .col{background:var(--bg);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .colh{padding:10px 12px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:8px;}
+    .colh .t{font-size:11.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;}
+    .colh .c{font-family:var(--mono);font-size:11px;color:var(--muted);margin-left:auto;}
+    .stack{flex:1;padding:10px;display:flex;flex-direction:column;gap:9px;overflow:hidden;}
+    .card{border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:10px 11px;}
+    .card.hot{border-color:var(--warn);background:#1d1c14;}
+    .card.bad{border-color:#5a2a2a;}
+    .card .id{font-family:var(--mono);font-size:10.5px;color:var(--muted);}
+    .card .t{font-size:12.5px;line-height:1.4;margin:5px 0 7px;}
+    .card .cmd{font-family:var(--mono);font-size:10.5px;color:var(--muted);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:8px;}
+    .card .ft{display:flex;align-items:center;gap:7px;}
+    .av{width:17px;height:17px;border-radius:4px;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:8.5px;color:var(--muted);display:flex;align-items:center;
+      justify-content:center;flex:none;}
+    .pill{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);
+      font-family:var(--mono);}
+    .blast{font-size:10px;color:var(--muted);margin-left:auto;font-family:var(--mono);}
+    .bar{border-top:1px solid var(--border);background:var(--panel);padding:11px 16px;
+      display:flex;align-items:center;gap:11px;}
+    .cbox{flex:1;border:1px solid var(--border);border-radius:6px;background:var(--panel2);
+      padding:8px 11px;display:flex;align-items:center;gap:10px;}
+    .cin{font-size:12.5px;color:var(--muted);flex:1;}
+    .ctx{font-family:var(--mono);font-size:10.5px;color:var(--muted);padding:2px 7px;
+      border:1px solid var(--border);border-radius:10px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:6px 12px;font-size:12px;cursor:pointer;}
+    .progress{height:3px;background:var(--panel2);border-radius:2px;overflow:hidden;margin-top:8px;}
+    .progress i{display:block;height:100%;background:var(--accent);width:62%;}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">change pipeline</span>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span class="sel">tripon<span class="tag">▾</span></span>
+    <span class="spacer"></span>
+    <span class="tag">2 agents · 3 triggers armed</span>
+    <span style="font-size:10px;padding:1px 6px;border:1px solid #2a4a37;border-radius:10px;color:var(--ok);">
+      trace verified</span>
+  </div>
+
+  <div class="envtabs">
+    <div class="envtab on">staging <span class="n" style="color:var(--warn);border-color:#4a4020;">7</span></div>
+    <div class="envtab">prod <span class="n">2</span></div>
+    <div class="envtab">repo <span class="n">1</span></div>
+    <div class="envtab" style="margin-left:auto;color:var(--muted);">+ environment</div>
+  </div>
+
+  <div class="board">
+
+    <div class="col">
+      <div class="colh"><span class="t">Proposed</span><span class="c">2</span></div>
+      <div class="stack">
+        <div class="card">
+          <div class="id">#131</div>
+          <div class="t">Add HPA to transfers-ms</div>
+          <div class="cmd">kubectl autoscale deployment/transfers-ms</div>
+          <div class="ft">
+            <span class="av" style="color:var(--accent);">ag</span>
+            <span class="pill">kubectl</span>
+            <span class="blast">1 deploy</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="id">#130</div>
+          <div class="t">Bump hasura chart to 2.38.1</div>
+          <div class="cmd">helm upgrade hasura ./helm-charts/hasura</div>
+          <div class="ft">
+            <span class="av">qa</span>
+            <span class="pill">helm</span>
+            <span class="blast">4 manifests</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="colh"><span class="t">Preview ready</span><span class="c">1</span></div>
+      <div class="stack">
+        <div class="card">
+          <div class="id">#129</div>
+          <div class="t">Provision redis cache tier</div>
+          <div class="cmd">terraform plan -out tfplan-4b8e</div>
+          <div class="ft">
+            <span class="av" style="color:var(--accent);">ag</span>
+            <span class="pill">terraform</span>
+            <span class="blast">+3 ~1 -0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="colh"><span class="t" style="color:var(--warn);">Awaiting approval</span><span class="c">2</span></div>
+      <div class="stack">
+        <div class="card hot">
+          <div class="id">#128</div>
+          <div class="t">Raise flight-ms memory limit to 512Mi</div>
+          <div class="cmd">kubectl patch deployment/flight-ms</div>
+          <div class="ft">
+            <span class="av" style="color:var(--accent);">ag</span>
+            <span class="pill" style="color:var(--warn);border-color:#4a4020;">kubectl.patch</span>
+            <span class="blast">1 deploy · 2 pods</span>
+          </div>
+        </div>
+        <div class="card hot">
+          <div class="id">#127</div>
+          <div class="t">Scale hotel-ms to 4 replicas</div>
+          <div class="cmd">kubectl scale deployment/hotel-ms</div>
+          <div class="ft">
+            <span class="av">qa</span>
+            <span class="pill" style="color:var(--warn);border-color:#4a4020;">kubectl.scale</span>
+            <span class="blast">4 pods</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="colh"><span class="t" style="color:var(--accent);">Applying</span><span class="c">1</span></div>
+      <div class="stack">
+        <div class="card" style="border-color:#2a3a5a;">
+          <div class="id">#126</div>
+          <div class="t">Sync gitops after chart bump</div>
+          <div class="cmd">argocd app sync tripon-staging</div>
+          <div class="ft">
+            <span class="av" style="color:var(--accent);">ag</span>
+            <span class="pill">argocd</span>
+            <span class="blast">6 manifests</span>
+          </div>
+          <div class="progress"><i></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="colh"><span class="t">Done</span><span class="c">14</span></div>
+      <div class="stack">
+        <div class="card">
+          <div class="id">#125 · applied</div>
+          <div class="t">Open MR: pin transfers-ms digest</div>
+          <div class="cmd">glab mr create → !412</div>
+          <div class="ft">
+            <span class="av" style="color:var(--accent);">ag</span>
+            <span class="pill" style="color:var(--ok);border-color:#2a4a37;">applied</span>
+            <span class="blast">revertible</span>
+          </div>
+        </div>
+        <div class="card bad">
+          <div class="id">#124 · reverted</div>
+          <div class="t">Apply terraform plan for cache tier</div>
+          <div class="cmd">terraform apply tfplan-9f2c</div>
+          <div class="ft">
+            <span class="av">qa</span>
+            <span class="pill" style="color:var(--danger);border-color:#5a2a2a;">failed</span>
+            <span class="blast">auto-reverted</span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="id">#123 · applied</div>
+          <div class="t">Roll back yarvel-ai-assistant</div>
+          <div class="cmd">kubectl rollout undo</div>
+          <div class="ft">
+            <span class="av" style="color:var(--accent);">ag</span>
+            <span class="pill" style="color:var(--ok);border-color:#2a4a37;">applied</span>
+            <span class="blast">3 pods</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="bar">
+    <div class="cbox">
+      <span class="ctx">tripon / staging</span>
+      <span class="cin">Ask the agent to propose a change…</span>
+      <span class="tag">claude · MCP</span>
+    </div>
+    <button>Runbooks</button>
+    <button style="border-color:var(--accent);color:var(--accent);">New change</button>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

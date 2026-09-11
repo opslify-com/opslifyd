@@ -1,0 +1,228 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:11px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .crumb{font-family:var(--mono);font-size:12px;}
+    .spacer{flex:1;}
+    .chhdr{padding:15px 20px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:14px;}
+    .chhdr .id{font-family:var(--mono);font-size:13px;color:var(--muted);padding-top:3px;}
+    .chhdr h2{margin:0 0 6px;font-size:19px;font-weight:600;line-height:1.25;}
+    .sub{font-family:var(--mono);font-size:12px;color:var(--muted);}
+    .badge{font-size:10px;padding:2px 7px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.acc{color:var(--accent);border-color:#2a3a5a;}
+    .body{flex:1;display:grid;grid-template-columns:1fr 358px;min-height:0;}
+    .main{display:flex;flex-direction:column;min-height:0;overflow:hidden;border-right:1px solid var(--border);}
+    .tabs{display:flex;gap:2px;padding:0 20px;border-bottom:1px solid var(--border);background:var(--panel);}
+    .tabs .t{padding:9px 12px;font-size:12.5px;color:var(--muted);border-bottom:2px solid transparent;}
+    .tabs .t.on{color:var(--fg);border-bottom-color:var(--accent);}
+    .pane{flex:1;overflow:hidden;padding:16px 20px;}
+    .ptitle{font-size:11px;color:var(--muted);font-family:var(--mono);margin-bottom:8px;
+      display:flex;align-items:center;gap:9px;}
+    .diff{font-family:var(--mono);font-size:12px;line-height:1.65;white-space:pre;background:var(--panel);
+      border:1px solid var(--border);border-radius:6px;padding:13px 15px;overflow:hidden;}
+    .add{color:var(--ok);} .del{color:var(--danger);} .cx{color:var(--muted);} .hd{color:var(--accent);}
+    .steps{margin-top:18px;}
+    .steps h3{font-size:12px;margin:0 0 9px;font-weight:600;color:var(--muted);
+      text-transform:uppercase;letter-spacing:.06em;}
+    .st{display:flex;align-items:center;gap:11px;padding:8px 11px;border:1px solid var(--border);
+      border-radius:5px;background:var(--panel);margin-bottom:7px;}
+    .st .n{width:17px;height:17px;border-radius:50%;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:9.5px;display:flex;align-items:center;justify-content:center;flex:none;}
+    .st .cmd{font-family:var(--mono);font-size:11.5px;flex:1;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;}
+    .st .dur{font-family:var(--mono);font-size:10.5px;color:var(--muted);}
+    .rail{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .rsec{padding:13px 16px;border-bottom:1px solid var(--border);}
+    .rsec .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+      margin-bottom:9px;}
+    .kv{display:flex;align-items:center;gap:9px;padding:3.5px 0;font-size:12px;}
+    .kv .kk{color:var(--muted);min-width:88px;}
+    .kv .vv{font-family:var(--mono);font-size:11.5px;}
+    .blast{display:flex;flex-direction:column;gap:6px;}
+    .bl{display:flex;align-items:center;gap:9px;font-size:12px;}
+    .bl .ic{width:6px;height:6px;border-radius:50%;flex:none;}
+    .note{font-size:11.5px;color:var(--muted);line-height:1.5;}
+    .ftr{border-top:1px solid var(--border);background:var(--panel);padding:12px 20px;
+      display:flex;align-items:center;gap:11px;}
+    .inp{flex:1;background:var(--bg);color:var(--muted);border:1px solid var(--border);
+      border-radius:5px;padding:8px 11px;font-size:12.5px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:8px 15px;font-size:12.5px;cursor:pointer;}
+    button.approve{border-color:#2a4a37;color:var(--ok);}
+    button.deny{border-color:#5a2a2a;color:var(--danger);}
+    button.rev{border-color:#2a3a5a;color:var(--accent);}
+    button.sm{padding:4px 10px;font-size:11.5px;}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span class="crumb">tripon</span><span class="tag">/</span>
+    <span class="crumb" style="color:var(--warn);">staging</span><span class="tag">/</span>
+    <span class="crumb">changes</span><span class="tag">/</span>
+    <span class="crumb">#128</span>
+    <span class="spacer"></span>
+    <span class="badge ok">chain verified · f692a6ae</span>
+  </div>
+
+  <div class="chhdr">
+    <span class="id">#128</span>
+    <div style="flex:1;min-width:0;">
+      <h2>Raise flight-ms memory limit to 512Mi</h2>
+      <div class="sub">deployment/flight-ms · namespace staging · proposed 14:23 · 4m ago</div>
+    </div>
+    <span class="badge warn">needs approval</span>
+    <span class="badge acc">revert prepared</span>
+  </div>
+
+  <div class="body">
+
+    <div class="main">
+      <div class="tabs">
+        <span class="t on">Preview</span>
+        <span class="t">Steps</span>
+        <span class="t">Trace</span>
+        <span class="t">Policy</span>
+      </div>
+
+      <div class="pane">
+        <div class="ptitle">
+          <span>kubectl diff · live → proposed</span>
+          <span class="badge">pinned · sha256 4b8e2c…</span>
+        </div>
+        <div class="diff"><span class="hd">--- live/apps/v1/Deployment/flight-ms</span>
+<span class="hd">+++ proposed/apps/v1/Deployment/flight-ms</span>
+<span class="cx">@@ spec.template.spec.containers[0].resources @@
+     requests:
+       memory: 128Mi
+       cpu: 100m
+     limits:</span>
+<span class="del">-      memory: 256Mi</span>
+<span class="add">+      memory: 512Mi</span>
+<span class="cx">       cpu: 500m</span></div>
+
+        <div class="steps">
+          <h3>Steps the agent will run</h3>
+          <div class="st">
+            <span class="n" style="border-color:#2a4a37;color:var(--ok);">✓</span>
+            <span class="cmd">kubectl get pods -n staging -l app=flight-ms</span>
+            <span class="badge ok">done</span>
+            <span class="dur">1.2s</span>
+          </div>
+          <div class="st">
+            <span class="n" style="border-color:#2a4a37;color:var(--ok);">✓</span>
+            <span class="cmd">kubectl logs flight-ms-7d9c8b4f5-2xk9q --previous</span>
+            <span class="badge ok">done</span>
+            <span class="dur">0.9s</span>
+          </div>
+          <div class="st">
+            <span class="n" style="border-color:#2a4a37;color:var(--ok);">✓</span>
+            <span class="cmd">kubectl diff -f patch.yaml</span>
+            <span class="badge ok">preview</span>
+            <span class="dur">1.4s</span>
+          </div>
+          <div class="st" style="border-color:var(--warn);background:#1d1c14;">
+            <span class="n" style="border-color:#4a4020;color:var(--warn);">4</span>
+            <span class="cmd">kubectl patch deployment/flight-ms -n staging --patch-file patch.yaml</span>
+            <span class="badge warn">gated</span>
+            <span class="dur">—</span>
+          </div>
+          <div class="st" style="opacity:.6;">
+            <span class="n">5</span>
+            <span class="cmd">kubectl rollout status deployment/flight-ms -n staging</span>
+            <span class="badge">queued</span>
+            <span class="dur">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rail">
+      <div class="rsec">
+        <div class="k">Attribution</div>
+        <div class="kv"><span class="kk">Requested by</span>
+          <span class="vv" style="color:var(--accent);">agent · claude</span></div>
+        <div class="kv"><span class="kk">Via</span><span class="vv">MCP · sandbox 6a1f</span></div>
+        <div class="kv"><span class="kk">Policy rule</span><span class="vv gate"
+          style="color:var(--warn);">kubectl.patch</span></div>
+        <div class="kv"><span class="kk">policy_hash</span><span class="vv">9c3e17b2</span></div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">Credential used</div>
+        <div class="kv"><span class="kk">Reference</span><span class="vv">kubeconfig-stg</span></div>
+        <div class="kv"><span class="kk">Value seen by</span>
+          <span class="vv" style="color:var(--ok);">nobody</span></div>
+        <p class="note" style="margin:7px 0 0;">Injected at the network boundary. The agent, the
+          sandbox environment and this trace contain no credential.</p>
+      </div>
+
+      <div class="rsec">
+        <div class="k">Blast radius</div>
+        <div class="blast">
+          <div class="bl"><span class="ic" style="background:var(--warn);"></span>
+            1 deployment mutated</div>
+          <div class="bl"><span class="ic" style="background:var(--warn);"></span>
+            2 pods restart (rolling)</div>
+          <div class="bl"><span class="ic" style="background:var(--ok);"></span>
+            no data loss · no network change</div>
+          <div class="bl"><span class="ic" style="background:var(--ok);"></span>
+            scoped to namespace staging</div>
+        </div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">If this goes wrong</div>
+        <p class="note" style="margin:0 0 9px;">The live manifest was captured before the patch,
+          so the inverse is ready to apply.</p>
+        <div class="kv"><span class="kk">Revert to</span><span class="vv">memory: 256Mi</span></div>
+        <div class="kv"><span class="kk">Captured</span><span class="vv">14:23:04</span></div>
+        <button class="rev sm" style="margin-top:8px;">View revert plan</button>
+      </div>
+
+      <div class="rsec" style="border-bottom:none;">
+        <div class="k">Promotion</div>
+        <p class="note" style="margin:0;">Once applied and healthy in staging, this change can be
+          promoted to <span style="font-family:var(--mono);">prod</span> — which requires a second
+          approver.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="ftr">
+    <input class="inp" value="256Mi was too tight for the JVM heap — approving" readonly>
+    <button class="deny">Deny</button>
+    <button class="approve">Approve &amp; apply</button>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

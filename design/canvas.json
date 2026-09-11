@@ -1,0 +1,65 @@
+{
+  "pages": [
+    { "id": "options", "name": "Main screen — 4 directions" },
+    { "id": "key-screens", "name": "Key screens" }
+  ],
+  "artboards": [
+    { "file": "Main.dc.html", "title": "Option A — Chat-first copilot", "page": "options", "x": 0, "y": 0, "w": 1440, "h": 900 },
+    { "file": "OptionB.dc.html", "title": "Option B — Changes feed (mission control)", "page": "options", "x": 1560, "y": 0, "w": 1440, "h": 900 },
+    { "file": "OptionC.dc.html", "title": "Option C — Three-pane cockpit", "page": "options", "x": 0, "y": 1120, "w": 1440, "h": 900 },
+    { "file": "OptionD.dc.html", "title": "Option D — Change pipeline", "page": "options", "x": 1560, "y": 1120, "w": 1440, "h": 900 },
+    { "file": "ProjectWizard.dc.html", "title": "New project — tools generate guardrails", "page": "key-screens", "x": 0, "y": 0, "w": 1440, "h": 900 },
+    { "file": "ChangeDetail.dc.html", "title": "Change detail & approval", "page": "key-screens", "x": 1560, "y": 0, "w": 1440, "h": 900 }
+  ],
+  "annotations": [
+    {
+      "id": "note-a",
+      "page": "options",
+      "x": 0,
+      "y": -210,
+      "w": 620,
+      "text": "OPTION A — Chat-first copilot\n\nThe conversation is the product. Project context sits on the left; every command and approval appears inline in the thread.\n\nBest when: one person, one task at a time, exploratory work.\nTradeoff: no overview. With 3 agents and 12 changes a day you cannot see the state of the system, only the last thing you talked about. Approvals scroll away."
+    },
+    {
+      "id": "note-b",
+      "page": "options",
+      "x": 1560,
+      "y": -210,
+      "w": 620,
+      "text": "OPTION B — Changes feed (mission control)   ← my recommendation\n\nThe Change is the unit of work. The feed is the hero; chat is docked as an input, not the centre. Awaiting-approval rows are pinned and colour-coded.\n\nBest when: several agents and humans acting on shared infrastructure — you always see what is pending, applied, drifted or failed.\nTradeoff: less immersive for a long single conversation; the chat panel is narrow."
+    },
+    {
+      "id": "note-c",
+      "page": "options",
+      "x": 0,
+      "y": 910,
+      "w": 620,
+      "text": "OPTION C — Three-pane cockpit\n\nAn IDE for operations: explorer, tabbed work area, chat, and a trace drawer along the bottom. Familiar to anyone using Cursor or VS Code.\n\nBest when: deep hands-on work — reading diffs, editing terraform, following a trace.\nTradeoff: the densest and most intimidating of the four; the tab metaphor hides what is not open, so pending approvals are easy to miss."
+    },
+    {
+      "id": "note-d",
+      "page": "options",
+      "x": 1560,
+      "y": 910,
+      "w": 620,
+      "text": "OPTION D — Change pipeline\n\nChanges flow left to right: Proposed → Preview ready → Awaiting approval → Applying → Done. Feels like a CD pipeline, so the approval gate is spatial.\n\nBest when: a team wants a shared board and an obvious queue; great on a wall screen.\nTradeoff: columns waste space when volume is low, and it is a poor host for a long chat or a big diff — those need a detail view anyway."
+    },
+    {
+      "id": "note-wizard",
+      "page": "key-screens",
+      "x": 0,
+      "y": -210,
+      "w": 620,
+      "text": "NEW PROJECT — the feature I would build the product around\n\nPicking tools does not just install binaries: it GENERATES the guardrails. Choose Terraform and you get plan-pinning plus approval on apply/destroy; choose Kubernetes and you get gates on delete/scale/patch; each tool declares the credentials it needs and the hosts it may reach.\n\nOnboarding a project goes from a day of hand-written YAML to five minutes of clicking — and the result is safer than most people would write themselves. Everything stays editable before Create."
+    },
+    {
+      "id": "note-change",
+      "page": "key-screens",
+      "x": 1560,
+      "y": -210,
+      "w": 620,
+      "text": "CHANGE DETAIL — where trust is actually earned\n\nOne screen answers every question a human has before saying yes: what exactly changes (pinned diff), who asked (agent, via MCP), which policy rule gated it, what the blast radius is, which credential was used (by name — value seen by nobody), and what the revert looks like if it goes wrong.\n\nThe steps list shows the agent's whole plan with the gated step called out, so you approve a plan rather than a black box. Promotion to prod is offered only after it is healthy in staging."
+    }
+  ],
+  "launch": { "view": "canvas", "page": "options" }
+}

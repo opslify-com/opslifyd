@@ -1,0 +1,384 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --ssh:#c9a6ff;--k8s:#8fd0ff;--cloud:#ffb98f;--db:#9fe0b8;--skill:#ffd08f;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:7px 14px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:10px;font-size:12px;}
+    .hdr h1{font-size:13px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:11.5px;}
+    .crumb{font-family:var(--mono);font-size:11.5px;}
+    .spacer{flex:1;}
+    .badge{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    /* agent pill in the header — always-visible “who is driving” */
+    .agentpill{display:flex;align-items:center;gap:7px;padding:3px 9px;border:1px solid #2a3a5a;
+      border-radius:12px;background:#1a2130;font-size:11px;}
+    .agentpill .d{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+    .agentpill .nm{font-family:var(--mono);color:var(--accent);}
+    .agentpill .ch{color:var(--muted);font-size:10px;}
+    .body{flex:1;display:grid;grid-template-columns:50px 288px 1fr 306px;min-height:0;}
+    /* project rail (from A) */
+    .rail{border-right:1px solid var(--border);background:var(--panel);
+      display:flex;flex-direction:column;align-items:center;gap:6px;padding:9px 0;}
+    .railbtn{width:32px;height:32px;border-radius:6px;border:1px solid var(--border);
+      background:var(--panel2);color:var(--muted);display:flex;align-items:center;
+      justify-content:center;font-family:var(--mono);font-size:11px;}
+    .railbtn.on{border-color:var(--accent);color:var(--accent);background:#223052;}
+    /* collapsible sidebar (from A, now accordions) */
+    .side{border-right:1px solid var(--border);background:var(--panel);overflow:hidden;
+      display:flex;flex-direction:column;}
+    .grp{border-bottom:1px solid var(--border);}
+    .gh{display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;user-select:none;}
+    .gh .cv{width:9px;color:var(--muted);font-size:8px;}
+    .gh .t{font-size:10.5px;font-weight:600;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.06em;}
+    .gh .n{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--muted);}
+    .gh:hover .t{color:var(--fg);}
+    .gb{padding:0 12px 11px;}
+    .grp.shut .gb{display:none;}
+    .grp.shut .gh{padding-bottom:8px;}
+    .envrow{display:flex;gap:6px;}
+    .env{flex:1;padding:5px 0;text-align:center;border:1px solid var(--border);border-radius:5px;
+      background:var(--panel2);color:var(--muted);font-size:11.5px;}
+    .env.on{border-color:var(--warn);color:var(--warn);}
+    .sb{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:8px 9px;}
+    .sb .top{display:flex;align-items:center;gap:7px;}
+    .sb .sid{font-family:var(--mono);font-size:11.5px;color:var(--accent);}
+    .sb .pulse{width:5px;height:5px;border-radius:50%;background:var(--ok);}
+    .sb .meta{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;margin-top:7px;}
+    .sb .mrow{font-size:10.5px;color:var(--muted);}
+    .sb .mrow b{color:var(--fg);font-family:var(--mono);font-weight:500;}
+    .sb .iso{margin-top:7px;font-size:10px;color:var(--muted);line-height:1.4;}
+    .sb .acts{display:flex;gap:5px;margin-top:8px;}
+    .cn{display:flex;align-items:center;gap:7px;padding:4px 0;font-size:11.5px;}
+    .cn .kd{font-family:var(--mono);font-size:9px;padding:1px 4px;border:1px solid var(--border);
+      border-radius:2px;color:var(--muted);flex:none;width:54px;text-align:center;}
+    .cn .nm{font-family:var(--mono);font-size:11px;flex:1;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap;}
+    .cn .se{font-size:9.5px;color:var(--ok);}
+    .chips{display:flex;flex-wrap:wrap;gap:5px;}
+    .chip{display:flex;align-items:center;gap:5px;padding:3px 7px;border:1px solid var(--border);
+      border-radius:5px;background:var(--panel2);font-size:11px;}
+    .dot{width:5px;height:5px;border-radius:50%;background:var(--ok);}
+    .sk{display:flex;align-items:center;gap:7px;padding:4px 0;font-size:11.5px;}
+    .sk .f{font-family:var(--mono);font-size:10.5px;color:var(--skill);flex:1;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .sk .ln{font-family:var(--mono);font-size:9.5px;color:var(--muted);}
+    .tree{font-family:var(--mono);font-size:10.5px;color:var(--muted);line-height:1.7;}
+    /* centre (from C) */
+    .center{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--panel);}
+    .tab{padding:7px 11px;font-size:11px;color:var(--muted);border-right:1px solid var(--border);
+      display:flex;align-items:center;gap:7px;font-family:var(--mono);}
+    .tab.on{color:var(--fg);background:var(--bg);border-bottom:1px solid var(--bg);margin-bottom:-1px;}
+    .work{flex:1;overflow:hidden;display:flex;flex-direction:column;}
+    .wbar{display:flex;align-items:center;gap:9px;padding:8px 13px;border-bottom:1px solid var(--border);}
+    .wbar h2{margin:0;font-size:12px;font-weight:600;font-family:var(--mono);}
+    .capbar{display:flex;align-items:center;gap:8px;padding:5px 13px;background:#1a1721;
+      border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10px;color:var(--ssh);}
+    .term{flex:1;overflow:hidden;padding:10px 13px;font-family:var(--mono);font-size:11.5px;
+      line-height:1.55;white-space:pre-wrap;}
+    .p{color:var(--ok);} .o{color:var(--muted);} .w{color:var(--warn);} .e{color:var(--danger);}
+    .cur{background:var(--fg);color:var(--bg);}
+    .drawer{border-top:1px solid var(--border);background:var(--panel);height:226px;
+      display:flex;flex-direction:column;}
+    .dtabs{display:flex;gap:2px;padding:0 11px;border-bottom:1px solid var(--border);}
+    .dtabs .t{padding:6px 9px;font-size:11px;color:var(--muted);border-bottom:2px solid transparent;}
+    .dtabs .t.on{color:var(--fg);border-bottom-color:var(--accent);}
+    .dtabs .sp{flex:1;}
+    .tl{flex:1;overflow:hidden;padding:3px 0;}
+    .tli{display:flex;gap:9px;padding:3px 13px;font-size:10.5px;border-bottom:1px solid var(--border);}
+    .tli .ts{color:var(--muted);font-family:var(--mono);white-space:nowrap;}
+    .tli .ty{font-family:var(--mono);min-width:106px;white-space:nowrap;}
+    .tli .de{color:var(--fg);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    /* chat */
+    .chat{border-left:1px solid var(--border);background:var(--panel);display:flex;flex-direction:column;
+      min-height:0;}
+    .ch{padding:7px 11px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:7px;
+      font-size:11.5px;}
+    .thr{flex:1;padding:10px;display:flex;flex-direction:column;gap:10px;overflow:hidden;}
+    .m{display:flex;gap:7px;}
+    .m .a{width:18px;height:18px;border-radius:4px;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:8px;color:var(--muted);display:flex;align-items:center;
+      justify-content:center;flex:none;}
+    .m .b{flex:1;min-width:0;font-size:11.5px;line-height:1.5;}
+    .m .w2{font-size:9.5px;color:var(--muted);margin-bottom:2px;}
+    .gate{margin-top:6px;border:1px solid var(--warn);border-radius:5px;background:#1d1c14;padding:8px;}
+    .gate .h{font-size:10.5px;color:var(--warn);margin-bottom:4px;font-family:var(--mono);}
+    .gate .d{font-size:11px;line-height:1.45;}
+    .arow{display:flex;gap:6px;margin-top:7px;}
+    .comp{border-top:1px solid var(--border);padding:8px 10px;}
+    .cbox{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:7px 9px;}
+    .cin{font-size:11.5px;color:var(--muted);}
+    .crow{display:flex;align-items:center;gap:7px;margin-top:7px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:4px 9px;font-size:11px;cursor:pointer;}
+    button.sm{padding:2px 7px;font-size:10px;}
+    button.approve{border-color:#2a4a37;color:var(--ok);}
+    button.deny{border-color:#5a2a2a;color:var(--danger);}
+    button.danger{border-color:#5a2a2a;color:var(--danger);}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">cockpit</span>
+    <span style="width:1px;height:14px;background:var(--border);"></span>
+    <span class="crumb">tripon</span><span class="tag">/</span>
+    <span class="crumb" style="color:var(--warn);">staging</span><span class="tag">/</span>
+    <span class="crumb">ssh · web-02</span>
+    <span class="spacer"></span>
+    <span class="agentpill">
+      <span class="d"></span>
+      <span class="nm">claude-sonnet-4.6</span>
+      <span class="ch">· MCP · 7 tools · 4 skills</span>
+      <span class="ch" style="color:var(--accent);">change</span>
+    </span>
+    <span class="badge ok">trace verified</span>
+  </div>
+
+  <div class="body">
+
+    <div class="rail">
+      <div class="railbtn on">TP</div>
+      <div class="railbtn">YU</div>
+      <div class="railbtn" style="border-style:dashed;">+</div>
+    </div>
+
+    <div class="side">
+
+      <div class="grp">
+        <div class="gh"><span class="cv">▾</span><span class="t">Environment</span></div>
+        <div class="gb">
+          <div class="envrow">
+            <div class="env">prod</div>
+            <div class="env on">staging</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="gh"><span class="cv">▾</span><span class="t">Live sandbox</span>
+          <span class="n">3 · all →</span></div>
+        <div class="gb">
+          <div class="sb">
+            <div class="top">
+              <span class="pulse"></span>
+              <span class="sid">6a1f2c94</span>
+              <span class="badge" style="color:#9fe0b8;border-color:#25503a;">gVisor</span>
+              <span class="spacer"></span>
+              <span class="tag" style="font-size:10px;">24m</span>
+            </div>
+            <div class="meta">
+              <div class="mrow">mem <b>412M</b>/2G</div>
+              <div class="mrow">cpu <b>0.3</b>/2</div>
+              <div class="mrow">net <b>10.89.0.6</b></div>
+              <div class="mrow">tools <b>7</b></div>
+            </div>
+            <div class="iso">read-only rootfs · rootless · caps dropped</div>
+            <div class="acts">
+              <button class="sm">Shell</button>
+              <button class="sm">Snapshot</button>
+              <button class="sm danger">Kill</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="gh"><span class="cv">▾</span><span class="t">Connections</span>
+          <span class="n">6 · manage →</span></div>
+        <div class="gb">
+          <div class="cn"><span class="kd" style="color:var(--k8s);border-color:#25455a;">k8s</span>
+            <span class="nm">kubeconfig-stg</span><span class="se">blind</span></div>
+          <div class="cn"><span class="kd" style="color:var(--ssh);border-color:#3d2f5a;">ssh</span>
+            <span class="nm">ssh-web-fleet</span><span class="se">blind</span></div>
+          <div class="cn"><span class="kd" style="color:var(--cloud);border-color:#5a3d25;">aws</span>
+            <span class="nm">aws-scoped</span><span class="se">15m</span></div>
+          <div class="cn"><span class="kd" style="color:#7fb2ff;border-color:#2a3a5a;">http</span>
+            <span class="nm">gitlab-token</span><span class="se">blind</span></div>
+          <div class="cn"><span class="kd" style="color:var(--db);border-color:#25503a;">db</span>
+            <span class="nm">pg-staging</span><span class="se">blind</span></div>
+          <div class="cn"><span class="kd" style="color:var(--cloud);border-color:#5a3d25;">azure</span>
+            <span class="nm" style="color:var(--muted);">azure-sp</span>
+            <span class="badge warn" style="font-size:9px;">set up</span></div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="gh"><span class="cv">▾</span><span class="t">Skills loaded</span>
+          <span class="n">4 · edit →</span></div>
+        <div class="gb">
+          <div class="sk"><span class="f">kubernetes.md</span><span class="ln">42 ln</span></div>
+          <div class="sk"><span class="f">terraform.md</span><span class="ln">61 ln</span></div>
+          <div class="sk"><span class="f">ssh-fleet.md</span><span class="ln">28 ln</span></div>
+          <div class="sk"><span class="f">tripon-house-rules.md</span><span class="ln">19 ln</span></div>
+          <div style="margin-top:6px;font-size:10px;color:var(--muted);line-height:1.45;">
+            Injected into the agent's context for this project only.</div>
+        </div>
+      </div>
+
+      <div class="grp shut">
+        <div class="gh"><span class="cv">▸</span><span class="t">Tools in sandbox</span>
+          <span class="n">7</span></div>
+        <div class="gb">
+          <div class="chips">
+            <span class="chip"><span class="dot"></span>kubectl</span>
+            <span class="chip"><span class="dot"></span>ssh</span>
+            <span class="chip"><span class="dot"></span>terraform</span>
+            <span class="chip"><span class="dot"></span>argocd</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="grp">
+        <div class="gh"><span class="cv">▾</span><span class="t">Workspace</span>
+          <span class="n">synced 2s</span></div>
+        <div class="gb">
+          <div class="tree">/workspace<br>&nbsp;&nbsp;ansible/<br>&nbsp;&nbsp;terraform/<br>&nbsp;&nbsp;gitops/</div>
+          <div style="margin-top:6px;font-size:10px;color:var(--muted);">~/tripon ↔ linked</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="center">
+      <div class="tabs">
+        <div class="tab on">ssh · web-02 <span class="x">✕</span></div>
+        <div class="tab">change #132 <span class="x">✕</span></div>
+        <div class="tab">terraform/main.tf <span class="x">✕</span></div>
+        <div class="tab" style="color:var(--muted);border-right:none;">+</div>
+      </div>
+
+      <div class="work">
+        <div class="wbar">
+          <h2>web-02.ec2.internal</h2>
+          <span class="badge">i-0a91c7d2e</span>
+          <span class="badge">via bastion</span>
+          <span class="spacer"></span>
+          <button class="sm">Record</button>
+          <button class="sm">Close</button>
+        </div>
+
+        <div class="capbar">
+          ssh-agent forwarded from the daemon · key ops-fleet constrained to web-01…04 ·
+          <span style="color:var(--fg);">no private key in this sandbox</span>
+        </div>
+
+        <div class="term"><span class="p">ubuntu@web-02:~$</span> systemctl status nginx --no-pager
+<span class="o">● nginx.service - A high performance web server and reverse proxy
+     Active: active (running) since Tue 2026-09-01 09:14:22 UTC; 3 days ago
+   Main PID: 1041 (nginx)
+     Memory: 1.9G (peak: 1.9G)</span>
+<span class="e">      nginx: [alert] worker process failed to allocate memory
+      24 connections refused in the last 5 minutes</span>
+
+<span class="p">ubuntu@web-02:~$</span> free -m
+<span class="o">               total        used        free
+Mem:            3936        3712          94</span>
+
+<span class="p">ubuntu@web-02:~$</span> journalctl -u nginx --since -10m --no-pager | tail -2
+<span class="o">Sep 04 14:29:14 web-02 nginx[1041]: [alert] fork() failed (12: Cannot allocate memory)</span>
+<span class="w">Sep 04 14:29:40 web-02 nginx[1041]: [emerg] no live upstreams</span>
+
+<span class="p">ubuntu@web-02:~$</span> <span class="cur"> </span></div>
+
+        <div class="drawer">
+          <div class="dtabs">
+            <span class="t on">Trace</span>
+            <span class="t">Access</span>
+            <span class="t">Steps</span>
+            <span class="t">Policy</span>
+            <span class="sp"></span>
+            <span class="t" style="color:var(--muted);">signed · f692a6ae</span>
+          </div>
+          <div class="tl">
+            <div class="tli"><span class="ts">14:30:02</span><span class="ty" style="color:var(--ok);">session.start</span><span class="de">sandbox 6a1f2c94 · agent claude-sonnet-4.6 · 4 skills</span></div>
+            <div class="tli"><span class="ts">14:30:04</span><span class="ty" style="color:var(--ssh);">ssh.sign</span><span class="de">key ops-fleet → web-02 · destination allowed · ok</span></div>
+            <div class="tli"><span class="ts">14:30:04</span><span class="ty" style="color:var(--ssh);">ssh.session.open</span><span class="de">web-02 via bastion.tripon.io · recorded</span></div>
+            <div class="tli"><span class="ts">14:30:06</span><span class="ty" style="color:var(--accent);">exec.start</span><span class="de">systemctl status nginx --no-pager</span></div>
+            <div class="tli"><span class="ts">14:30:41</span><span class="ty" style="color:var(--danger);">policy.decision</span><span class="de">ssh.exec "systemctl restart" → approval_required</span></div>
+            <div class="tli"><span class="ts">14:22:08</span><span class="ty" style="color:var(--danger);">ssh.sign</span><span class="de">key ops-fleet → db-02 · REFUSED · outside constraint</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat">
+      <div class="ch">
+        <span style="font-weight:600;">Agent</span>
+        <span class="badge" style="color:var(--accent);border-color:#2a3a5a;">claude-sonnet-4.6</span>
+        <span class="spacer"></span>
+        <button class="sm">Switch</button>
+      </div>
+      <div class="thr">
+        <div class="m">
+          <div class="a">you</div>
+          <div class="b"><div class="w2">You · 14:29</div>
+            web-02 is dropping requests. Check the box and restart nginx if it's wedged.</div>
+        </div>
+        <div class="m">
+          <div class="a" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="b"><div class="w2">Agent · 14:30</div>
+            In over SSH through the bastion. nginx has grown to 1.9 GB of a 3.9 GB box and
+            <span style="font-family:var(--mono);">fork()</span> is failing, so it reports no live
+            upstreams.</div>
+        </div>
+        <div class="m">
+          <div class="a" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="b"><div class="w2">Agent · 14:30</div>
+            <span style="color:var(--skill);font-family:var(--mono);font-size:10.5px;">
+              ssh-fleet.md</span> says drain before restarting, so:
+            <div class="gate">
+              <div class="h">change #132 · awaiting your approval</div>
+              <div class="d">drain web-02 → <span style="font-family:var(--mono);color:var(--danger);">systemctl
+                restart nginx</span> → re-add<br>
+                <span style="color:var(--muted);">1 of 4 nodes · ~4s dropped · revert = re-add</span></div>
+              <div class="arow">
+                <button class="approve">Approve</button>
+                <button class="deny">Deny</button>
+                <button class="sm">Open</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="comp">
+        <div class="cbox">
+          <div class="cin">Ask the agent…</div>
+          <div class="crow">
+            <span class="tag" style="font-size:10px;">tripon / staging · sandbox 6a1f</span>
+            <span class="spacer"></span>
+            <button class="sm" style="border-color:var(--accent);color:var(--accent);">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

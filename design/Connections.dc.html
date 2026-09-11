@@ -1,0 +1,302 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:11px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .crumb{font-family:var(--mono);font-size:12px;}
+    .spacer{flex:1;}
+    .body{flex:1;display:grid;grid-template-columns:196px 1fr 330px;min-height:0;}
+    .nav{border-right:1px solid var(--border);background:var(--panel);padding:10px 0;}
+    .navitem{display:flex;align-items:center;gap:9px;padding:7px 14px;font-size:13px;color:var(--muted);
+      border-left:2px solid transparent;}
+    .navitem.on{color:var(--fg);border-left-color:var(--accent);background:var(--panel2);}
+    .navitem .n{margin-left:auto;font-family:var(--mono);font-size:11px;}
+    .navsec{padding:14px 14px 6px;font-size:10.5px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.07em;font-weight:600;}
+    .main{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .bar{display:flex;align-items:center;gap:11px;padding:13px 18px;border-bottom:1px solid var(--border);}
+    .bar h2{margin:0;font-size:15px;font-weight:600;}
+    .lede{padding:0 18px 13px;font-size:12.5px;color:var(--muted);max-width:78ch;line-height:1.5;
+      border-bottom:1px solid var(--border);}
+    .kinds{display:flex;gap:6px;padding:11px 18px;border-bottom:1px solid var(--border);flex-wrap:wrap;}
+    .kind{padding:3px 9px;border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--muted);
+      font-family:var(--mono);}
+    .kind.on{border-color:var(--accent);color:var(--accent);}
+    .thead{display:grid;grid-template-columns:190px 96px 1fr 210px 150px 76px;gap:12px;
+      padding:8px 18px;border-bottom:1px solid var(--border);background:var(--panel);
+      font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+    .rows{flex:1;overflow:hidden;}
+    .r{display:grid;grid-template-columns:190px 96px 1fr 210px 150px 76px;gap:12px;
+      padding:11px 18px;border-bottom:1px solid var(--border);align-items:center;}
+    .r:hover{background:var(--panel2);}
+    .r.pending{background:#1d1c14;}
+    .nm{font-family:var(--mono);font-size:12px;}
+    .kd{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border:1px solid var(--border);
+      border-radius:3px;color:var(--muted);text-align:center;}
+    .kd.http{color:#7fb2ff;border-color:#2a3a5a;}
+    .kd.k8s{color:#8fd0ff;border-color:#25455a;}
+    .kd.ssh{color:#c9a6ff;border-color:#3d2f5a;}
+    .kd.cloud{color:#ffb98f;border-color:#5a3d25;}
+    .kd.db{color:#9fe0b8;border-color:#25503a;}
+    .kd.net{color:#e6c98f;border-color:#4a4020;}
+    .tgt{font-family:var(--mono);font-size:11.5px;color:var(--muted);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .mech{font-size:11.5px;color:var(--muted);line-height:1.35;}
+    .sees{font-size:11.5px;line-height:1.35;}
+    .sees b{color:var(--ok);font-weight:600;}
+    .badge{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:5px 11px;font-size:12px;cursor:pointer;}
+    button.sm{padding:3px 9px;font-size:11px;}
+    button.primary{border-color:var(--accent);color:var(--accent);}
+    .rail{border-left:1px solid var(--border);background:var(--panel);overflow:hidden;}
+    .rsec{padding:14px 16px;border-bottom:1px solid var(--border);}
+    .rsec .k{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px;}
+    .rsec p{margin:0 0 9px;font-size:12.5px;color:var(--muted);line-height:1.55;}
+    .rsec p b{color:var(--fg);font-weight:600;}
+    .flow{display:flex;flex-direction:column;gap:0;margin:4px 0 0;}
+    .fstep{display:grid;grid-template-columns:16px 1fr;gap:10px;font-size:12px;}
+    .fstep .ic{display:flex;flex-direction:column;align-items:center;}
+    .fstep .d{width:7px;height:7px;border-radius:50%;background:var(--accent);margin-top:5px;}
+    .fstep .ln{flex:1;width:1px;background:var(--border);min-height:16px;}
+    .fstep .tx{padding-bottom:11px;line-height:1.45;}
+    .fstep .tx .mono{font-family:var(--mono);font-size:11px;}
+    .ev{display:flex;gap:9px;padding:5px 0;font-size:11.5px;}
+    .ev .ts{font-family:var(--mono);color:var(--muted);white-space:nowrap;}
+    .ev .tx{font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span class="crumb">tripon</span><span class="tag">/</span>
+    <span class="crumb" style="color:var(--warn);">staging</span><span class="tag">/</span>
+    <span class="crumb">connections</span>
+    <span class="spacer"></span>
+    <span class="badge ok">9 bound · 1 pending</span>
+  </div>
+
+  <div class="body">
+
+    <div class="nav">
+      <div class="navsec">Project</div>
+      <div class="navitem">Changes<span class="n">2</span></div>
+      <div class="navitem">Runbooks<span class="n">7</span></div>
+      <div class="navitem">Sandboxes<span class="n">3</span></div>
+      <div class="navitem">Workspace</div>
+      <div class="navsec">Access</div>
+      <div class="navitem on">Connections<span class="n">10</span></div>
+      <div class="navitem">Policy</div>
+      <div class="navitem">Audit</div>
+      <div class="navsec">Automation</div>
+      <div class="navitem">Triggers<span class="n">3</span></div>
+    </div>
+
+    <div class="main">
+      <div class="bar">
+        <h2>Connections</h2>
+        <span class="badge">tripon / staging</span>
+        <span class="spacer"></span>
+        <button class="sm">Import kubeconfig</button>
+        <button class="sm">Add SSH key</button>
+        <button class="primary">Add connection</button>
+      </div>
+
+      <div class="lede">
+        A connection is a <b style="color:var(--fg);">capability</b>, not a secret. The daemon holds the
+        credential and hands the sandbox the smallest thing that still works — a proxy address, an agent
+        socket, a 15-minute token. The <b style="color:var(--fg);">agent receives</b> column is the whole
+        security story: if it doesn't say “nothing”, it says exactly what could leak.
+      </div>
+
+      <div class="kinds">
+        <span class="kind on">all · 10</span>
+        <span class="kind">http · 3</span>
+        <span class="kind">kubernetes · 1</span>
+        <span class="kind">ssh · 2</span>
+        <span class="kind">cloud · 2</span>
+        <span class="kind">database · 1</span>
+        <span class="kind">network · 1</span>
+      </div>
+
+      <div class="thead">
+        <span>Connection</span><span>Kind</span><span>Target</span>
+        <span>How it is injected</span><span>Agent receives</span><span></span>
+      </div>
+
+      <div class="rows">
+
+        <div class="r">
+          <span class="nm">kubeconfig-stg</span>
+          <span class="kd k8s">kubernetes</span>
+          <span class="tgt">k8s-stg.tripon.io:6443 · ns staging</span>
+          <span class="mech">Generated kubeconfig points at the session proxy; the daemon adds the
+            bearer token upstream</span>
+          <span class="sees">a kubeconfig with <b>no credential in it</b></span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">ssh-web-fleet</span>
+          <span class="kd ssh">ssh</span>
+          <span class="tgt">web-01…04.ec2.internal · via bastion.tripon.io</span>
+          <span class="mech">Daemon-held ssh-agent, socket forwarded in; key is
+            destination-constrained to these hosts</span>
+          <span class="sees">an agent socket — <b>signatures only</b></span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">ssh-db-01</span>
+          <span class="kd ssh">ssh</span>
+          <span class="tgt">db-01.ec2.internal · via bastion.tripon.io</span>
+          <span class="mech">Same agent; every signing request is a
+            <span style="font-family:var(--mono);">ssh.sign</span> audit event</span>
+          <span class="sees">an agent socket — <b>signatures only</b></span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">aws-scoped</span>
+          <span class="kd cloud">cloud</span>
+          <span class="tgt">123456789012 · role/opslify-staging</span>
+          <span class="mech">STS AssumeRole with a scope-down session policy, served on the
+            container-credentials endpoint</span>
+          <span class="sees">15-minute <b>scoped</b> credentials</span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">gitlab-token</span>
+          <span class="kd http">http</span>
+          <span class="tgt">gitlab.tripon.io</span>
+          <span class="mech">L7 egress proxy adds
+            <span style="font-family:var(--mono);">PRIVATE-TOKEN</span> on the upstream leg</span>
+          <span class="sees"><b>nothing</b></span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">argocd-token</span>
+          <span class="kd http">http</span>
+          <span class="tgt">argocd.tripon.io</span>
+          <span class="mech">L7 egress proxy adds
+            <span style="font-family:var(--mono);">Bearer</span> upstream</span>
+          <span class="sees"><b>nothing</b></span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">pg-staging</span>
+          <span class="kd db">database</span>
+          <span class="tgt">postgres · rds-stg.tripon.io:5432 · db tripon</span>
+          <span class="mech">Auth proxy completes SCRAM upstream; sandbox connects to a local
+            unauthenticated socket</span>
+          <span class="sees">a local socket — <b>no password</b></span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">tailnet-tripon</span>
+          <span class="kd net">network</span>
+          <span class="tgt">10.0.0.0/16 · private VPC</span>
+          <span class="mech">Daemon holds the WireGuard tunnel; the sandbox routes through the
+            gateway under default-deny</span>
+          <span class="sees">a <b>route</b>, no tunnel key</span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r">
+          <span class="nm">ghcr-pull</span>
+          <span class="kd http">registry</span>
+          <span class="tgt">ghcr.io · pull only</span>
+          <span class="mech">Registry proxy injects auth server-side; digests verified,
+            checksum-safe</span>
+          <span class="sees"><b>nothing</b></span>
+          <button class="sm">Edit</button>
+        </div>
+
+        <div class="r pending">
+          <span class="nm">azure-sp</span>
+          <span class="kd cloud">cloud</span>
+          <span class="tgt">not configured</span>
+          <span class="mech">Client-credentials exchange for a short-lived token scoped to the
+            granted resource</span>
+          <span class="sees"><span class="badge warn">needs a value</span></span>
+          <button class="sm" style="border-color:var(--accent);color:var(--accent);">Add</button>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="rail">
+      <div class="rsec">
+        <div class="k">How SSH stays blind</div>
+        <p>The private key never enters the sandbox. The daemon runs the agent and forwards only the
+          socket — the SSH agent protocol returns <b>signatures</b>, never key material.</p>
+        <div class="flow">
+          <div class="fstep"><span class="ic"><span class="d"></span><span class="ln"></span></span>
+            <span class="tx">Agent runs <span class="mono">ssh web-01</span> in the sandbox</span></div>
+          <div class="fstep"><span class="ic"><span class="d"></span><span class="ln"></span></span>
+            <span class="tx">Handshake needs a signature → request crosses the forwarded socket</span></div>
+          <div class="fstep"><span class="ic"><span class="d"></span><span class="ln"></span></span>
+            <span class="tx">Daemon checks the destination is allowed, signs, records
+              <span class="mono">ssh.sign</span></span></div>
+          <div class="fstep"><span class="ic"><span class="d" style="background:var(--ok);"></span></span>
+            <span class="tx">Session opens. The key stayed on the host.</span></div>
+        </div>
+      </div>
+
+      <div class="rsec">
+        <div class="k">How kubeconfig stays blind</div>
+        <p>The sandbox gets a <b>generated</b> kubeconfig whose <span
+          style="font-family:var(--mono);font-size:11px;">server:</span> is the session proxy and whose
+          user block is empty. <span style="font-family:var(--mono);font-size:11px;">kubectl</span>
+          works normally; the real token is added at the boundary.</p>
+        <p style="margin:0;">Reading the file gets you a proxy address — useless off this host.</p>
+      </div>
+
+      <div class="rsec" style="border-bottom:none;">
+        <div class="k">Recent access · audit</div>
+        <div class="ev"><span class="ts">14:31</span><span class="tx" style="color:#c9a6ff;">ssh.sign · web-02 · ok</span></div>
+        <div class="ev"><span class="ts">14:29</span><span class="tx" style="color:#8fd0ff;">k8s.request · GET /api/v1/pods</span></div>
+        <div class="ev"><span class="ts">14:24</span><span class="tx" style="color:#c9a6ff;">ssh.sign · web-01 · ok</span></div>
+        <div class="ev"><span class="ts">14:22</span><span class="tx" style="color:var(--danger);">ssh.sign · db-02 · refused</span></div>
+        <div class="ev"><span class="ts">14:19</span><span class="tx" style="color:#7fb2ff;">cred.resolve · gitlab-token</span></div>
+        <p style="margin:10px 0 0;font-size:11.5px;color:var(--muted);line-height:1.5;">
+          <span style="color:var(--danger);">db-02</span> was refused: not in this key's destination
+          constraint.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

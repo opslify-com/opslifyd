@@ -1,0 +1,278 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --ssh:#c9a6ff;--k8s:#8fd0ff;--cloud:#ffb98f;--db:#9fe0b8;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:7px 14px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:10px;font-size:12px;}
+    .hdr h1{font-size:13px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:11.5px;}
+    .crumb{font-family:var(--mono);font-size:11.5px;}
+    .spacer{flex:1;}
+    .badge{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .body{flex:1;display:grid;grid-template-columns:252px 1fr 312px;min-height:0;}
+    .exp{border-right:1px solid var(--border);background:var(--panel);overflow:hidden;padding:6px 0;}
+    .esec{padding:8px 12px 3px;font-size:9.5px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.07em;font-weight:600;display:flex;align-items:center;gap:6px;}
+    .esec .n{margin-left:auto;font-family:var(--mono);font-size:9.5px;letter-spacing:0;}
+    .row{display:flex;align-items:center;gap:7px;padding:3.5px 12px;font-size:12px;color:var(--muted);}
+    .row.on{background:#223052;color:var(--fg);}
+    .row .ind{width:11px;font-size:9px;}
+    .row .nm{font-family:var(--mono);font-size:11.5px;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap;}
+    .row .rt{margin-left:auto;font-family:var(--mono);font-size:9.5px;}
+    .dot{width:5px;height:5px;border-radius:50%;flex:none;}
+    .kd{font-family:var(--mono);font-size:9px;padding:0 4px;border:1px solid var(--border);
+      border-radius:2px;flex:none;}
+    .center{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--panel);}
+    .tab{padding:7px 12px;font-size:11.5px;color:var(--muted);border-right:1px solid var(--border);
+      display:flex;align-items:center;gap:7px;font-family:var(--mono);}
+    .tab.on{color:var(--fg);background:var(--bg);border-bottom:1px solid var(--bg);margin-bottom:-1px;}
+    .tab .x{font-size:10px;}
+    .work{flex:1;overflow:hidden;display:flex;flex-direction:column;}
+    .wbar{display:flex;align-items:center;gap:9px;padding:9px 14px;border-bottom:1px solid var(--border);}
+    .wbar h2{margin:0;font-size:12.5px;font-weight:600;font-family:var(--mono);}
+    .capbar{display:flex;align-items:center;gap:8px;padding:6px 14px;background:#1a1721;
+      border-bottom:1px solid var(--border);font-family:var(--mono);font-size:10.5px;color:var(--ssh);}
+    .term{flex:1;overflow:hidden;padding:11px 14px;font-family:var(--mono);font-size:11.5px;
+      line-height:1.55;white-space:pre-wrap;}
+    .p{color:var(--ok);} .o{color:var(--muted);} .w{color:var(--warn);} .e{color:var(--danger);}
+    .cur{background:var(--fg);color:var(--bg);}
+    .drawer{border-top:1px solid var(--border);background:var(--panel);height:252px;
+      display:flex;flex-direction:column;}
+    .dtabs{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--border);}
+    .dtabs .t{padding:7px 10px;font-size:11.5px;color:var(--muted);border-bottom:2px solid transparent;}
+    .dtabs .t.on{color:var(--fg);border-bottom-color:var(--accent);}
+    .dtabs .sp{flex:1;}
+    .tl{flex:1;overflow:hidden;padding:4px 0;}
+    .tli{display:flex;gap:10px;padding:3.5px 14px;font-size:11px;border-bottom:1px solid var(--border);}
+    .tli .ts{color:var(--muted);font-family:var(--mono);white-space:nowrap;}
+    .tli .ty{font-family:var(--mono);min-width:112px;white-space:nowrap;}
+    .tli .de{color:var(--fg);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .chat{border-left:1px solid var(--border);background:var(--panel);display:flex;flex-direction:column;
+      min-height:0;}
+    .ch{padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;
+      font-size:11.5px;}
+    .thr{flex:1;padding:11px;display:flex;flex-direction:column;gap:11px;overflow:hidden;}
+    .m{display:flex;gap:8px;}
+    .m .a{width:19px;height:19px;border-radius:4px;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:8.5px;color:var(--muted);display:flex;align-items:center;
+      justify-content:center;flex:none;}
+    .m .b{flex:1;min-width:0;font-size:12px;line-height:1.5;}
+    .m .w2{font-size:10px;color:var(--muted);margin-bottom:3px;}
+    .gate{margin-top:7px;border:1px solid var(--warn);border-radius:5px;background:#1d1c14;padding:9px;}
+    .gate .h{font-size:11px;color:var(--warn);margin-bottom:5px;font-family:var(--mono);}
+    .gate .d{font-size:11.5px;line-height:1.45;}
+    .arow{display:flex;gap:7px;margin-top:8px;}
+    .comp{border-top:1px solid var(--border);padding:9px 11px;}
+    .cbox{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:8px 10px;}
+    .cin{font-size:12px;color:var(--muted);}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:5px 10px;font-size:11.5px;cursor:pointer;}
+    button.sm{padding:3px 8px;font-size:10.5px;}
+    button.approve{border-color:#2a4a37;color:var(--ok);}
+    button.deny{border-color:#5a2a2a;color:var(--danger);}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">cockpit</span>
+    <span style="width:1px;height:14px;background:var(--border);"></span>
+    <span class="crumb">tripon</span><span class="tag">/</span>
+    <span class="crumb" style="color:var(--warn);">staging</span><span class="tag">/</span>
+    <span class="crumb">ssh · web-02</span>
+    <span class="spacer"></span>
+    <span class="tag">sandbox 6a1f2c94 · 24m left</span>
+    <span class="badge ok">trace verified</span>
+  </div>
+
+  <div class="body">
+
+    <div class="exp">
+      <div class="esec">Sandboxes <span class="n">3 live</span></div>
+      <div class="row on"><span class="dot" style="background:var(--ok);"></span>
+        <span class="nm">6a1f2c94</span><span class="rt" style="color:#9fe0b8;">gVisor</span></div>
+      <div class="row"><span class="dot" style="background:var(--ok);"></span>
+        <span class="nm">b8d40e17</span><span class="rt" style="color:#9fe0b8;">gVisor</span></div>
+      <div class="row"><span class="dot" style="background:var(--ok);"></span>
+        <span class="nm">3e97aa50</span><span class="rt">prod</span></div>
+      <div class="row"><span class="dot" style="background:var(--muted);"></span>
+        <span class="nm" style="color:var(--muted);">warm-pool</span><span class="rt">idle</span></div>
+
+      <div class="esec">Connections <span class="n">10</span></div>
+      <div class="row"><span class="kd" style="color:var(--k8s);border-color:#25455a;">k8s</span>
+        <span class="nm">kubeconfig-stg</span></div>
+      <div class="row on"><span class="kd" style="color:var(--ssh);border-color:#3d2f5a;">ssh</span>
+        <span class="nm">ssh-web-fleet</span></div>
+      <div class="row"><span class="kd" style="color:var(--ssh);border-color:#3d2f5a;">ssh</span>
+        <span class="nm">ssh-db-01</span></div>
+      <div class="row"><span class="kd" style="color:var(--cloud);border-color:#5a3d25;">aws</span>
+        <span class="nm">aws-scoped</span></div>
+      <div class="row"><span class="kd" style="color:var(--db);border-color:#25503a;">db</span>
+        <span class="nm">pg-staging</span></div>
+      <div class="row"><span class="kd" style="color:#7fb2ff;border-color:#2a3a5a;">http</span>
+        <span class="nm">gitlab-token</span></div>
+
+      <div class="esec">Hosts · ssh-web-fleet</div>
+      <div class="row"><span class="dot" style="background:var(--ok);"></span><span class="nm">web-01</span>
+        <span class="rt">t3.med</span></div>
+      <div class="row on"><span class="dot" style="background:var(--warn);"></span><span class="nm">web-02</span>
+        <span class="rt">t3.med</span></div>
+      <div class="row"><span class="dot" style="background:var(--ok);"></span><span class="nm">web-03</span>
+        <span class="rt">t3.med</span></div>
+      <div class="row"><span class="dot" style="background:var(--ok);"></span><span class="nm">web-04</span>
+        <span class="rt">t3.med</span></div>
+      <div class="row" style="padding-left:12px;font-size:10.5px;">
+        <span class="nm" style="font-size:10.5px;">via bastion.tripon.io</span></div>
+
+      <div class="esec">Workspace</div>
+      <div class="row"><span class="ind">▾</span><span class="nm">/workspace</span></div>
+      <div class="row" style="padding-left:23px;"><span class="nm">ansible/</span></div>
+      <div class="row" style="padding-left:23px;"><span class="nm">terraform/</span></div>
+      <div class="row" style="padding-left:23px;"><span class="nm">gitops/</span></div>
+      <div class="row" style="padding-left:12px;font-size:10.5px;">
+        <span class="nm" style="font-size:10.5px;">~/tripon ↔ 2s ago</span></div>
+    </div>
+
+    <div class="center">
+      <div class="tabs">
+        <div class="tab on">ssh · web-02 <span class="x">✕</span></div>
+        <div class="tab">change #132 <span class="x">✕</span></div>
+        <div class="tab">terraform/main.tf <span class="x">✕</span></div>
+        <div class="tab" style="color:var(--muted);border-right:none;">+</div>
+      </div>
+
+      <div class="work">
+        <div class="wbar">
+          <h2>web-02.ec2.internal</h2>
+          <span class="badge">i-0a91c7d2e</span>
+          <span class="badge">via bastion</span>
+          <span class="spacer"></span>
+          <button class="sm">Record</button>
+          <button class="sm">Close session</button>
+        </div>
+
+        <div class="capbar">
+          ssh-agent forwarded from the daemon · key ops-fleet constrained to web-01…04 ·
+          <span style="color:var(--fg);">no private key in this sandbox</span>
+        </div>
+
+        <div class="term"><span class="p">ubuntu@web-02:~$</span> systemctl status nginx --no-pager
+<span class="o">● nginx.service - A high performance web server and reverse proxy
+     Loaded: loaded (/lib/systemd/system/nginx.service; enabled)
+     Active: active (running) since Tue 2026-09-01 09:14:22 UTC; 3 days ago
+   Main PID: 1041 (nginx)
+     Memory: 1.9G (peak: 1.9G)
+      Tasks: 9 (limit: 4915)</span>
+<span class="e">      nginx: [alert] worker process failed to allocate memory
+      24 connections refused in the last 5 minutes</span>
+
+<span class="p">ubuntu@web-02:~$</span> free -m
+<span class="o">               total        used        free      shared
+Mem:            3936        3712          94          12
+Swap:              0           0           0</span>
+
+<span class="p">ubuntu@web-02:~$</span> journalctl -u nginx --since -10m --no-pager | tail -3
+<span class="o">Sep 04 14:28:51 web-02 nginx[1041]: worker_connections exceeded
+Sep 04 14:29:14 web-02 nginx[1041]: [alert] fork() failed (12: Cannot allocate memory)</span>
+<span class="w">Sep 04 14:29:40 web-02 nginx[1041]: [emerg] no live upstreams</span>
+
+<span class="p">ubuntu@web-02:~$</span> <span class="cur"> </span></div>
+
+        <div class="drawer">
+          <div class="dtabs">
+            <span class="t on">Trace</span>
+            <span class="t">Access</span>
+            <span class="t">Steps</span>
+            <span class="t">Policy</span>
+            <span class="sp"></span>
+            <span class="t" style="color:var(--muted);">signed · f692a6ae</span>
+          </div>
+          <div class="tl">
+            <div class="tli"><span class="ts">14:30:02</span><span class="ty" style="color:var(--ok);">session.start</span><span class="de">sandbox 6a1f2c94 · policy_hash 9c3e17b2</span></div>
+            <div class="tli"><span class="ts">14:30:04</span><span class="ty" style="color:var(--ssh);">ssh.sign</span><span class="de">key ops-fleet → web-02.ec2.internal · destination allowed · ok</span></div>
+            <div class="tli"><span class="ts">14:30:04</span><span class="ty" style="color:var(--ssh);">ssh.session.open</span><span class="de">web-02 via bastion.tripon.io · recorded</span></div>
+            <div class="tli"><span class="ts">14:30:06</span><span class="ty" style="color:var(--accent);">exec.start</span><span class="de">systemctl status nginx --no-pager</span></div>
+            <div class="tli"><span class="ts">14:30:19</span><span class="ty" style="color:var(--accent);">exec.start</span><span class="de">journalctl -u nginx --since -10m</span></div>
+            <div class="tli"><span class="ts">14:30:41</span><span class="ty" style="color:var(--danger);">policy.decision</span><span class="de">ssh.exec "systemctl restart" → approval_required</span></div>
+            <div class="tli"><span class="ts">14:30:41</span><span class="ty" style="color:var(--warn);">approval.requested</span><span class="de">change #132 · awaiting human</span></div>
+            <div class="tli"><span class="ts">14:22:08</span><span class="ty" style="color:var(--danger);">ssh.sign</span><span class="de">key ops-fleet → db-02 · REFUSED · outside destination constraint</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat">
+      <div class="ch">
+        <span style="font-weight:600;">Agent</span>
+        <span class="tag">claude</span>
+        <span class="spacer"></span>
+        <span class="tag">MCP</span>
+      </div>
+      <div class="thr">
+        <div class="m">
+          <div class="a">you</div>
+          <div class="b"><div class="w2">You · 14:29</div>
+            web-02 is dropping requests. Check the box and restart nginx if it's wedged.</div>
+        </div>
+        <div class="m">
+          <div class="a" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="b"><div class="w2">Agent · 14:30</div>
+            In over SSH through the bastion. nginx has grown to 1.9 GB of a 3.9 GB box and
+            <span style="font-family:var(--mono);">fork()</span> is failing — it can't spawn workers,
+            so it reports no live upstreams.</div>
+        </div>
+        <div class="m">
+          <div class="a" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="b"><div class="w2">Agent · 14:30</div>
+            A reload won't reclaim that memory. I'd drain web-02 from the target group, restart
+            nginx, then re-add it once the health check is green.
+            <div class="gate">
+              <div class="h">change #132 · awaiting your approval</div>
+              <div class="d">ssh web-02 → <span style="font-family:var(--mono);color:var(--danger);">systemctl
+                restart nginx</span><br>
+                <span style="color:var(--muted);">1 of 4 nodes · ~4s dropped connections ·
+                revert = re-add to target group</span></div>
+              <div class="arow">
+                <button class="approve">Approve</button>
+                <button class="deny">Deny</button>
+                <button class="sm">Open change</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="comp">
+        <div class="cbox"><div class="cin">Ask the agent…</div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

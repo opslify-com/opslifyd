@@ -1,0 +1,296 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:12px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .sel{display:flex;align-items:center;gap:7px;padding:4px 9px;border:1px solid var(--border);
+      border-radius:5px;background:var(--panel2);font-family:var(--mono);font-size:12px;}
+    .body{flex:1;display:grid;grid-template-columns:196px 1fr 348px;min-height:0;}
+    .nav{border-right:1px solid var(--border);background:var(--panel);padding:10px 0;}
+    .navitem{display:flex;align-items:center;gap:9px;padding:7px 14px;font-size:13px;color:var(--muted);
+      border-left:2px solid transparent;}
+    .navitem.on{color:var(--fg);border-left-color:var(--accent);background:var(--panel2);}
+    .navitem .n{margin-left:auto;font-family:var(--mono);font-size:11px;}
+    .navsec{padding:14px 14px 6px;font-size:10.5px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.07em;font-weight:600;}
+    .main{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:14px 16px;
+      border-bottom:1px solid var(--border);}
+    .tile{border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:11px 12px;}
+    .tile .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+    .tile .v{font-size:22px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums;}
+    .tile .s{font-size:11px;color:var(--muted);margin-top:2px;}
+    .feedhdr{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);
+      background:var(--panel);}
+    .feedhdr h2{margin:0;font-size:13px;font-weight:600;}
+    .filter{padding:3px 9px;border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--muted);}
+    .filter.on{border-color:var(--accent);color:var(--accent);}
+    .spacer{flex:1;}
+    .feed{flex:1;overflow:hidden;}
+    .ch{display:grid;grid-template-columns:52px 1fr 92px 118px 132px 62px;gap:10px;align-items:center;
+      padding:11px 16px;border-bottom:1px solid var(--border);}
+    .ch:hover{background:var(--panel2);}
+    .ch.hot{background:#1d1c14;border-left:2px solid var(--warn);padding-left:14px;}
+    .id{font-family:var(--mono);font-size:12px;color:var(--muted);}
+    .intent{min-width:0;}
+    .intent .t{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .intent .m{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:3px;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .envb{font-family:var(--mono);font-size:11px;padding:2px 7px;border:1px solid var(--border);
+      border-radius:10px;text-align:center;}
+    .who{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
+    .av{width:18px;height:18px;border-radius:4px;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:9px;display:flex;align-items:center;justify-content:center;}
+    .st{font-size:11.5px;font-family:var(--mono);}
+    .blast{font-size:11px;color:var(--muted);font-family:var(--mono);text-align:right;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:4px 10px;font-size:11.5px;cursor:pointer;}
+    button.rev{border-color:#2a3a5a;color:var(--accent);}
+    .side{border-left:1px solid var(--border);background:var(--panel);display:flex;flex-direction:column;
+      min-height:0;}
+    .sh{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;
+      font-size:12px;}
+    .thread{flex:1;padding:12px;display:flex;flex-direction:column;gap:12px;overflow:hidden;}
+    .m{display:flex;gap:8px;}
+    .m .a{width:20px;height:20px;border-radius:4px;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:9px;color:var(--muted);display:flex;align-items:center;
+      justify-content:center;flex:none;}
+    .m .b{flex:1;min-width:0;font-size:12.5px;line-height:1.5;}
+    .m .w{font-size:10.5px;color:var(--muted);margin-bottom:3px;}
+    .ref{display:inline-flex;align-items:center;gap:5px;margin-top:6px;padding:3px 8px;border:1px solid var(--border);
+      border-radius:5px;background:var(--panel2);font-family:var(--mono);font-size:11px;color:var(--accent);}
+    .comp{border-top:1px solid var(--border);padding:10px 12px;}
+    .cbox{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:9px 10px;}
+    .cctx{font-size:10.5px;color:var(--muted);margin-bottom:6px;font-family:var(--mono);}
+    .cin{font-size:12.5px;color:var(--muted);}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">control tower</span>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span class="sel">tripon<span class="tag">▾</span></span>
+    <span class="sel" style="border-color:#4a4020;color:var(--warn);">staging<span class="tag">▾</span></span>
+    <span class="spacer"></span>
+    <span class="tag">2 agents connected</span>
+    <span style="font-size:10px;padding:1px 6px;border:1px solid #2a4a37;border-radius:10px;color:var(--ok);">
+      trace verified</span>
+  </div>
+
+  <div class="body">
+
+    <div class="nav">
+      <div class="navsec">Project</div>
+      <div class="navitem on">Changes<span class="n">2</span></div>
+      <div class="navitem">Runbooks<span class="n">7</span></div>
+      <div class="navitem">Drift<span class="n" style="color:var(--warn);">1</span></div>
+      <div class="navitem">Workspace</div>
+      <div class="navsec">Governance</div>
+      <div class="navitem">Credentials<span class="n">4</span></div>
+      <div class="navitem">Policy</div>
+      <div class="navitem">Audit</div>
+      <div class="navsec">Automation</div>
+      <div class="navitem">Triggers<span class="n">3</span></div>
+      <div class="navitem">Schedules</div>
+    </div>
+
+    <div class="main">
+
+      <div class="tiles">
+        <div class="tile">
+          <div class="k">Awaiting approval</div>
+          <div class="v" style="color:var(--warn);">2</div>
+          <div class="s">oldest 4m ago</div>
+        </div>
+        <div class="tile">
+          <div class="k">Applied today</div>
+          <div class="v">14</div>
+          <div class="s">all revertible</div>
+        </div>
+        <div class="tile">
+          <div class="k">Drift detected</div>
+          <div class="v" style="color:var(--warn);">1</div>
+          <div class="s">terraform · staging</div>
+        </div>
+        <div class="tile">
+          <div class="k">Failed</div>
+          <div class="v" style="color:var(--danger);">1</div>
+          <div class="s">reverted automatically</div>
+        </div>
+      </div>
+
+      <div class="feedhdr">
+        <h2>Changes</h2>
+        <span class="filter on">All</span>
+        <span class="filter">Needs me</span>
+        <span class="filter">Applied</span>
+        <span class="filter">Failed</span>
+        <span class="spacer"></span>
+        <span class="tag">staging · last 24h</span>
+      </div>
+
+      <div class="feed">
+
+        <div class="ch hot">
+          <span class="id">#128</span>
+          <div class="intent">
+            <div class="t">Raise flight-ms memory limit to 512Mi</div>
+            <div class="m">kubectl patch deployment/flight-ms -n staging</div>
+          </div>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <div class="who"><span class="av" style="color:var(--accent);">ag</span>claude</div>
+          <span class="st" style="color:var(--warn);">needs approval</span>
+          <span class="blast">1 deploy · 2 pods</span>
+          <button style="border-color:#2a4a37;color:var(--ok);">Review</button>
+        </div>
+
+        <div class="ch hot">
+          <span class="id">#127</span>
+          <div class="intent">
+            <div class="t">Scale hotel-ms to 4 replicas for load test</div>
+            <div class="m">kubectl scale deployment/hotel-ms --replicas=4</div>
+          </div>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <div class="who"><span class="av">qa</span>qasim</div>
+          <span class="st" style="color:var(--warn);">needs approval</span>
+          <span class="blast">1 deploy · 4 pods</span>
+          <button style="border-color:#2a4a37;color:var(--ok);">Review</button>
+        </div>
+
+        <div class="ch">
+          <span class="id">#126</span>
+          <div class="intent">
+            <div class="t">Sync gitops repo after helm chart bump</div>
+            <div class="m">argocd app sync tripon-staging</div>
+          </div>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <div class="who"><span class="av" style="color:var(--accent);">ag</span>claude</div>
+          <span class="st" style="color:var(--ok);">applied</span>
+          <span class="blast">6 manifests</span>
+          <button class="rev">Revert</button>
+        </div>
+
+        <div class="ch">
+          <span class="id">#125</span>
+          <div class="intent">
+            <div class="t">Open MR: pin transfers-ms image digest</div>
+            <div class="m">glab mr create --source-branch pin-digest</div>
+          </div>
+          <span class="envb">repo</span>
+          <div class="who"><span class="av" style="color:var(--accent);">ag</span>claude</div>
+          <span class="st" style="color:var(--ok);">applied</span>
+          <span class="blast">MR !412</span>
+          <button class="rev">Revert</button>
+        </div>
+
+        <div class="ch">
+          <span class="id">#124</span>
+          <div class="intent">
+            <div class="t">Apply terraform plan for redis cache tier</div>
+            <div class="m">terraform apply tfplan-9f2c · plan hash pinned</div>
+          </div>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <div class="who"><span class="av">qa</span>qasim</div>
+          <span class="st" style="color:var(--danger);">failed · reverted</span>
+          <span class="blast">3 resources</span>
+          <button>Details</button>
+        </div>
+
+        <div class="ch">
+          <span class="id">#123</span>
+          <div class="intent">
+            <div class="t">Roll back yarvel-ai-assistant to previous revision</div>
+            <div class="m">kubectl rollout undo deployment/yarvel-ai</div>
+          </div>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <div class="who"><span class="av" style="color:var(--accent);">ag</span>claude</div>
+          <span class="st" style="color:var(--ok);">applied</span>
+          <span class="blast">1 deploy · 3 pods</span>
+          <button class="rev">Revert</button>
+        </div>
+
+        <div class="ch">
+          <span class="id">#122</span>
+          <div class="intent">
+            <div class="t">Collect crashloop diagnostics from flight-ms</div>
+            <div class="m">kubectl logs --previous · read only</div>
+          </div>
+          <span class="envb" style="border-color:#4a4020;color:var(--warn);">staging</span>
+          <div class="who"><span class="av" style="color:var(--accent);">ag</span>claude</div>
+          <span class="st" style="color:var(--muted);">read only</span>
+          <span class="blast">no writes</span>
+          <button>Trace</button>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="side">
+      <div class="sh">
+        <span style="font-weight:600;">Agent</span>
+        <span class="tag">claude · MCP</span>
+        <span class="spacer"></span>
+        <span class="tag">sandbox 6a1f…</span>
+      </div>
+      <div class="thread">
+        <div class="m">
+          <div class="a">you</div>
+          <div class="b">
+            <div class="w">You · 14:22</div>
+            flight-ms is throwing 502s in staging. Find out why and fix it.
+          </div>
+        </div>
+        <div class="m">
+          <div class="a" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="b">
+            <div class="w">Agent · 14:22</div>
+            One replica is in CrashLoopBackOff — it hits the 256Mi memory limit during
+            startup. I've proposed raising it to 512Mi.
+            <span class="ref">→ Change #128</span>
+          </div>
+        </div>
+        <div class="m">
+          <div class="a" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="b">
+            <div class="w">Agent · 14:23</div>
+            Waiting on your approval before I touch the deployment.
+          </div>
+        </div>
+      </div>
+      <div class="comp">
+        <div class="cbox">
+          <div class="cctx">tripon / staging · 5 tools</div>
+          <div class="cin">Ask the agent…</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

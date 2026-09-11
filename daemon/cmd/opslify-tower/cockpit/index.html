@@ -4,32 +4,51 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/cockpit.css">
 <body>
-<header id="top">
-  <div class="brand">opslify <span>cockpit</span></div>
-  <!-- The agent indicator is permanent, not a panel you open. Which model is
-       about to act on an estate is not a detail to go looking for. -->
-  <div id="agent" class="agent" title="the agent bound to this scope">
-    <span class="dot"></span><span id="agent-name">no agent bound</span>
-    <span id="agent-model" class="muted"></span>
-    <span id="agent-locality" class="pill"></span>
+
+<div class="root">
+
+  <!-- The header states, permanently: where you are, and who is driving. Neither
+       is a thing an operator should have to go and look for. -->
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">cockpit</span>
+    <span class="rule"></span>
+    <span id="crumbs"></span>
+    <span class="spacer"></span>
+    <span id="agentpill" class="agentpill none">
+      <span class="dot off"></span>
+      <span class="nm">no agent bound</span>
+      <span class="ch"></span>
+    </span>
+    <span id="tracebadge" class="badge">trace —</span>
   </div>
-</header>
 
-<main>
-  <nav id="sidebar">
-    <div class="scope">
-      <label for="scope-select">scope</label>
-      <select id="scope-select"></select>
+  <div class="body" id="body">
+
+    <!-- project rail -->
+    <div class="rail" id="rail"></div>
+
+    <!-- scope sidebar -->
+    <div class="side" id="side"></div>
+
+    <!-- tabbed work area -->
+    <div class="center">
+      <div class="tabs" id="tabs"></div>
+      <div class="work" id="work"></div>
+      <div class="drawer" id="drawer">
+        <div class="dtabs" id="dtabs"></div>
+        <div class="tl" id="trace"></div>
+      </div>
     </div>
-    <ul id="sections"></ul>
-  </nav>
 
-  <section id="work">
-    <div id="tabs" class="tabs"></div>
-    <div id="panel" class="panel"><p class="muted">loading…</p></div>
-  </section>
-</main>
+    <!-- agent panel -->
+    <div class="chat" id="chat"></div>
 
-<footer id="status"><span id="conn">connecting…</span></footer>
+  </div>
+</div>
+
+<div id="overlay"></div>
+<div class="toast" id="toast"></div>
+
 <script src="/cockpit.js"></script>
 </body>

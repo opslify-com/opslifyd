@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root {
+      --bg:#0f1115; --panel:#171a21; --panel2:#1e2129; --border:#2a2f3a;
+      --fg:#d7dbe4; --muted:#8b93a3; --accent:#5aa0ff; --danger:#ff5a5a;
+      --ok:#4bd07f; --warn:#e6b800;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    }
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:12px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .body{flex:1;display:grid;grid-template-columns:56px 268px 1fr;min-height:0;}
+    .rail{border-right:1px solid var(--border);background:var(--panel);
+      display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;}
+    .railbtn{width:36px;height:36px;border-radius:6px;border:1px solid var(--border);
+      background:var(--panel2);color:var(--muted);display:flex;align-items:center;
+      justify-content:center;font-family:var(--mono);font-size:12px;}
+    .railbtn.on{border-color:var(--accent);color:var(--accent);background:#223052;}
+    .side{border-right:1px solid var(--border);background:var(--panel);overflow:hidden;
+      display:flex;flex-direction:column;}
+    .sect{padding:12px;border-bottom:1px solid var(--border);}
+    .sect h3{margin:0 0 8px;font-size:11px;font-weight:600;color:var(--muted);
+      text-transform:uppercase;letter-spacing:.06em;}
+    .envrow{display:flex;gap:6px;}
+    .env{flex:1;padding:5px 0;text-align:center;border:1px solid var(--border);border-radius:5px;
+      background:var(--panel2);color:var(--muted);font-size:12px;}
+    .env.on{border-color:var(--warn);color:var(--warn);}
+    .chips{display:flex;flex-wrap:wrap;gap:6px;}
+    .chip{display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border);
+      border-radius:5px;background:var(--panel2);font-size:12px;}
+    .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+    .credrow{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px;}
+    .credrow .nm{font-family:var(--mono);flex:1;}
+    .badge{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .chat{display:flex;flex-direction:column;min-height:0;background:var(--bg);}
+    .thread{flex:1;overflow:hidden;padding:16px 22px;display:flex;flex-direction:column;gap:14px;}
+    .msg{display:flex;gap:10px;}
+    .av{width:24px;height:24px;border-radius:5px;border:1px solid var(--border);background:var(--panel2);
+      display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:10px;
+      color:var(--muted);flex:none;}
+    .mbody{flex:1;min-width:0;}
+    .who{font-size:11px;color:var(--muted);margin-bottom:4px;}
+    .txt{font-size:13px;line-height:1.5;}
+    .toolcard{margin-top:8px;border:1px solid var(--border);border-radius:6px;background:var(--panel);
+      overflow:hidden;}
+    .tchdr{display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--border);
+      background:var(--panel2);font-size:12px;}
+    .tchdr .cmd{font-family:var(--mono);color:var(--accent);flex:1;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .tcout{font-family:var(--mono);font-size:11.5px;line-height:1.45;padding:8px 10px;
+      color:var(--muted);white-space:pre;overflow:hidden;}
+    .approval{margin-top:8px;border:1px solid var(--warn);border-radius:6px;background:var(--panel2);padding:12px;}
+    .approval h4{margin:0 0 6px;font-size:12px;color:var(--warn);display:flex;align-items:center;gap:8px;}
+    .approval .rule{font-family:var(--mono);color:var(--accent);font-size:11.5px;}
+    .diff{font-family:var(--mono);font-size:11.5px;white-space:pre;background:var(--bg);
+      border:1px solid var(--border);border-radius:5px;padding:8px;margin:8px 0;overflow:hidden;line-height:1.5;}
+    .add{color:var(--ok);} .del{color:var(--danger);} .cx{color:var(--muted);}
+    .arow{display:flex;gap:8px;align-items:center;margin-top:8px;}
+    .inp{flex:1;background:var(--bg);color:var(--muted);border:1px solid var(--border);
+      border-radius:5px;padding:6px 9px;font-size:12px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:5px 11px;font-size:12px;cursor:pointer;}
+    button.approve{border-color:#2a4a37;color:var(--ok);}
+    button.deny{border-color:#5a2a2a;color:var(--danger);}
+    .composer{border-top:1px solid var(--border);background:var(--panel);padding:12px 22px;}
+    .cbox{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:10px 12px;}
+    .cctx{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:11px;color:var(--muted);}
+    .ctxchip{padding:2px 7px;border:1px solid var(--border);border-radius:10px;font-family:var(--mono);}
+    .cinput{color:var(--muted);font-size:13px;}
+    .crow{display:flex;align-items:center;gap:8px;margin-top:10px;}
+    .spacer{flex:1;}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">control tower</span>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span style="font-family:var(--mono);font-size:12px;">tripon</span>
+    <span class="tag">/</span>
+    <span style="font-family:var(--mono);font-size:12px;color:var(--warn);">staging</span>
+    <span class="spacer" style="flex:1"></span>
+    <span class="badge ok">local · air-gapped</span>
+  </div>
+
+  <div class="body">
+
+    <div class="rail">
+      <div class="railbtn on">TP</div>
+      <div class="railbtn">YU</div>
+      <div class="railbtn" style="color:var(--muted);border-style:dashed;">+</div>
+    </div>
+
+    <div class="side">
+      <div class="sect">
+        <h3>Environment</h3>
+        <div class="envrow">
+          <div class="env">prod</div>
+          <div class="env on">staging</div>
+        </div>
+      </div>
+      <div class="sect">
+        <h3>Tools in this project</h3>
+        <div class="chips">
+          <span class="chip"><span class="dot"></span>gitlab</span>
+          <span class="chip"><span class="dot"></span>kubectl</span>
+          <span class="chip"><span class="dot"></span>terraform</span>
+          <span class="chip"><span class="dot"></span>argocd</span>
+          <span class="chip"><span class="dot" style="background:var(--muted);"></span>az</span>
+        </div>
+      </div>
+      <div class="sect">
+        <h3>Credentials <span class="badge">blind</span></h3>
+        <div class="credrow"><span class="nm">gitlab-token</span><span class="badge ok">bound</span></div>
+        <div class="credrow"><span class="nm">kubeconfig-stg</span><span class="badge ok">bound</span></div>
+        <div class="credrow"><span class="nm">argocd-token</span><span class="badge ok">bound</span></div>
+        <div class="credrow"><span class="nm">azure-sp</span><span class="badge warn">not set</span></div>
+      </div>
+      <div class="sect" style="border-bottom:none;">
+        <h3>Workspace</h3>
+        <div style="font-family:var(--mono);font-size:11.5px;color:var(--muted);line-height:1.7;">
+          /workspace<br>
+          &nbsp;&nbsp;helm-charts/<br>
+          &nbsp;&nbsp;gitops/<br>
+          &nbsp;&nbsp;terraform/
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--muted);">synced with ~/tripon · 2s ago</div>
+      </div>
+    </div>
+
+    <div class="chat">
+      <div class="thread">
+
+        <div class="msg">
+          <div class="av">you</div>
+          <div class="mbody">
+            <div class="who">You · 14:22</div>
+            <div class="txt">flight-ms is throwing 502s in staging. Find out why and fix it.</div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="av" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="mbody">
+            <div class="who">Agent · claude · 14:22</div>
+            <div class="txt">Checking pod health in the staging cluster.</div>
+            <div class="toolcard">
+              <div class="tchdr">
+                <span class="badge ok">allowed</span>
+                <span class="cmd">kubectl get pods -n staging -l app=flight-ms</span>
+                <span class="tag">exit 0 · 1.2s</span>
+              </div>
+              <div class="tcout">NAME                        READY  STATUS             RESTARTS
+flight-ms-7d9c8b4f5-2xk9q   0/1    CrashLoopBackOff   7
+flight-ms-7d9c8b4f5-8mzp4   1/1    Running            0</div>
+            </div>
+            <div class="txt" style="margin-top:10px;">One replica is crash-looping. The logs show the memory
+              limit being hit during startup. I'll raise the limit from 256Mi to 512Mi.</div>
+            <div class="approval">
+              <h4>Approval required
+                <span class="rule">policy: approval_required · kubectl.patch</span>
+              </h4>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">
+                Change #128 · deployment/flight-ms · namespace staging</div>
+              <div class="diff"><span class="cx">  resources:
+    limits:</span>
+<span class="del">-     memory: 256Mi</span>
+<span class="add">+     memory: 512Mi</span></div>
+              <div style="font-size:11.5px;color:var(--muted);">
+                Blast radius: 1 deployment, 2 pods · revert available</div>
+              <div class="arow">
+                <input class="inp" value="looks right — approving" readonly>
+                <button class="approve">Approve</button>
+                <button class="deny">Deny</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="composer">
+        <div class="cbox">
+          <div class="cctx">
+            <span>runs in</span>
+            <span class="ctxchip">tripon / staging</span>
+            <span>·</span>
+            <span class="ctxchip">sandbox 6a1f…</span>
+            <span>·</span>
+            <span>5 tools</span>
+          </div>
+          <div class="cinput">Ask the agent to do something…</div>
+          <div class="crow">
+            <button>Attach</button>
+            <button>Runbooks</button>
+            <span class="spacer"></span>
+            <span class="tag">claude-sonnet · MCP</span>
+            <button style="border-color:var(--accent);color:var(--accent);">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

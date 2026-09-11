@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -61,14 +62,16 @@ func TestOnlyAllowlistedRoutesAreAdmitted(t *testing.T) {
 		// Things that exist on the daemon but must NOT be reachable from a page.
 		{http.MethodGet, "/v1/secrets/gitlab-token"},    // a value route, if one ever exists
 		{http.MethodDelete, "/v1/secrets/gitlab-token"}, // deletion is CLI-only
-		{http.MethodPost, "/v1/secrets"},                // adding a value from a browser
-		{http.MethodPut, "/v1/secrets/gitlab-token"},    // rotation
+		{http.MethodDelete, "/v1/secrets"},              // bulk deletion likewise
+		{http.MethodPut, "/v1/secrets/gitlab-token"},    // rotation breaks live holders
 		{http.MethodGet, "/v1/sessions/s1/files"},       // raw workspace bytes
 		{http.MethodPut, "/v1/sessions/s1/files"},
 		{http.MethodGet, "/v1/sessions/s1/trace"}, // the trace drawer reads it via SSE, not here
-		{http.MethodDelete, "/v1/projects/tripon"},
-		{http.MethodPost, "/v1/agents"}, // registering an agent runs a command
-		{http.MethodDelete, "/v1/connections/gitlab"},
+		{http.MethodDelete, "/v1/workspaces/ws1"}, // host-linked dirs are not the browser's
+		// Registering an agent runs the submitted command on the host. Binding one
+		// does not, which is why bind is admitted and this is not.
+		{http.MethodPost, "/v1/agents"},
+		{http.MethodPost, "/v1/agents/test"},
 		{http.MethodGet, "/v1/admin"},      // anything unknown
 		{http.MethodPatch, "/v1/sessions"}, // an unexpected method on a known path
 	} {
@@ -92,6 +95,22 @@ func TestAllowlistedRoutesAreAdmitted(t *testing.T) {
 		{http.MethodGet, "/v1/policy"},
 		{http.MethodPost, "/v1/policy/edit"},
 		{http.MethodDelete, "/v1/sessions/s1"},
+
+		// The cockpit must be able to CREATE what an operator onboards with. These
+		// were refused until the UI was built to its design, which made the whole
+		// surface read-only — see the note on towerRoutes.
+		{http.MethodPost, "/v1/projects"},
+		{http.MethodPost, "/v1/projects/tripon/environments"},
+		{http.MethodDelete, "/v1/projects/tripon"},
+		{http.MethodDelete, "/v1/projects/tripon/environments/staging"},
+		{http.MethodPost, "/v1/connections"},
+		{http.MethodPost, "/v1/connections/test"},
+		{http.MethodDelete, "/v1/connections/gitlab"},
+		{http.MethodPost, "/v1/agents/claude/bind"},
+		{http.MethodDelete, "/v1/agents/claude"},
+		// Storing a value the operator typed carries it IN. No route carries one
+		// back out, which is the invariant that actually matters.
+		{http.MethodPost, "/v1/secrets"},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			if reason := admit(tc.method, mustURL(t, tc.path)); reason != "" {
@@ -230,23 +249,78 @@ func TestTheCockpitIsSelfContained(t *testing.T) {
 	}
 }
 
-// TestTheCockpitNeverAsksForASecretValue: the page must not contain a request for
-// a value route, so a reviewer can confirm the claim by reading it.
-func TestTheCockpitNeverAsksForASecretValue(t *testing.T) {
+// TestTheCockpitNeverReadsASecretValue pins the invariant that actually matters:
+// a value may travel IN (the operator typed it into the store-a-secret form) and
+// must never travel BACK OUT.
+//
+// The earlier version of this test forbade the string "value_b64" outright, which
+// was right while the cockpit was read-only and wrong once it could store a
+// credential — it would have failed the wizard's credentials step for carrying a
+// value in the correct direction. Direction is the thing to assert, so it is
+// asserted structurally: "value_b64" may appear as a key being WRITTEN into a
+// request body, never as a property READ off a response.
+func TestTheCockpitNeverReadsASecretValue(t *testing.T) {
 	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(b)
-	for _, forbidden := range []string{"value_b64", "/v1/secrets/'", "secret_value", "reveal"} {
+
+	// Reading one back, in every spelling a reader would recognise.
+	for _, forbidden := range []string{
+		".value_b64",      // response.value_b64
+		"['value_b64']",   //
+		"[\"value_b64\"]", //
+		"secret_value",
+		"reveal",
+		"unmask",
+		"showSecret",
+	} {
 		if strings.Contains(js, forbidden) {
-			t.Errorf("the cockpit references %q; it must show refs and metadata only", forbidden)
+			t.Errorf("the cockpit contains %q — a value must never be read back into the page",
+				forbidden)
 		}
 	}
+
+	// Every mention of value_b64 must be a key being written into a body.
+	for _, m := range regexp.MustCompile(`.{0,40}value_b64.{0,10}`).FindAllString(js, -1) {
+		if !strings.Contains(m, "value_b64:") {
+			t.Errorf("value_b64 appears somewhere other than an outgoing body: %q", m)
+		}
+	}
+
+	// No GET of a per-ref secrets path, which is the route that would return one
+	// if it ever existed.
+	for _, forbidden := range []string{"/v1/secrets/' +", `/v1/secrets/" +`, "/v1/secrets/${"} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("the cockpit builds a per-ref secrets URL (%q); only the list and "+
+				"the consumers route are hers", forbidden)
+		}
+	}
+
 	// And it must say so on the page, because an operator should not have to trust
 	// a promise made in a test.
 	if !strings.Contains(js, "Values are never shown here") {
 		t.Error("the secrets panel should state that values are never shown")
+	}
+}
+
+// TestTheCockpitStoresSecretsButCannotDestroyThem: storing is admitted, and the
+// destructive verbs stay out of the page entirely, so a stray button cannot call
+// a route the allowlist would refuse anyway.
+func TestTheCockpitStoresSecretsButCannotDestroyThem(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+	if !strings.Contains(js, "'POST', '/v1/secrets'") {
+		t.Error("the cockpit should be able to store a secret — the wizard needs it")
+	}
+	for _, forbidden := range []string{"'DELETE', '/v1/secrets", "'PUT', '/v1/secrets"} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("the cockpit contains %q; deletion and rotation are CLI-only", forbidden)
+		}
 	}
 }
 
@@ -281,6 +355,101 @@ func TestTheCockpitRefusesToServeOffLoopback(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:4646", "localhost:4646", "[::1]:4646"} {
 		if err := uiguard.AssertLoopbackBindAddr(addr); err != nil {
 			t.Errorf("%q is loopback and should be allowed: %v", addr, err)
+		}
+	}
+}
+
+// TestAWildcardMatchesExactlyOneSegment pins the matcher that replaced prefix
+// matching on routes with a fixed tail.
+//
+// This exists because a prefix did not: "/v1/agents/" was written to admit
+// `{name}/bind` and also admitted `/v1/agents/test`, which runs the submitted
+// command on the host. The bug was in the matcher's reach, not in the list, so
+// the matcher is what gets pinned.
+func TestAWildcardMatchesExactlyOneSegment(t *testing.T) {
+	for _, tc := range []struct {
+		pattern, path string
+		want          bool
+		why           string
+	}{
+		{"/v1/agents/*/bind", "/v1/agents/claude/bind", true, "the intended shape"},
+		{"/v1/agents/*/bind", "/v1/agents/test", false, "the exec route must not slip in"},
+		{"/v1/agents/*/bind", "/v1/agents/bind", false, "a missing name is not a match"},
+		{"/v1/agents/*/bind", "/v1/agents//bind", false, "an empty segment is not a name"},
+		{"/v1/agents/*/bind", "/v1/agents/a/b/bind", false, "* is one segment, not many"},
+		{"/v1/agents/*/bind", "/v1/agents/claude/bind/extra", false, "no trailing remainder"},
+		{"/v1/agents/*", "/v1/agents/claude", true, "a bare id"},
+		{"/v1/agents/*", "/v1/agents/claude/bind", false, "* does not span a slash"},
+		{"/v1/projects/*/environments", "/v1/projects/tripon/environments", true, "env add"},
+		{"/v1/projects/*/environments", "/v1/projects/tripon", false, "the tail is required"},
+		{"/v1/sessions/*/exec", "/v1/sessions/s1/exec", true, "exec"},
+		{"/v1/sessions/*/exec", "/v1/sessions/s1/files", false, "raw bytes stay refused"},
+	} {
+		t.Run(tc.pattern+" vs "+tc.path, func(t *testing.T) {
+			if got := matchSegments(tc.pattern, tc.path); got != tc.want {
+				t.Fatalf("matchSegments(%q, %q) = %v, want %v — %s",
+					tc.pattern, tc.path, got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestNoRouteAdmitsPathTraversal keeps "..' out of every shape, not just the
+// prefix one it was originally checked in.
+func TestNoRouteAdmitsPathTraversal(t *testing.T) {
+	for _, path := range []string{
+		"/v1/agents/../secrets/gitlab-token",
+		"/v1/projects/../../etc/passwd",
+		"/v1/changes/..%2f..%2fsecrets",
+		"/v1/sessions/s1/../../secrets",
+	} {
+		t.Run(path, func(t *testing.T) {
+			for _, m := range []string{
+				http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodPut,
+			} {
+				u, err := url.Parse(path)
+				if err != nil {
+					continue
+				}
+				if reason := admit(m, u); reason == "" {
+					t.Fatalf("%s %s was admitted; traversal must never match a route", m, path)
+				}
+			}
+		})
+	}
+}
+
+// TestEveryAllowlistedMutationIsOnTheDaemon guards the other direction: a route
+// the cockpit may call that the daemon does not serve is a dead button.
+func TestEveryAllowlistedMutationIsOnTheDaemon(t *testing.T) {
+	// The daemon's registered patterns, as of internal/daemon. Kept as literals
+	// rather than reflected out of the daemon package so that deleting a handler
+	// there fails HERE, loudly, instead of quietly agreeing with itself.
+	daemonServes := map[string]bool{
+		"POST /v1/projects":                    true,
+		"POST /v1/projects/*/environments":     true,
+		"DELETE /v1/projects/*":                true,
+		"DELETE /v1/projects/*/environments/*": true,
+		"POST /v1/connections":                 true,
+		"POST /v1/connections/test":            true,
+		"DELETE /v1/connections/*":             true,
+		"POST /v1/agents/*/bind":               true,
+		"DELETE /v1/agents/*":                  true,
+		"POST /v1/secrets":                     true,
+		"POST /v1/sessions":                    true,
+		"DELETE /v1/sessions/*":                true,
+		"POST /v1/sessions/*/exec":             true,
+		"POST /v1/sessions/*/approvals/*":      true,
+		"POST /v1/changes/*/decision":          true,
+		"POST /v1/policy/edit":                 true,
+	}
+	for _, rt := range towerRoutes {
+		if rt.Method == http.MethodGet {
+			continue
+		}
+		key := rt.Method + " " + rt.Path
+		if !daemonServes[key] {
+			t.Errorf("the cockpit may call %s but the daemon does not serve it — dead button", key)
 		}
 	}
 }

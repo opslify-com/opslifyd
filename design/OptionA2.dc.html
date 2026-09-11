@@ -1,0 +1,300 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --ssh:#c9a6ff;--k8s:#8fd0ff;--cloud:#ffb98f;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:11px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .spacer{flex:1;}
+    .badge{font-size:10px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .body{flex:1;display:grid;grid-template-columns:52px 296px 1fr;min-height:0;}
+    .rail{border-right:1px solid var(--border);background:var(--panel);
+      display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;}
+    .railbtn{width:34px;height:34px;border-radius:6px;border:1px solid var(--border);
+      background:var(--panel2);color:var(--muted);display:flex;align-items:center;
+      justify-content:center;font-family:var(--mono);font-size:11.5px;}
+    .railbtn.on{border-color:var(--accent);color:var(--accent);background:#223052;}
+    .side{border-right:1px solid var(--border);background:var(--panel);overflow:hidden;
+      display:flex;flex-direction:column;}
+    .sect{padding:11px 13px;border-bottom:1px solid var(--border);}
+    .sect h3{margin:0 0 8px;font-size:10.5px;font-weight:600;color:var(--muted);
+      text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:7px;}
+    .sect h3 .more{margin-left:auto;color:var(--accent);font-size:10px;letter-spacing:0;
+      text-transform:none;font-weight:500;}
+    .envrow{display:flex;gap:6px;}
+    .env{flex:1;padding:5px 0;text-align:center;border:1px solid var(--border);border-radius:5px;
+      background:var(--panel2);color:var(--muted);font-size:12px;}
+    .env.on{border-color:var(--warn);color:var(--warn);}
+    /* live sandbox card */
+    .sb{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:9px 10px;}
+    .sb .top{display:flex;align-items:center;gap:8px;}
+    .sb .sid{font-family:var(--mono);font-size:12px;color:var(--accent);}
+    .sb .pulse{width:6px;height:6px;border-radius:50%;background:var(--ok);}
+    .sb .meta{display:grid;grid-template-columns:1fr 1fr;gap:3px 10px;margin-top:8px;}
+    .sb .mrow{font-size:11px;color:var(--muted);}
+    .sb .mrow b{color:var(--fg);font-family:var(--mono);font-weight:500;}
+    .sb .acts{display:flex;gap:6px;margin-top:9px;}
+    .isoline{margin-top:8px;font-size:10.5px;color:var(--muted);line-height:1.45;}
+    /* connections */
+    .cn{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px;}
+    .cn .kd{font-family:var(--mono);font-size:9.5px;padding:1px 5px;border:1px solid var(--border);
+      border-radius:3px;color:var(--muted);flex:none;width:62px;text-align:center;}
+    .cn .nm{font-family:var(--mono);font-size:11.5px;flex:1;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap;}
+    .cn .sees{font-size:10px;color:var(--ok);}
+    .chips{display:flex;flex-wrap:wrap;gap:5px;}
+    .chip{display:flex;align-items:center;gap:5px;padding:3px 7px;border:1px solid var(--border);
+      border-radius:5px;background:var(--panel2);font-size:11.5px;}
+    .dot{width:5px;height:5px;border-radius:50%;background:var(--ok);}
+    /* chat */
+    .chat{display:flex;flex-direction:column;min-height:0;background:var(--bg);}
+    .thread{flex:1;overflow:hidden;padding:15px 22px;display:flex;flex-direction:column;gap:13px;}
+    .msg{display:flex;gap:10px;}
+    .av{width:23px;height:23px;border-radius:5px;border:1px solid var(--border);background:var(--panel2);
+      display:flex;align-items:center;justify-content:center;font-family:var(--mono);font-size:9.5px;
+      color:var(--muted);flex:none;}
+    .mbody{flex:1;min-width:0;}
+    .who{font-size:11px;color:var(--muted);margin-bottom:3px;}
+    .txt{font-size:13px;line-height:1.5;}
+    .toolcard{margin-top:7px;border:1px solid var(--border);border-radius:6px;background:var(--panel);
+      overflow:hidden;}
+    .tchdr{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:1px solid var(--border);
+      background:var(--panel2);font-size:11.5px;}
+    .tchdr .cmd{font-family:var(--mono);color:var(--accent);flex:1;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .tcout{font-family:var(--mono);font-size:11px;line-height:1.5;padding:8px 10px;
+      color:var(--muted);white-space:pre;overflow:hidden;}
+    .signed{display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid var(--border);
+      background:#1a1721;font-size:10.5px;color:var(--ssh);font-family:var(--mono);}
+    .approval{margin-top:7px;border:1px solid var(--warn);border-radius:6px;background:var(--panel2);padding:11px;}
+    .approval h4{margin:0 0 5px;font-size:11.5px;color:var(--warn);display:flex;align-items:center;gap:8px;}
+    .approval .rule{font-family:var(--mono);color:var(--accent);font-size:11px;}
+    .diff{font-family:var(--mono);font-size:11px;white-space:pre;background:var(--bg);
+      border:1px solid var(--border);border-radius:5px;padding:8px;margin:7px 0;overflow:hidden;line-height:1.5;}
+    .add{color:var(--ok);} .del{color:var(--danger);} .cx{color:var(--muted);}
+    .arow{display:flex;gap:8px;align-items:center;margin-top:7px;}
+    .inp{flex:1;background:var(--bg);color:var(--muted);border:1px solid var(--border);
+      border-radius:5px;padding:5px 9px;font-size:11.5px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:5px 11px;font-size:12px;cursor:pointer;}
+    button.sm{padding:3px 8px;font-size:10.5px;}
+    button.approve{border-color:#2a4a37;color:var(--ok);}
+    button.deny{border-color:#5a2a2a;color:var(--danger);}
+    button.danger{border-color:#5a2a2a;color:var(--danger);}
+    .composer{border-top:1px solid var(--border);background:var(--panel);padding:11px 22px;}
+    .cbox{border:1px solid var(--border);border-radius:6px;background:var(--panel2);padding:9px 11px;}
+    .cctx{display:flex;align-items:center;gap:7px;margin-bottom:7px;font-size:10.5px;color:var(--muted);}
+    .ctxchip{padding:2px 7px;border:1px solid var(--border);border-radius:10px;font-family:var(--mono);}
+    .cinput{color:var(--muted);font-size:12.5px;}
+    .crow{display:flex;align-items:center;gap:8px;margin-top:9px;}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">control tower</span>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span style="font-family:var(--mono);font-size:12px;">tripon</span>
+    <span class="tag">/</span>
+    <span style="font-family:var(--mono);font-size:12px;color:var(--warn);">staging</span>
+    <span class="spacer"></span>
+    <span class="tag">3 sandboxes</span>
+    <span class="badge ok">egress enforced</span>
+  </div>
+
+  <div class="body">
+
+    <div class="rail">
+      <div class="railbtn on">TP</div>
+      <div class="railbtn">YU</div>
+      <div class="railbtn" style="border-style:dashed;">+</div>
+    </div>
+
+    <div class="side">
+      <div class="sect">
+        <h3>Environment</h3>
+        <div class="envrow">
+          <div class="env">prod</div>
+          <div class="env on">staging</div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <h3>Live sandbox <span class="more">all 3 →</span></h3>
+        <div class="sb">
+          <div class="top">
+            <span class="pulse"></span>
+            <span class="sid">6a1f2c94</span>
+            <span class="badge" style="color:#9fe0b8;border-color:#25503a;">gVisor</span>
+            <span class="spacer"></span>
+            <span class="tag" style="font-size:10.5px;">24m left</span>
+          </div>
+          <div class="meta">
+            <div class="mrow">mem <b>412M</b> / 2G</div>
+            <div class="mrow">cpu <b>0.3</b> / 2</div>
+            <div class="mrow">net <b>10.89.0.6</b></div>
+            <div class="mrow">tools <b>7</b></div>
+          </div>
+          <div class="isoline">read-only rootfs · rootless · caps dropped ·
+            <span style="color:var(--fg);">/workspace</span> writable</div>
+          <div class="acts">
+            <button class="sm">Shell</button>
+            <button class="sm">Snapshot</button>
+            <button class="sm">Trace</button>
+            <button class="sm danger">Kill</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <h3>Connections <span class="more">manage →</span></h3>
+        <div class="cn"><span class="kd" style="color:var(--k8s);border-color:#25455a;">k8s</span>
+          <span class="nm">kubeconfig-stg</span><span class="sees">blind</span></div>
+        <div class="cn"><span class="kd" style="color:var(--ssh);border-color:#3d2f5a;">ssh</span>
+          <span class="nm">ssh-web-fleet</span><span class="sees">blind</span></div>
+        <div class="cn"><span class="kd" style="color:var(--cloud);border-color:#5a3d25;">aws</span>
+          <span class="nm">aws-scoped</span><span class="sees">15m</span></div>
+        <div class="cn"><span class="kd" style="color:#7fb2ff;border-color:#2a3a5a;">http</span>
+          <span class="nm">gitlab-token</span><span class="sees">blind</span></div>
+        <div class="cn"><span class="kd" style="color:#7fb2ff;border-color:#2a3a5a;">http</span>
+          <span class="nm">argocd-token</span><span class="sees">blind</span></div>
+        <div class="cn"><span class="kd" style="color:var(--cloud);border-color:#5a3d25;">azure</span>
+          <span class="nm" style="color:var(--muted);">azure-sp</span>
+          <span class="badge warn">set up</span></div>
+      </div>
+
+      <div class="sect">
+        <h3>Tools in sandbox</h3>
+        <div class="chips">
+          <span class="chip"><span class="dot"></span>kubectl</span>
+          <span class="chip"><span class="dot"></span>ssh</span>
+          <span class="chip"><span class="dot"></span>terraform</span>
+          <span class="chip"><span class="dot"></span>argocd</span>
+          <span class="chip"><span class="dot"></span>glab</span>
+          <span class="chip"><span class="dot"></span>aws</span>
+          <span class="chip"><span class="dot"></span>helm</span>
+        </div>
+      </div>
+
+      <div class="sect" style="border-bottom:none;">
+        <h3>Workspace</h3>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--muted);line-height:1.65;">
+          /workspace<br>&nbsp;&nbsp;gitops/<br>&nbsp;&nbsp;terraform/<br>&nbsp;&nbsp;ansible/</div>
+        <div style="margin-top:7px;font-size:10.5px;color:var(--muted);">
+          ~/tripon ↔ synced 2s ago</div>
+      </div>
+    </div>
+
+    <div class="chat">
+      <div class="thread">
+
+        <div class="msg">
+          <div class="av">you</div>
+          <div class="mbody">
+            <div class="who">You · 14:29</div>
+            <div class="txt">web-02 is dropping requests. Check the box and restart nginx if it's wedged.</div>
+          </div>
+        </div>
+
+        <div class="msg">
+          <div class="av" style="color:var(--accent);border-color:#2a3a5a;">ag</div>
+          <div class="mbody">
+            <div class="who">Agent · claude · 14:30</div>
+            <div class="txt">web-02 is an EC2 instance in the private subnet — going in over SSH
+              through the bastion.</div>
+
+            <div class="toolcard">
+              <div class="tchdr">
+                <span class="badge ok">allowed</span>
+                <span class="cmd">ssh web-02.ec2.internal 'systemctl status nginx --no-pager'</span>
+                <span class="tag" style="font-size:10.5px;">exit 0 · 2.4s</span>
+              </div>
+              <div class="tcout">● nginx.service - A high performance web server
+     Active: active (running) since Tue 09:14:22 UTC; 3 days ago
+   Main PID: 1041 (nginx)
+     Memory: 1.9G  (peak: 1.9G)
+     Tasks: 9 (limit: 4915)
+  worker process failed to allocate — 24 conn refused in last 5m</div>
+              <div class="signed">
+                <span>ssh.sign · web-02 · key ops-fleet · destination allowed · signature only</span>
+              </div>
+            </div>
+
+            <div class="txt" style="margin-top:9px;">The worker can't allocate — nginx has climbed to
+              1.9 GB and is refusing connections. A reload won't reclaim it; it needs a restart.
+              That interrupts live traffic on this node, so it's gated.</div>
+
+            <div class="approval">
+              <h4>Approval required
+                <span class="rule">policy: approval_required · ssh.exec · service restart</span>
+              </h4>
+              <div style="font-size:11.5px;color:var(--muted);margin-bottom:3px;">
+                Change #132 · web-02.ec2.internal · staging</div>
+              <div class="diff"><span class="cx">host   web-02.ec2.internal (i-0a91c…)
+action</span> <span class="del">systemctl restart nginx</span>
+<span class="cx">effect</span> <span class="del">~4s of dropped connections on this node</span>
+<span class="cx">before</span> <span class="add">web-02 drained from the target group</span>
+<span class="cx">after </span> <span class="add">health check green → re-added</span></div>
+              <div style="font-size:11px;color:var(--muted);">
+                Blast radius: 1 of 4 web nodes · revert = re-add to target group</div>
+              <div class="arow">
+                <input class="inp" value="drain first, then restart — go ahead" readonly>
+                <button class="approve">Approve</button>
+                <button class="deny">Deny</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="composer">
+        <div class="cbox">
+          <div class="cctx">
+            <span>runs in</span>
+            <span class="ctxchip">tripon / staging</span>
+            <span class="ctxchip">sandbox 6a1f2c94</span>
+            <span>·</span>
+            <span>7 tools · 5 connections</span>
+          </div>
+          <div class="cinput">Ask the agent to do something…</div>
+          <div class="crow">
+            <button>Attach</button>
+            <button>Runbooks</button>
+            <span class="spacer"></span>
+            <span class="tag">claude · MCP</span>
+            <button style="border-color:var(--accent);color:var(--accent);">Send</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

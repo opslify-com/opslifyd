@@ -1,0 +1,252 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --local:#9fe0b8;--skill:#ffd08f;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:11px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .spacer{flex:1;}
+    .steps{display:flex;align-items:center;padding:0 16px;border-bottom:1px solid var(--border);
+      background:var(--panel);}
+    .step{display:flex;align-items:center;gap:7px;padding:10px 14px 10px 0;font-size:12px;color:var(--muted);}
+    .step .num{width:18px;height:18px;border-radius:50%;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:9.5px;display:flex;align-items:center;justify-content:center;}
+    .step.done .num{border-color:#2a4a37;color:var(--ok);}
+    .step.on{color:var(--fg);} .step.on .num{border-color:var(--accent);color:var(--accent);background:#223052;}
+    .sep{width:18px;height:1px;background:var(--border);margin-right:14px;}
+    .body{flex:1;display:grid;grid-template-columns:1fr 520px;min-height:0;}
+    .left{padding:18px 20px;overflow:hidden;border-right:1px solid var(--border);}
+    h2{font-size:14px;margin:0 0 5px;font-weight:600;}
+    .hint{color:var(--muted);font-size:12.5px;margin:0 0 16px;line-height:1.5;max-width:72ch;}
+    .ags{display:flex;flex-direction:column;gap:9px;}
+    .ag{border:1px solid var(--border);border-radius:6px;background:var(--panel);padding:12px 13px;
+      display:grid;grid-template-columns:16px 1fr 128px;gap:12px;align-items:start;}
+    .ag.on{border-color:var(--accent);background:#1a2130;}
+    .rd{width:14px;height:14px;border-radius:50%;border:1px solid var(--border);background:var(--panel2);
+      margin-top:2px;display:flex;align-items:center;justify-content:center;}
+    .ag.on .rd{border-color:var(--accent);}
+    .ag.on .rd i{width:6px;height:6px;border-radius:50%;background:var(--accent);display:block;}
+    .ag .nm{font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:9px;}
+    .ag .ds{font-size:11.5px;color:var(--muted);margin-top:4px;line-height:1.45;}
+    .ag .mono{font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:6px;}
+    .ag .rt{text-align:right;display:flex;flex-direction:column;gap:5px;align-items:flex-end;}
+    .badge{font-size:9.5px;padding:1px 6px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.ok{color:var(--ok);border-color:#2a4a37;}
+    .badge.warn{color:var(--warn);border-color:#4a4020;}
+    .badge.local{color:var(--local);border-color:#25503a;}
+    .badge.acc{color:var(--accent);border-color:#2a3a5a;}
+    .right{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .rhdr{padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:9px;}
+    .rhdr h3{margin:0;font-size:13px;font-weight:600;}
+    .rbody{flex:1;overflow:hidden;}
+    .gsec{border-bottom:1px solid var(--border);padding:12px 16px;}
+    .gsec .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+      margin-bottom:9px;display:flex;align-items:center;gap:8px;}
+    .fld{display:grid;grid-template-columns:96px 1fr;gap:10px;align-items:center;margin-bottom:7px;}
+    .fld label{font-size:11.5px;color:var(--muted);}
+    .inp{background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:6px 9px;font-size:11.5px;font-family:var(--mono);}
+    .sh{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 11px;
+      font-family:var(--mono);font-size:11px;line-height:1.7;white-space:pre;overflow:hidden;}
+    .pr{color:var(--ok);} .cm{color:var(--muted);} .out{color:var(--muted);} .hl{color:var(--accent);}
+    .kv{display:flex;align-items:center;gap:9px;padding:3.5px 0;font-size:12px;}
+    .kv .kk{color:var(--muted);min-width:104px;}
+    .kv .vv{font-family:var(--mono);font-size:11.5px;}
+    .note{font-size:11.5px;color:var(--muted);line-height:1.55;margin:0;}
+    .note b{color:var(--fg);font-weight:600;}
+    .ftr{border-top:1px solid var(--border);background:var(--panel);padding:12px 20px;
+      display:flex;align-items:center;gap:11px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:7px 14px;font-size:12.5px;cursor:pointer;}
+    button.sm{padding:4px 10px;font-size:11.5px;}
+    button.primary{border-color:var(--accent);color:var(--accent);}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">new project</span>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span style="font-family:var(--mono);font-size:12px;">tripon</span>
+    <span class="spacer"></span>
+    <span class="tag">step 5 of 6</span>
+  </div>
+
+  <div class="steps">
+    <div class="step done"><span class="num">✓</span>Project</div><span class="sep"></span>
+    <div class="step done"><span class="num">✓</span>Platform</div><span class="sep"></span>
+    <div class="step done"><span class="num">✓</span>Tools</div><span class="sep"></span>
+    <div class="step done"><span class="num">✓</span>Skills</div><span class="sep"></span>
+    <div class="step on"><span class="num">5</span>Agent</div><span class="sep"></span>
+    <div class="step"><span class="num">6</span>Connections</div>
+  </div>
+
+  <div class="body">
+
+    <div class="left">
+      <h2>Which agent drives this project?</h2>
+      <p class="hint">opslify does not ship a model. Any agent that speaks MCP can drive the sandbox —
+        and it inherits this project's tools, skills, connections and policy either way. Set per
+        project, so prod can run a model you trust while a scratch project runs a cheap local one.</p>
+
+      <div class="ags">
+
+        <div class="ag on">
+          <span class="rd"><i></i></span>
+          <div>
+            <div class="nm">Claude Code <span class="badge acc">MCP</span></div>
+            <div class="ds">Hosted. Strongest at multi-step operational reasoning; already connected
+              on this machine.</div>
+            <div class="mono">claude mcp add opslifyd -- opslifyd mcp</div>
+          </div>
+          <div class="rt">
+            <span class="badge ok">connected</span>
+            <span class="tag" style="font-size:10.5px;">sonnet-4.6</span>
+          </div>
+        </div>
+
+        <div class="ag">
+          <span class="rd"></span>
+          <div>
+            <div class="nm">Qwen <span class="badge local">local</span></div>
+            <div class="ds">Runs on your own hardware through Ollama or vLLM.
+              <b style="color:var(--fg);">Nothing leaves the host</b> — pairs with the
+              credential-blind story for regulated work.</div>
+            <div class="mono">ollama · qwen2.5-coder:32b · 127.0.0.1:11434</div>
+          </div>
+          <div class="rt">
+            <span class="badge ok">detected</span>
+            <span class="tag" style="font-size:10.5px;">3 models</span>
+          </div>
+        </div>
+
+        <div class="ag">
+          <span class="rd"></span>
+          <div>
+            <div class="nm">Codex CLI</div>
+            <div class="ds">OpenAI's coding agent. Needs an API key stored as a connection, not an
+              environment variable.</div>
+            <div class="mono">codex --mcp opslifyd</div>
+          </div>
+          <div class="rt">
+            <span class="badge warn">needs key</span>
+          </div>
+        </div>
+
+        <div class="ag">
+          <span class="rd"></span>
+          <div>
+            <div class="nm">Custom CLI <span class="badge">any model</span></div>
+            <div class="ds">Point opslify at any command that speaks MCP over stdio — Gemini CLI,
+              aider, opencode, or something you wrote. Configure it in the shell on the right.</div>
+            <div class="mono">&lt;your command&gt; --mcp opslifyd</div>
+          </div>
+          <div class="rt">
+            <span class="badge">configure</span>
+          </div>
+        </div>
+
+      </div>
+
+      <p class="hint" style="margin-top:18px;">Whichever you pick, the sandbox boundary does not move.
+        A local Qwen and a hosted Claude get the same five MCP tools, the same policy gates and the
+        same audit trail — the model choice changes cost, latency and where your prompts go, never
+        what the agent is allowed to do.</p>
+    </div>
+
+    <div class="right">
+      <div class="rhdr">
+        <h3>Configuration</h3>
+        <span class="badge acc">Claude Code</span>
+        <span class="spacer"></span>
+        <button class="sm">Test</button>
+      </div>
+
+      <div class="rbody">
+
+        <div class="gsec">
+          <div class="k">Model</div>
+          <div class="fld"><label>Provider</label>
+            <input class="inp" value="anthropic · claude code" readonly></div>
+          <div class="fld"><label>Model</label>
+            <input class="inp" value="claude-sonnet-4.6" readonly></div>
+          <div class="fld"><label>Transport</label>
+            <input class="inp" value="MCP · stdio" readonly></div>
+          <div class="fld"><label>Fallback</label>
+            <input class="inp" value="qwen2.5-coder:32b (local)" readonly></div>
+        </div>
+
+        <div class="gsec">
+          <div class="k">Or configure from the shell</div>
+          <div class="sh"><span class="cm"># any MCP-speaking command works</span>
+<span class="pr">$</span> opslify agent add <span class="hl">qwen-local</span> \
+    --command <span class="hl">"ollama run qwen2.5-coder:32b"</span> \
+    --mcp opslifyd --project tripon
+
+<span class="out">agent 'qwen-local' registered
+  transport  stdio · MCP
+  endpoint   127.0.0.1:11434
+  tools      5 exposed
+  skills     5 attached</span>
+
+<span class="pr">$</span> opslify agent use <span class="hl">qwen-local</span> --env staging
+<span class="out">staging now drives with qwen-local</span></div>
+        </div>
+
+        <div class="gsec">
+          <div class="k">What this agent will receive</div>
+          <div class="kv"><span class="kk">MCP tools</span><span class="vv">5 · session, exec, upload, download, end</span></div>
+          <div class="kv"><span class="kk">Skills</span><span class="vv" style="color:var(--skill);">5 files · 4.1k tokens</span></div>
+          <div class="kv"><span class="kk">Connections</span><span class="vv">6 · values blind</span></div>
+          <div class="kv"><span class="kk">Policy</span><span class="vv">9 gates · staging</span></div>
+        </div>
+
+        <div class="gsec" style="border-bottom:none;">
+          <div class="k">Where prompts go</div>
+          <p class="note"><b>Claude Code</b> sends your prompts and command output to Anthropic.
+            <b>Qwen local</b> keeps everything on this machine. Either way the daemon still redacts
+            secrets before anything is recorded — but for regulated environments the local option is
+            the one that keeps command output entirely on your hardware.</p>
+          <p class="note" style="margin-top:9px;">The configured agent is shown in the cockpit header
+            at all times, and is recorded in every change's trace, so you always know which model
+            made a decision.</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="ftr">
+    <button>Back</button>
+    <span class="spacer"></span>
+    <span class="tag">Claude Code for staging · qwen-local as fallback · changeable any time</span>
+    <button>Save as draft</button>
+    <button class="primary">Next · connections</button>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

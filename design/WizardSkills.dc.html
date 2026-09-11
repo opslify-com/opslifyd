@@ -1,0 +1,265 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    :root{--bg:#0f1115;--panel:#171a21;--panel2:#1e2129;--border:#2a2f3a;--fg:#d7dbe4;
+      --muted:#8b93a3;--accent:#5aa0ff;--danger:#ff5a5a;--ok:#4bd07f;--warn:#e6b800;
+      --skill:#ffd08f;--ssh:#c9a6ff;--k8s:#8fd0ff;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+    *{box-sizing:border-box;}
+    body{margin:0;background:var(--bg);color:var(--fg);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;font-size:14px;}
+    a{color:var(--accent);} a:hover{color:#8dbcff;}
+    .root{width:1440px;height:900px;display:flex;flex-direction:column;overflow:hidden;}
+    .hdr{padding:10px 16px;border-bottom:1px solid var(--border);background:var(--panel);
+      display:flex;align-items:center;gap:11px;}
+    .hdr h1{font-size:15px;margin:0;font-weight:600;}
+    .tag{color:var(--muted);font-size:12px;}
+    .spacer{flex:1;}
+    .steps{display:flex;align-items:center;padding:0 16px;border-bottom:1px solid var(--border);
+      background:var(--panel);}
+    .step{display:flex;align-items:center;gap:7px;padding:10px 14px 10px 0;font-size:12px;color:var(--muted);}
+    .step .num{width:18px;height:18px;border-radius:50%;border:1px solid var(--border);background:var(--panel2);
+      font-family:var(--mono);font-size:9.5px;display:flex;align-items:center;justify-content:center;}
+    .step.done .num{border-color:#2a4a37;color:var(--ok);}
+    .step.on{color:var(--fg);} .step.on .num{border-color:var(--accent);color:var(--accent);background:#223052;}
+    .sep{width:18px;height:1px;background:var(--border);margin-right:14px;}
+    .body{flex:1;display:grid;grid-template-columns:346px 1fr;min-height:0;}
+    .list{border-right:1px solid var(--border);background:var(--panel);display:flex;
+      flex-direction:column;min-height:0;overflow:hidden;}
+    .lhd{padding:13px 15px;border-bottom:1px solid var(--border);}
+    .lhd h2{margin:0 0 4px;font-size:13.5px;font-weight:600;}
+    .lhd p{margin:0;font-size:11.5px;color:var(--muted);line-height:1.5;}
+    .lsec{padding:10px 15px 4px;font-size:10px;color:var(--muted);text-transform:uppercase;
+      letter-spacing:.06em;font-weight:600;}
+    .sk{display:flex;align-items:center;gap:9px;padding:8px 15px;border-left:2px solid transparent;}
+    .sk.on{background:#223052;border-left-color:var(--accent);}
+    .sk:hover{background:var(--panel2);}
+    .sw{width:26px;height:15px;border-radius:8px;background:var(--panel2);border:1px solid var(--border);
+      flex:none;position:relative;}
+    .sw.on{background:#1c3a28;border-color:#2a4a37;}
+    .sw i{position:absolute;top:1.5px;left:2px;width:10px;height:10px;border-radius:50%;
+      background:var(--muted);}
+    .sw.on i{left:13px;background:var(--ok);}
+    .sk .info{flex:1;min-width:0;}
+    .sk .fn{font-family:var(--mono);font-size:11.5px;color:var(--skill);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .sk.off .fn{color:var(--muted);}
+    .sk .mt{font-size:10px;color:var(--muted);margin-top:2px;}
+    .sk .ln{font-family:var(--mono);font-size:10px;color:var(--muted);}
+    .badge{font-size:9.5px;padding:1px 5px;border:1px solid var(--border);border-radius:10px;color:var(--muted);}
+    .badge.edit{color:var(--accent);border-color:#2a3a5a;}
+    .badge.new{color:var(--ok);border-color:#2a4a37;}
+    .lft{margin-top:auto;padding:11px 15px;border-top:1px solid var(--border);}
+    .ed{display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .ebar{display:flex;align-items:center;gap:10px;padding:11px 18px;border-bottom:1px solid var(--border);}
+    .ebar .fn{font-family:var(--mono);font-size:13px;color:var(--skill);}
+    .ebar .src{font-size:11px;color:var(--muted);}
+    .doc{flex:1;overflow:hidden;padding:16px 20px;font-family:var(--mono);font-size:12px;
+      line-height:1.65;white-space:pre-wrap;}
+    .h1{color:var(--fg);font-weight:600;font-size:14px;}
+    .h2{color:var(--accent);font-weight:600;}
+    .b{color:var(--fg);font-weight:600;}
+    .c{color:var(--muted);}
+    .cd{color:var(--k8s);}
+    .warn{color:var(--warn);}
+    .dg{color:var(--danger);}
+    .foot{border-top:1px solid var(--border);background:var(--panel);padding:11px 18px;
+      display:flex;align-items:center;gap:12px;}
+    .ctx{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--muted);}
+    .bar{width:150px;height:5px;border-radius:3px;background:var(--panel2);overflow:hidden;}
+    .bar i{display:block;height:100%;background:var(--accent);width:23%;}
+    .ftr{border-top:1px solid var(--border);background:var(--panel);padding:12px 20px;
+      display:flex;align-items:center;gap:11px;}
+    button{background:var(--panel2);color:var(--fg);border:1px solid var(--border);border-radius:5px;
+      padding:7px 14px;font-size:12.5px;cursor:pointer;}
+    button.sm{padding:4px 10px;font-size:11.5px;}
+    button.primary{border-color:var(--accent);color:var(--accent);}
+  </style>
+</helmet>
+<div class="root">
+
+  <div class="hdr">
+    <h1>opslify</h1>
+    <span class="tag">new project</span>
+    <span style="width:1px;height:16px;background:var(--border);"></span>
+    <span style="font-family:var(--mono);font-size:12px;">tripon</span>
+    <span class="spacer"></span>
+    <span class="tag">step 4 of 6</span>
+  </div>
+
+  <div class="steps">
+    <div class="step done"><span class="num">✓</span>Project</div><span class="sep"></span>
+    <div class="step done"><span class="num">✓</span>Platform</div><span class="sep"></span>
+    <div class="step done"><span class="num">✓</span>Tools</div><span class="sep"></span>
+    <div class="step on"><span class="num">4</span>Skills</div><span class="sep"></span>
+    <div class="step"><span class="num">5</span>Agent</div><span class="sep"></span>
+    <div class="step"><span class="num">6</span>Connections</div>
+  </div>
+
+  <div class="body">
+
+    <div class="list">
+      <div class="lhd">
+        <h2>Skills</h2>
+        <p>Every tool ships a starter instruction file. Edit them so the agent knows
+          <b style="color:var(--fg);">your</b> fleet — not DevOps in the abstract.</p>
+      </div>
+
+      <div class="lsec">From your tools</div>
+
+      <div class="sk on">
+        <span class="sw on"><i></i></span>
+        <span class="info">
+          <span class="fn">ssh-fleet.md</span>
+          <span class="mt">ssh · <span class="badge edit">edited</span></span>
+        </span>
+        <span class="ln">28 ln</span>
+      </div>
+
+      <div class="sk">
+        <span class="sw on"><i></i></span>
+        <span class="info">
+          <span class="fn">kubernetes.md</span>
+          <span class="mt">kubectl, helm · starter</span>
+        </span>
+        <span class="ln">42 ln</span>
+      </div>
+
+      <div class="sk">
+        <span class="sw on"><i></i></span>
+        <span class="info">
+          <span class="fn">terraform.md</span>
+          <span class="mt">terraform · <span class="badge edit">edited</span></span>
+        </span>
+        <span class="ln">61 ln</span>
+      </div>
+
+      <div class="sk">
+        <span class="sw on"><i></i></span>
+        <span class="info">
+          <span class="fn">gitlab.md</span>
+          <span class="mt">glab · starter</span>
+        </span>
+        <span class="ln">24 ln</span>
+      </div>
+
+      <div class="sk off">
+        <span class="sw"><i></i></span>
+        <span class="info">
+          <span class="fn">argocd.md</span>
+          <span class="mt">argocd · starter · off</span>
+        </span>
+        <span class="ln">31 ln</span>
+      </div>
+
+      <div class="sk off">
+        <span class="sw"><i></i></span>
+        <span class="info">
+          <span class="fn">aws.md</span>
+          <span class="mt">aws · starter · off</span>
+        </span>
+        <span class="ln">38 ln</span>
+      </div>
+
+      <div class="lsec">Project-wide</div>
+
+      <div class="sk">
+        <span class="sw on"><i></i></span>
+        <span class="info">
+          <span class="fn">tripon-house-rules.md</span>
+          <span class="mt">yours · <span class="badge new">custom</span></span>
+        </span>
+        <span class="ln">19 ln</span>
+      </div>
+
+      <div class="sk off">
+        <span class="sw"><i></i></span>
+        <span class="info">
+          <span class="fn" style="color:var(--muted);">incident-runbook.md</span>
+          <span class="mt">yours · draft</span>
+        </span>
+        <span class="ln">7 ln</span>
+      </div>
+
+      <div class="lft">
+        <button class="sm">+ New skill</button>
+        <button class="sm">Import .md</button>
+        <button class="sm">Browse library</button>
+      </div>
+    </div>
+
+    <div class="ed">
+      <div class="ebar">
+        <span class="fn">ssh-fleet.md</span>
+        <span class="src">attached to · ssh-fleet connection · web-01…04, db-01</span>
+        <span class="spacer"></span>
+        <button class="sm">Reset to starter</button>
+        <button class="sm">Preview as agent sees it</button>
+      </div>
+
+      <div class="doc"><span class="h1"># SSH fleet — tripon</span>
+
+<span class="h2">## Layout</span>
+- <span class="cd">web-01 … web-04</span>  t3.medium, behind ALB <span class="cd">tripon-stg-alb</span>
+- <span class="cd">db-01</span>            r6g.large, Postgres 15 <span class="b">primary</span>
+- Every host is private. Reach them through <span class="cd">bastion.tripon.io</span>.
+
+<span class="h2">## House rules</span>
+1. <span class="b">Always drain a web node before restarting anything on it.</span>
+   <span class="cd">aws elbv2 deregister-targets --target-group-arn $TG --targets Id=$ID</span>
+   Wait for the health check to go green before re-adding it.
+2. <span class="b">One node at a time.</span> Never restart two web nodes in the same change.
+3. <span class="dg">db-01 is the primary.</span> No service restarts, no config reloads,
+   no <span class="cd">pg_ctl</span>. If it looks like db-01 needs work, stop and ask a human.
+4. Prefer <span class="cd">systemctl reload</span> over <span class="cd">restart</span> when the
+   config allows it — reload keeps connections alive.
+
+<span class="h2">## Where things live</span>
+- nginx config   <span class="cd">/etc/nginx/conf.d/tripon.conf</span>
+- app logs       <span class="cd">journalctl -u tripon-api</span>
+- deploy dir     <span class="cd">/srv/tripon</span>
+
+<span class="h2">## Diagnosis first</span>
+502s on this fleet are almost always memory pressure, not the app.
+Check <span class="cd">free -m</span> and <span class="cd">systemctl status nginx</span> before
+touching anything. <span class="warn">Report what you found before proposing a fix.</span>
+
+<span class="c">&lt;!-- The agent reads this before it touches the fleet. Anything you write here
+     becomes a rule it follows, not a suggestion it weighs. --&gt;</span></div>
+
+      <div class="foot">
+        <div class="ctx">
+          <span>Context used by skills</span>
+          <span class="bar"><i></i></span>
+          <span style="font-family:var(--mono);">4.1k / 18k tokens</span>
+        </div>
+        <span class="spacer"></span>
+        <span class="tag">5 skills on · injected for this project only</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="ftr">
+    <button>Back</button>
+    <span class="spacer"></span>
+    <span class="tag">Skills are versioned with the project and shown in every change's trace</span>
+    <button>Save as draft</button>
+    <button class="primary">Next · agent</button>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
