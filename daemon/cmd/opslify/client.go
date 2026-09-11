@@ -995,3 +995,123 @@ func (c *client) removeAgent(ctx context.Context, name string) error {
 	}
 	return nil
 }
+
+// --- F8.6 changes --------------------------------------------------------------
+
+// changeStepView is one planned step as the daemon reports it.
+type changeStepView struct {
+	Index int      `json:"index"`
+	Argv  []string `json:"argv"`
+	Gated bool     `json:"gated,omitempty"`
+}
+
+// changeView is a Change as the daemon reports it.
+//
+// Revertibility arrives PRE-COMPUTED, with its reason, rather than as raw inverse
+// fields the CLI would have to interpret. A client that had to derive "can this be
+// reverted?" could derive it differently from the daemon, and the operator would
+// be reading a second opinion at the moment it matters most.
+type changeView struct {
+	ID             string           `json:"id"`
+	Intent         string           `json:"intent"`
+	Status         string           `json:"status"`
+	ProposerName   string           `json:"proposer_name"`
+	ProposerModel  string           `json:"proposer_model,omitempty"`
+	ProjectID      string           `json:"project_id,omitempty"`
+	EnvironmentID  string           `json:"environment_id,omitempty"`
+	BlastSummary   string           `json:"blast_summary"`
+	Revertible     bool             `json:"revertible"`
+	RevertReason   string           `json:"revert_reason,omitempty"`
+	InverseKind    string           `json:"inverse_kind,omitempty"`
+	PolicyRule     string           `json:"policy_rule,omitempty"`
+	PolicyEffect   string           `json:"policy_effect,omitempty"`
+	PolicyHash     string           `json:"policy_hash,omitempty"`
+	ContextHash    string           `json:"context_hash,omitempty"`
+	AgentName      string           `json:"agent_name,omitempty"`
+	AgentModel     string           `json:"agent_model,omitempty"`
+	SessionID      string           `json:"session_id,omitempty"`
+	PlanHash       string           `json:"plan_hash,omitempty"`
+	ConnectionRefs []string         `json:"connection_refs,omitempty"`
+	Steps          []changeStepView `json:"steps,omitempty"`
+	Preview        string           `json:"preview,omitempty"`
+}
+
+type decideChangeReq struct {
+	Decision string `json:"decision"`
+	Note     string `json:"note,omitempty"`
+}
+
+func (c *client) listChanges(ctx context.Context) ([]changeView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/changes", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []changeView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *client) getChange(ctx context.Context, id string) (changeView, error) {
+	seg, err := pathSeg("change id", id)
+	if err != nil {
+		return changeView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/changes/"+seg, nil)
+	if err != nil {
+		return changeView{}, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return changeView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return changeView{}, c.decodeError(resp)
+	}
+	var out changeView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return changeView{}, err
+	}
+	return out, nil
+}
+
+// decideChange posts a human decision: approve, deny or revert.
+func (c *client) decideChange(ctx context.Context, id, decision, note string) (changeView, error) {
+	seg, err := pathSeg("change id", id)
+	if err != nil {
+		return changeView{}, err
+	}
+	body, err := json.Marshal(decideChangeReq{Decision: decision, Note: note})
+	if err != nil {
+		return changeView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/v1/changes/"+seg+"/decision", bytes.NewReader(body))
+	if err != nil {
+		return changeView{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return changeView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return changeView{}, c.decodeError(resp)
+	}
+	var out changeView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return changeView{}, err
+	}
+	return out, nil
+}

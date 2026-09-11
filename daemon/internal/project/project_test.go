@@ -708,3 +708,25 @@ func TestBootstrapIdempotentAndNonDestructive(t *testing.T) {
 		t.Fatal("bootstrap overwrote an operator's edit to the default project")
 	}
 }
+
+// TestStateDirIsTightenedEvenIfItAlreadyExists. MkdirAll does not change the mode
+// of a directory that already exists, so a state dir created by an earlier
+// release — or by hand — would stay world-readable and nothing would say so.
+func TestStateDirIsTightenedEvenIfItAlreadyExists(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFileStore(dir); err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	for _, p := range []string{dir, filepath.Join(dir, "projects"), filepath.Join(dir, "environments")} {
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Errorf("%s mode = %o, want 0700", p, info.Mode().Perm())
+		}
+	}
+}

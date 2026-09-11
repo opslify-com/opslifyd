@@ -225,6 +225,11 @@ func NewFileStore(dir string) (Store, error) {
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return nil, fmt.Errorf("agents: create state dir %s: %w", agentDir, err)
 	}
+	// MkdirAll does not tighten an existing directory. See the same note in
+	// internal/change: a state dir left loose by an earlier release stays loose.
+	if err := os.Chmod(agentDir, 0o700); err != nil {
+		return nil, fmt.Errorf("agents: secure state dir %s: %w", agentDir, err)
+	}
 	return &fileStore{agentDir: agentDir, bindPath: filepath.Join(dir, "agent-bindings.json"), log: slog.Default()}, nil
 }
 
