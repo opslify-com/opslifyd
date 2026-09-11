@@ -531,3 +531,199 @@ func TestTheExplorerOffersAnAddForEverySectionThatHasOne(t *testing.T) {
 			"on the host and must stay on the CLI")
 	}
 }
+
+// --- the SPA cannot be parsed here, so it is checked structurally --------------
+
+// stripJS removes comments and string/template literals so the crude analyses
+// below look at code rather than at prose inside a quoted HTML fragment.
+func stripJS(js string) string {
+	var b strings.Builder
+	b.Grow(len(js))
+	// lastSig is the previous non-space code character. It is what distinguishes a
+	// regex literal from a division: only one of the two can follow an operator.
+	var lastSig byte
+	for i := 0; i < len(js); {
+		c := js[i]
+		switch {
+		case c == '/' && i+1 < len(js) && js[i+1] == '/':
+			for i < len(js) && js[i] != '\n' {
+				i++
+			}
+		case c == '/' && i+1 < len(js) && js[i+1] == '*':
+			i += 2
+			for i+1 < len(js) && !(js[i] == '*' && js[i+1] == '/') {
+				if js[i] == '\n' {
+					b.WriteByte('\n')
+				}
+				i++
+			}
+			i += 2
+		case c == '/' && regexPositionJS(lastSig):
+			// A regex literal, not a division. Without this the character class in
+			// /[&<>"']/g opens a phantom string and everything after it is read as
+			// quoted text — which made this checker report two unclosed brackets in
+			// a file that parses fine.
+			i++
+			for i < len(js) && js[i] != '\n' {
+				if js[i] == '\\' {
+					i += 2
+					continue
+				}
+				if js[i] == '[' {
+					for i < len(js) && js[i] != ']' && js[i] != '\n' {
+						i++
+					}
+				}
+				if i < len(js) && js[i] == '/' {
+					i++
+					break
+				}
+				i++
+			}
+			b.WriteString("RE")
+			lastSig = 'x'
+		case c == '"' || c == '\'' || c == '`':
+			q := c
+			i++
+			for i < len(js) {
+				if js[i] == '\\' {
+					i += 2
+					continue
+				}
+				if js[i] == '\n' {
+					b.WriteByte('\n')
+				}
+				if js[i] == q {
+					i++
+					break
+				}
+				i++
+			}
+			b.WriteString(`""`)
+			lastSig = 'x'
+		default:
+			b.WriteByte(c)
+			if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+				lastSig = c
+			}
+			i++
+		}
+	}
+	return b.String()
+}
+
+// regexPositionJS reports whether a "/" at this point starts a regex literal
+// rather than a division, judged by what precedes it.
+func regexPositionJS(prev byte) bool {
+	switch prev {
+	case 0, '(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^':
+		return true
+	}
+	return false
+}
+
+// TestTheSPACallsNothingUndefined catches the failure that actually reached an
+// operator: the sidebar was rewritten to OptionC2's explorer, renderRail was
+// deleted with the rail it drew, and render() kept calling it. The whole page
+// died on load with "renderRail is not defined" and showed "Could not reach the
+// daemon", which points at the wrong thing entirely.
+//
+// There is no JavaScript engine in this toolchain, so this is a heuristic rather
+// than a parse: it finds bare calls — a name followed by "(" and NOT preceded by
+// a dot — and checks each one is defined somewhere in the file. That is exactly
+// the shape of the bug, and it costs nothing.
+func TestTheSPACallsNothingUndefined(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := stripJS(string(b))
+
+	defined := map[string]bool{}
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`\bfunction\s+([A-Za-z_$][\w$]*)`),
+		regexp.MustCompile(`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)`),
+		regexp.MustCompile(`\bSCREENS\.([A-Za-z_$][\w$]*)\s*=`),
+	} {
+		for _, m := range re.FindAllStringSubmatch(code, -1) {
+			defined[m[1]] = true
+		}
+	}
+	// Parameters and destructured bindings count as defined.
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`function\s*[\w$]*\s*\(([^)]*)\)`),
+		regexp.MustCompile(`\(([^()]*)\)\s*=>`),
+		regexp.MustCompile(`catch\s*\(\s*([\w$]+)`),
+	} {
+		for _, m := range re.FindAllStringSubmatch(code, -1) {
+			for _, p := range strings.Split(m[1], ",") {
+				p = strings.TrimSpace(strings.SplitN(p, "=", 2)[0])
+				p = strings.Trim(p, "{}[] .")
+				if p != "" {
+					defined[p] = true
+				}
+			}
+		}
+	}
+	for _, m := range regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*=>`).FindAllStringSubmatch(code, -1) {
+		defined[m[1]] = true
+	}
+
+	// Language keywords and the host globals the page is allowed to reach for.
+	// Deliberately short: anything else must be defined in the file, because the
+	// CSP forbids loading code from anywhere else anyway.
+	allowed := map[string]bool{
+		"if": true, "for": true, "while": true, "switch": true, "catch": true,
+		"function": true, "return": true, "typeof": true, "await": true, "new": true,
+		"async": true, "else": true, "do": true, "try": true, "of": true, "in": true,
+		"setTimeout": true, "setInterval": true, "fetch": true, "btoa": true, "atob": true,
+		"parseInt": true, "parseFloat": true, "isNaN": true,
+		"encodeURIComponent": true, "decodeURIComponent": true,
+	}
+
+	bare := regexp.MustCompile(`(^|[^.\w$])([a-z_$][\w$]*)\s*\(`)
+	seen := map[string]bool{}
+	for _, m := range bare.FindAllStringSubmatch(code, -1) {
+		name := m[2]
+		if allowed[name] || defined[name] || seen[name] {
+			continue
+		}
+		seen[name] = true
+		t.Errorf("the SPA calls %s() but never defines it — the page dies on load "+
+			"with \"%s is not defined\"", name, name)
+	}
+}
+
+// TestTheSPAIsStructurallyBalanced: unclosed brackets, strings and comments are
+// the other way a syntax error ships as a blank page.
+func TestTheSPAIsStructurallyBalanced(t *testing.T) {
+	for _, name := range []string{"cockpit/cockpit.js", "cockpit/cockpit.css"} {
+		b, err := cockpitFS.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := stripJS(string(b))
+		var stack []rune
+		line := 1
+		for _, c := range code {
+			switch c {
+			case '\n':
+				line++
+			case '(', '[', '{':
+				stack = append(stack, c)
+			case ')', ']', '}':
+				want := map[rune]rune{')': '(', ']': '[', '}': '{'}[c]
+				if len(stack) == 0 {
+					t.Fatalf("%s line %d: stray %c", name, line, c)
+				}
+				if got := stack[len(stack)-1]; got != want {
+					t.Fatalf("%s line %d: %c closes %c", name, line, c, got)
+				}
+				stack = stack[:len(stack)-1]
+			}
+		}
+		if len(stack) != 0 {
+			t.Errorf("%s: %d unclosed bracket(s) — the file will not parse", name, len(stack))
+		}
+	}
+}

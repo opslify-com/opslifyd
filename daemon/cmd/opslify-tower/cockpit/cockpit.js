@@ -176,7 +176,6 @@ function closeTab(id) {
 
 function render() {
   renderHeader();
-  renderRail();
   renderSide();
   renderTabs();
   renderWork();
@@ -1410,17 +1409,39 @@ document.addEventListener('keydown', (ev) => {
   if (location.search.includes('token=')) {
     history.replaceState(null, '', location.pathname);
   }
+  // loadAll and render fail for different reasons and need different advice.
+  // Collapsing them told an operator "Could not reach the daemon · renderRail is
+  // not defined" — a bug in this file, reported as a daemon outage, sending them
+  // to `opslify status` on a daemon that was answering perfectly.
   try {
     await loadAll();
-    render();
   } catch (e) {
     document.body.innerHTML = '<div class="empty" style="margin-top:80px;">' +
       '<h3>Could not reach the daemon</h3>' + esc(e.message) +
       '<div class="cli">opslify status</div></div>';
     return;
   }
+  try {
+    render();
+  } catch (e) {
+    document.body.innerHTML = '<div class="empty" style="margin-top:80px;">' +
+      '<h3>The cockpit failed to render</h3>' +
+      'The daemon is reachable — this is a bug in the page itself.' +
+      '<div class="cli">' + esc(e.message) + '</div>' +
+      '<div class="cli">please report it with the line above</div></div>';
+    return;
+  }
   // Poll rather than hold a socket open: the cockpit is a viewer of daemon state
   // and a dropped websocket that silently stops updating is a worse failure than
   // a refresh that visibly lags.
-  setInterval(() => { loadAll().then(render).catch(() => {}); }, 5000);
+  setInterval(() => {
+    loadAll().then(render).catch((e) => {
+      // A failed poll is usually the daemon restarting and is not worth shouting
+      // about; a failed RENDER is a bug that would otherwise freeze the page
+      // silently, so it surfaces.
+      if (e && e.message && !/fetch|network|load failed/i.test(e.message)) {
+        toast('render failed: ' + e.message, 'bad');
+      }
+    });
+  }, 5000);
 })();
