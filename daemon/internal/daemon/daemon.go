@@ -83,6 +83,8 @@ type Options struct {
 	Memory MemoryService
 	// Workspaces lists a project's workspace for the cockpit. nil => route absent.
 	Workspaces WorkspaceLister
+	// Toolchains builds a project's own CLI set. nil => the daemon-wide one is used.
+	Toolchains ToolchainBuilder
 	// Changes is the F8.6 review surface. nil => the routes are not registered.
 	Changes ChangeService
 	// PolicyEditor is the F8.7 guardrail surface. nil => the routes are absent.
@@ -119,6 +121,7 @@ type Daemon struct {
 	agentDriver  AgentDriver
 	memory       MemoryService
 	workspaces   WorkspaceLister
+	toolchains   ToolchainBuilder
 	secrets      broker.SecretManager
 	secretsSvc   *broker.SecretsService
 	connections  ConnectionService
@@ -158,6 +161,7 @@ func New(opts Options) (*Daemon, error) {
 		agentDriver:  opts.AgentDriver,
 		memory:       opts.Memory,
 		workspaces:   opts.Workspaces,
+		toolchains:   opts.Toolchains,
 		changes:      opts.Changes,
 		policyEditor: opts.PolicyEditor,
 		secrets:      opts.Secrets,

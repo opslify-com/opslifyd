@@ -142,6 +142,10 @@ type Project struct {
 	// changes the sandbox's user namespace — see the session runtime — so it is a
 	// per-project decision rather than a global setting.
 	WorkspacePath string `json:"workspace_path,omitempty"`
+	// Toolchain is the project's own set of CLIs, built by F0.2 and mounted at
+	// /opt/toolchain instead of the daemon-wide layer. Zero means "use the
+	// daemon's".
+	Toolchain Toolchain `json:"toolchain,omitempty"`
 }
 
 // Environment is one risk rung inside a project: staging, prod, whatever the

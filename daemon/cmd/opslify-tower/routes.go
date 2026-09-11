@@ -107,6 +107,12 @@ var towerRoutes = []towerRoute{
 	// it records which tools a project uses, and the gates and egress a tool
 	// implies are separate edits that ARE classified.
 	{http.MethodPut, "/v1/projects/*/capabilities", "opslify project tools add|rm <id>", entitle.FeatureCockpit},
+	// Building a toolchain runs nix on the host. It is admitted because the
+	// REQUEST names packages, not a command: internal/project validates every
+	// name against a narrow charset before it reaches a generated flake, and the
+	// build itself is the daemon's own F0.2 pipeline rather than anything the
+	// caller supplied.
+	{http.MethodPost, "/v1/projects/*/toolchain", "opslify project toolchain <id>", entitle.FeatureCockpit},
 	{http.MethodDelete, "/v1/projects/*", "opslify project rm <id>", entitle.FeatureCockpit},
 	{http.MethodDelete, "/v1/projects/*/environments/*", "opslify project env rm <id> <env>", entitle.FeatureCockpit},
 	{http.MethodPost, "/v1/connections", "opslify connection add", entitle.FeatureConnections},

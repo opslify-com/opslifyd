@@ -1215,11 +1215,44 @@ SCREENS.tools = () => {
   const roles = Object.keys(caps).sort();
   const known = (tool) => TOOLS.find((t) => t.id === tool);
 
+  const tc = p.toolchain || {};
+  const want = packagesForProject(p);
+  const building = tc.status === 'building';
+  const stale = tc.status === 'ready' && (tc.tools || []).join(',') !== want.join(',');
+
   return screenHead('tools · ' + p.name, [roles.length + ' recorded'],
     '<button class="primary" data-add="tool">Add a tool</button>') +
     '<div class="capbar">a tool is a <b>role → tool</b> entry on the project · F8.4 routes ' +
     'skill packs off it and F8.2 binds connections to it · <b>it is not a guardrail</b></div>' +
-    '<div class="scroll">' + (roles.length
+    '<div class="scroll">' +
+    // The toolchain is what actually puts a binary in the sandbox. Everything
+    // else on this screen is metadata, and an operator who has selected
+    // Kubernetes and finds no kubectl needs to be told why in one place.
+    '<div class="gsec" style="border:1px solid var(--border);border-radius:6px;margin-bottom:16px;">' +
+    '<div class="k">sandbox toolchain ' +
+    (tc.status === 'ready' ? '<span class="badge ok">ready</span>'
+      : building ? '<span class="badge warn">building…</span>'
+      : tc.status === 'failed' ? '<span class="badge danger">failed</span>'
+      : tc.status === 'unavailable' ? '<span class="badge">not buildable on this host</span>'
+      : '<span class="badge">using the daemon-wide toolchain</span>') +
+    (stale ? ' <span class="badge warn">out of date — tools changed since the last build</span>' : '') +
+    '</div>' +
+    (tc.status === 'ready'
+      ? '<div class="gitem"><span class="mono">' + esc((tc.tools || []).join(' ')) + '</span></div>' +
+        '<div class="gitem"><span class="why">' + esc(short(tc.layer_digest || '', 24)) + '</span></div>'
+      : '<div class="gitem"><span class="mono muted">would build: ' + esc(want.join(' ')) + '</span></div>') +
+    (tc.error ? '<div class="err" style="margin:8px 0 0;">' + esc(tc.error) + '</div>' : '') +
+    '<div class="arow">' +
+    (p.toolchain_available
+      ? '<button class="primary" data-buildtc="1"' + (building ? ' disabled' : '') + '>' +
+        (building ? 'Building…' : tc.status === 'ready' ? 'Rebuild' : 'Build toolchain') + '</button>'
+      : '<span class="tag">nix is not installed on this host, so a per-project toolchain ' +
+        'cannot be composed. Sandboxes use the toolchain baked at install time.</span>') +
+    '</div>' +
+    '<div class="hint" style="margin-top:8px;">A build takes minutes and runs in the ' +
+    'background. Until one succeeds, sandboxes for this project use the daemon-wide ' +
+    'toolchain — which is why a tool can be listed here and still be missing from a shell.</div>' +
+    '</div>' + (roles.length
       ? '<table><thead><tr><th>role</th><th>tool</th><th>implies</th><th></th></tr></thead><tbody>' +
         roles.map((r) => {
           const k = known(caps[r]);
@@ -1321,6 +1354,23 @@ const TOOLS = [
   { id: 'docker', role: 'build', name: 'Docker', desc: 'Build and push images',
     hosts: ['registry-1.docker.io'], secret: null, gates: [], note: '' },
 ];
+
+// NIXPKG mirrors project.NixPackageFor. Duplicated rather than fetched because
+// the UI needs it to PREVIEW what a build will contain before asking for one, and
+// a round trip to preview a list is a round trip nobody waits for. The daemon's
+// copy is authoritative; this one only has to agree.
+const NIXPKG = {
+  kubernetes: 'kubectl', helm: 'kubernetes-helm', gitlab: 'glab', github: 'gh',
+  aws: 'awscli2', azure: 'azure-cli', gcp: 'google-cloud-sdk',
+  docker: 'docker-client', argocd: 'argocd', terraform: 'terraform',
+};
+const BASELINE_PKGS = ['curl', 'git', 'jq', 'openssh'];
+
+const packagesForProject = (p) => {
+  const set = new Set(BASELINE_PKGS);
+  Object.values((p && p.capabilities) || {}).forEach((t) => set.add(NIXPKG[t] || t));
+  return Array.from(set).sort();
+};
 
 const W = {
   open: false, step: 0,
@@ -2019,6 +2069,7 @@ document.addEventListener('click', async (ev) => {
     '[data-dtab],[data-shellrun],[data-shellpop],[data-execdecide],' +
     '[data-ask],[data-chatstop],[data-chatclear],' +
     '[data-memsearch],[data-memclear],[data-memtoggle],[data-pickagent],[data-toolcred],' +
+    '[data-buildtc],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-modalok],[data-modalcancel]');
@@ -2062,6 +2113,18 @@ document.addEventListener('click', async (ev) => {
   }
   if (a('data-memclear')) { S.memHits = null; S.memQuery = ''; render(); return; }
   if (a('data-toolcred')) { toolCredModal(a('data-toolcred')); return; }
+  if (a('data-buildtc')) {
+    const p = project();
+    if (!p) return;
+    await guard(async () => {
+      await send('POST', '/v1/projects/' + encodeURIComponent(p.id) + '/toolchain',
+        { tools: packagesForProject(p) });
+      toast('building the toolchain for ' + p.id + ' — this takes minutes and runs in ' +
+        'the background', 'ok');
+      await refresh();
+    });
+    return;
+  }
   if (a('data-pickagent')) {
     const sel = $('m-aentry');
     if (sel) { sel.value = a('data-pickagent'); sel.dispatchEvent(new Event('change')); }

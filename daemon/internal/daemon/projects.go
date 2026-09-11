@@ -46,6 +46,9 @@ func (d *Daemon) registerProjectRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /"+APIVersion+"/projects/{id}/environments", d.handleEnvironmentList)
 	mux.HandleFunc("DELETE /"+APIVersion+"/projects/{id}/environments/{env}", d.handleEnvironmentDelete)
 	mux.HandleFunc("PUT /"+APIVersion+"/projects/{id}/capabilities", d.handleCapabilitiesSet)
+	if d.toolchains != nil {
+		mux.HandleFunc("POST /"+APIVersion+"/projects/{id}/toolchain", d.handleToolchainBuild)
+	}
 }
 
 // createProjectRequest is the POST /v1/projects body.
@@ -91,6 +94,11 @@ type projectResponse struct {
 	Capabilities  map[string]string `json:"capabilities,omitempty"`
 	PolicyFile    string            `json:"policy_file,omitempty"`
 	WorkspacePath string            `json:"workspace_path,omitempty"`
+	Toolchain     project.Toolchain `json:"toolchain,omitempty"`
+	// ToolchainAvailable says whether this host can build one. False means a
+	// request would be recorded as "unavailable" rather than attempted, which is
+	// a different thing from a build that failed.
+	ToolchainAvailable bool `json:"toolchain_available"`
 	// WorkspaceWarnings names credential-shaped files found in a chosen
 	// directory. A bind mount has no deny-list, so this is the only moment the
 	// exposure can be reported.
@@ -132,6 +140,7 @@ func projectResp(p project.Project, envs []project.Environment) projectResponse 
 		Capabilities:  p.Capabilities,
 		PolicyFile:    p.PolicyFile,
 		WorkspacePath: p.WorkspacePath,
+		Toolchain:     p.Toolchain,
 		Environments:  make([]environmentResponse, 0, len(envs)),
 	}
 	for _, e := range envs {
@@ -173,7 +182,7 @@ func (d *Daemon) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 			d.log.Warn("workspace scaffold failed", "project", p.ID, "error", err)
 		}
 	}
-	resp := projectResp(p, envs)
+	resp := d.projectView(p, envs)
 	// A bind mount has NO deny-list — unlike F7.3's copy-in path, which filters
 	// credential-shaped files on the way through. Everything in the chosen
 	// directory is visible to every sandbox for the project, and this is the only
@@ -201,7 +210,7 @@ func (d *Daemon) handleProjectList(w http.ResponseWriter, r *http.Request) {
 			writeProjectError(w, err)
 			return
 		}
-		out = append(out, projectResp(p, envs))
+		out = append(out, d.projectView(p, envs))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -212,7 +221,7 @@ func (d *Daemon) handleProjectGet(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projectResp(p, envs))
+	writeJSON(w, http.StatusOK, d.projectView(p, envs))
 }
 
 // handleProjectDelete removes a project. It fails CLOSED while anything under it
@@ -258,7 +267,52 @@ func (d *Daemon) handleCapabilitiesSet(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projectResp(p, nil))
+	writeJSON(w, http.StatusOK, d.projectView(p, nil))
+}
+
+// ToolchainBuilder composes a project's own set of CLIs. nil => the route is
+// absent and every project uses the daemon-wide toolchain.
+type ToolchainBuilder interface {
+	// Build starts an asynchronous build and returns the project with its status
+	// already moved to "building".
+	Build(projectID string, tools []string) (project.Project, error)
+	// Available reports whether this host can build one at all.
+	Available() bool
+}
+
+type buildToolchainRequest struct {
+	// Tools are nix package names. The WHOLE set: a build produces one layer, and
+	// an "add this tool" endpoint would need the previous list to mean anything.
+	Tools []string `json:"tools"`
+}
+
+// handleToolchainBuild starts a build. 202, not 201: nothing is built yet, and a
+// created-status on a request that will take minutes invites a caller to assume
+// the tools are there.
+func (d *Daemon) handleToolchainBuild(w http.ResponseWriter, r *http.Request) {
+	var body buildToolchainRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
+		return
+	}
+	p, err := d.toolchains.Build(r.PathValue("id"), body.Tools)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, d.projectView(p, nil))
+}
+
+// projectView renders a project WITH the host facts a caller needs to interpret
+// it — today, whether this machine can build a toolchain at all.
+//
+// A method rather than the bare projectResp because the field was set in exactly
+// one handler and absent from the two that list and show, so the cockpit could
+// not tell "no toolchain yet" from "this host cannot make one".
+func (d *Daemon) projectView(p project.Project, envs []project.Environment) projectResponse {
+	resp := projectResp(p, envs)
+	resp.ToolchainAvailable = d.toolchains != nil && d.toolchains.Available()
+	return resp
 }
 
 func (d *Daemon) handleEnvironmentList(w http.ResponseWriter, r *http.Request) {

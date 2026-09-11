@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"github.com/opslify-com/opslifyd/internal/project"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/spf13/cobra"
@@ -21,7 +23,8 @@ func projectCmd() *cobra.Command {
 		Use:   "project",
 		Short: "Manage projects (create, ls, show)",
 	}
-	cmd.AddCommand(projectCreateCmd(), projectLsCmd(), projectShowCmd(), projectToolsCmd())
+	cmd.AddCommand(projectCreateCmd(), projectLsCmd(), projectShowCmd(), projectToolsCmd(),
+		projectToolchainCmd())
 	return cmd
 }
 
@@ -108,6 +111,80 @@ func projectCreateCmd() *cobra.Command {
 // wire operation is a whole-map PUT; add and rm read the current map, change one
 // entry and send the result, so the sub-commands people actually want exist
 // without a merge endpoint behind them.
+// projectToolchainCmd builds the project's own set of CLIs.
+//
+// The daemon bakes one toolchain at `opslify init` for every sandbox it runs,
+// which is the right default and the wrong granularity: a tool present in a
+// sandbox is a tool the agent can run, so a project should carry what its work
+// uses and nothing else.
+func projectToolchainCmd() *cobra.Command {
+	var (
+		socket string
+		pkgs   []string
+		wait   bool
+	)
+	cmd := &cobra.Command{
+		Use:   "toolchain <project>",
+		Short: "Build this project's own toolchain (kubectl, terraform, …)",
+		Long: "Compose and bake a toolchain for one project, mounted read-only at\n" +
+			"/opt/toolchain in its sandboxes instead of the daemon-wide layer.\n\n" +
+			"With no --package flags the tools are derived from the project's capability\n" +
+			"map, plus a baseline of git, curl, jq and openssh.\n\n" +
+			"The build takes minutes and runs in the background; re-run `project show` or\n" +
+			"pass --wait to follow it.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c := newClient(socket)
+			tools := pkgs
+			if len(tools) == 0 {
+				p, err := c.getProject(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				tools = project.ToolchainFor(p.Capabilities)
+			}
+			out := cmd.OutOrStdout()
+			p, err := c.buildToolchain(cmd.Context(), args[0], tools)
+			if err != nil {
+				return err
+			}
+			if p.Toolchain.Status == "unavailable" {
+				// Not a failure to retry: this host cannot build one, and saying
+				// "try again" would be a lie.
+				fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", p.Toolchain.Error)
+				return nil
+			}
+			fmt.Fprintf(out, "building %s toolchain: %s\n", args[0], strings.Join(tools, ", "))
+			if !wait {
+				fmt.Fprintf(out, "running in the background; `opslify project show %s` reports progress\n", args[0])
+				return nil
+			}
+			for {
+				time.Sleep(5 * time.Second)
+				cur, err := c.getProject(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				switch cur.Toolchain.Status {
+				case "ready":
+					fmt.Fprintf(out, "ready: %s (%d tools)\n", cur.Toolchain.LayerDigest, len(cur.Toolchain.Tools))
+					return nil
+				case "failed":
+					return fmt.Errorf("toolchain build failed: %s", cur.Toolchain.Error)
+				case "unavailable":
+					fmt.Fprintln(cmd.ErrOrStderr(), cur.Toolchain.Error)
+					return nil
+				}
+			}
+		},
+	}
+	cmd.Flags().StringVar(&socket, "socket", daemon.DefaultSocketPath, "daemon Unix socket path")
+	cmd.Flags().StringSliceVar(&pkgs, "package", nil,
+		"nixpkgs package to include (repeatable). Default: derived from the project's tools")
+	cmd.Flags().BoolVar(&wait, "wait", false, "follow the build to completion")
+	return cmd
+}
+
 func projectToolsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tools",

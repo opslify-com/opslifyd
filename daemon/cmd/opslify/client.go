@@ -131,6 +131,14 @@ type projectView struct {
 	Capabilities  map[string]string `json:"capabilities,omitempty"`
 	PolicyFile    string            `json:"policy_file,omitempty"`
 	WorkspacePath string            `json:"workspace_path,omitempty"`
+	Toolchain     struct {
+		Tools         []string `json:"tools"`
+		Status        string   `json:"status"`
+		LayerDigest   string   `json:"layer_digest"`
+		FlakeLockHash string   `json:"flake_lock_hash"`
+		Error         string   `json:"error"`
+	} `json:"toolchain"`
+	ToolchainAvailable bool `json:"toolchain_available"`
 	// WorkspaceWarnings names credential-shaped files in a chosen directory.
 	WorkspaceWarnings []struct {
 		Rel string `json:"rel"`
@@ -1714,4 +1722,32 @@ func (c *client) memoryEnable(ctx context.Context, project, doc string, enabled 
 		return c.decodeError(resp)
 	}
 	return nil
+}
+
+// buildToolchain POSTs the WHOLE package list: a build produces one layer, so an
+// "add a tool" call would need the previous list to mean anything.
+func (c *client) buildToolchain(ctx context.Context, projectID string, tools []string) (projectView, error) {
+	var out projectView
+	body, _ := json.Marshal(struct {
+		Tools []string `json:"tools"`
+	}{tools})
+	seg, err := pathSeg("project id", projectID)
+	if err != nil {
+		return out, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/v1/projects/"+seg+"/toolchain", bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		return out, c.decodeError(resp)
+	}
+	return out, json.NewDecoder(resp.Body).Decode(&out)
 }

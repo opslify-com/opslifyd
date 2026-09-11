@@ -167,7 +167,7 @@ func TestSecretsServiceIndexesConfigAndPolicyConsumers(t *testing.T) {
 func TestDaemonOptionsWireSecretsService(t *testing.T) {
 	cfg := secretsWiringConfig()
 	svc := mustBuildSecretsService(t, cfg, nil, newTestProjectService(t), policy.Policy{})
-	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, nil, nil, nil, nil, nil, nil, nil, discardLog())
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, nil, nil, nil, nil, nil, nil, nil, nil, discardLog())
 
 	if opts.SecretsSvc == nil {
 		t.Fatal("daemon.Options.SecretsSvc is nil: the in-use delete guard is not wired into the running daemon")
@@ -191,7 +191,7 @@ func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
 	mgr := &session.Manager{}
 	verifier := stubVerifier{}
 
-	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", verifier, mgr, projects, vault, svc, nil, nil, nil, nil, nil, nil, nil, discardLog())
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", verifier, mgr, projects, vault, svc, nil, nil, nil, nil, nil, nil, nil, nil, discardLog())
 
 	if opts.SocketPath != "/run/opslify/api.sock" {
 		t.Errorf("SocketPath = %q", opts.SocketPath)

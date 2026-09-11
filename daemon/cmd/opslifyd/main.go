@@ -849,6 +849,13 @@ func buildDaemonOptions(
 		memSvc = mem
 	}
 	wsList := daemon.NewWorkspaceLister(cfg.WorkspaceDir)
+	// F0.2 per project. The builder is nil when this host has no nix/devbox, and
+	// that is reported as "unavailable" rather than as a failure: nothing is wrong
+	// with the request, the machine simply cannot serve it, and telling an
+	// operator to retry would be a lie.
+	envBuilder, envWhy := tryEnvBuilder(log)
+	tcBuilder := newToolchainBuilder(projects, envBuilder, envWhy, cfg.Image, log)
+	var toolchains daemon.ToolchainBuilder = tcBuilder
 	// A typed nil would make daemon.Options.AgentDriver non-nil and register the
 	// route against nothing; the first prompt would panic.
 	var drv daemon.AgentDriver
@@ -856,7 +863,7 @@ func buildDaemonOptions(
 		drv = agentDrv
 	}
 	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc,
-		conns, agentReg, drv, changes, editor, memSvc, wsList, log), nil
+		conns, agentReg, drv, changes, editor, memSvc, wsList, toolchains, log), nil
 }
 
 // daemonOptions assembles the Options literal. Kept separate from
@@ -878,6 +885,7 @@ func daemonOptions(
 	editor daemon.PolicyEditor,
 	mem daemon.MemoryService,
 	wsList daemon.WorkspaceLister,
+	toolchains daemon.ToolchainBuilder,
 	log *slog.Logger,
 ) daemon.Options {
 	return daemon.Options{
@@ -902,6 +910,7 @@ func daemonOptions(
 		PolicyEditor: editor,
 		Memory:       mem,
 		Workspaces:   wsList,
+		Toolchains:   toolchains,
 		Ready:        sdNotifyReady,
 		Version:      version,
 		Logger:       log,

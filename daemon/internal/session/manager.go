@@ -453,6 +453,11 @@ type sessionScope struct {
 	// clamps records every widening attempt the project/environment layers made
 	// and had clamped, layer-tagged (extends the F4.1 workspace clamp record).
 	clamps []string
+	// toolchainDigest is the project's OWN toolchain layer, when it has built one.
+	// Empty falls back to the daemon-wide layer, which is the right default and
+	// the wrong granularity for an estate: a tool present in a sandbox is a tool
+	// the agent can run, so a project should carry only what its work uses.
+	toolchainDigest string
 	// workspacePath is the project's own host directory, when it named one. It is
 	// mounted INSTEAD of a daemon-managed directory, so an operator can clone into
 	// it and open the same files in their editor while the agent works.
@@ -594,6 +599,9 @@ func (m *Manager) resolveScope(projectID, envID string) (sessionScope, error) {
 	sc.projectID = resolved.Project.ID
 	sc.envID = resolved.Environment.ID
 	sc.workspacePath = resolved.Project.WorkspacePath
+	if tc := resolved.Project.Toolchain; tc.InUse() {
+		sc.toolchainDigest = tc.LayerDigest
+	}
 	sc.base = resolved.Base()
 	sc.clamps = resolved.Clamps()
 	if t := resolved.Environment.DefaultTier; t != "" {
@@ -718,6 +726,11 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	// is that the agent's work lands where the operator can see it, and a scratch
 	// session that quietly wrote somewhere else would defeat that for exactly the
 	// short tasks people run most.
+	// The project's own layer when it has one, the daemon's otherwise.
+	toolchain := m.toolchainDigest()
+	if scope.toolchainDigest != "" {
+		toolchain = scope.toolchainDigest
+	}
 	ownedPath := scope.workspacePath
 	switch {
 	case ownedPath != "":
@@ -792,7 +805,7 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		Tier:            tier,
 		Location:        loc,
 		Image:           baseImage,
-		ToolchainDigest: m.toolchainDigest(),
+		ToolchainDigest: toolchain,
 		Workspace:       wsDir,
 		Limits:          m.cfg.Limits,
 		Name:            namePrefix + id,
