@@ -34,6 +34,10 @@ type WorkspaceTree struct {
 	Path    string           `json:"path"`
 	Exists  bool             `json:"exists"`
 	Entries []WorkspaceEntry `json:"entries"`
+	// Truncated marks a listing cut at the entry cap. Reported rather than silent:
+	// a cloned monorepo will blow past it, and a listing that just stopped would
+	// have an operator hunting for a file that is present.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // WorkspaceEntry is one file or directory.
@@ -55,9 +59,13 @@ func (d *Daemon) registerWorkspaceTreeRoutes(mux *http.ServeMux) {
 }
 
 func (d *Daemon) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
-	depth := 2
+	// Four, not two. At two the walk stopped exactly at .opslify/memory and
+	// .opslify/skills — so the panel showed the folders and never a single file in
+	// them, which reads as "the tree is broken" rather than "you asked for two
+	// levels". The entry cap below is what actually bounds the response.
+	depth := 4
 	if v := r.URL.Query().Get("depth"); v != "" {
-		if n, err := atoiBounded(v, 1, 4); err == nil {
+		if n, err := atoiBounded(v, 1, 8); err == nil {
 			depth = n
 		}
 	}
@@ -203,16 +211,18 @@ func (t *workspaceTreeFS) Tree(projectID string, depth int) (WorkspaceTree, erro
 	if err != nil {
 		return out, err
 	}
+	// Plain path order, so a client can render a tree by indenting on "/" depth.
+	// Sorting directories first would separate a directory from its own contents.
 	sort.Slice(out.Entries, func(i, j int) bool {
-		if out.Entries[i].Dir != out.Entries[j].Dir {
-			return out.Entries[i].Dir
-		}
 		return out.Entries[i].Rel < out.Entries[j].Rel
 	})
-	// Bounded: a workspace with a node_modules in it must not produce a response
-	// that takes a second to render.
-	if len(out.Entries) > 400 {
-		out.Entries = out.Entries[:400]
+	// Bounded, and the truncation is REPORTED. A cloned monorepo will blow past
+	// this, and a listing that silently stopped would have an operator hunting for
+	// a file that is present.
+	const cap = 2000
+	if len(out.Entries) > cap {
+		out.Entries = out.Entries[:cap]
+		out.Truncated = true
 	}
 	return out, nil
 }

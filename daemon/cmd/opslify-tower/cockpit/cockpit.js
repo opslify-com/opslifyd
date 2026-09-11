@@ -446,16 +446,27 @@ function renderSide() {
   // This is a LISTING: names and sizes, never contents. F3.6's refusal to serve
   // raw workspace bytes to a browser stays closed.
   const tree = S.tree;
-  const top = tree && tree.entries ? tree.entries.filter((e) => !e.rel.includes('/')) : [];
-  html += esec('Workspace', top.length, null, 'workspace');
+  const treeEntries = (tree && tree.entries) || [];
+  html += esec('Workspace', treeEntries.length, null, 'workspace');
   if (tree && tree.exists) {
-    html += top.slice(0, 10).map((e) =>
-      '<div class="row" data-open="workspace">' +
-      '<span class="ind">' + (e.dir ? '▾' : ' ') + '</span>' +
-      '<span class="nm"' + (e.excluded ? ' style="color:var(--muted);"' : '') + '>' +
-      esc(e.rel) + (e.dir ? '/' : '') + '</span>' +
-      '<span class="rt">' + (e.excluded ? 'withheld' : (e.dir ? '' : fmtBytes(e.bytes))) +
-      '</span></div>').join('');
+    // Indented by path depth, which is why the API returns plain path order:
+    // sorting directories first would separate one from its own contents.
+    html += treeEntries.slice(0, 24).map((e) => {
+      const parts = e.rel.split('/');
+      const depth = parts.length - 1;
+      const leaf = parts[parts.length - 1];
+      return '<div class="row" data-open="workspace" title="' + esc(e.rel) + '"' +
+        ' style="padding-left:' + (12 + depth * 11) + 'px;">' +
+        '<span class="ind">' + (e.dir ? '▾' : '·') + '</span>' +
+        '<span class="nm"' + (e.excluded ? ' style="color:var(--muted);"' : '') + '>' +
+        esc(leaf) + (e.dir ? '/' : '') + '</span>' +
+        '<span class="rt">' + (e.excluded ? 'withheld' : (e.dir ? '' : fmtBytes(e.bytes))) +
+        '</span></div>';
+    }).join('');
+    if (treeEntries.length > 24) {
+      html += '<div class="row none"><span class="nm">' +
+        (treeEntries.length - 24) + ' more — open Workspace</span></div>';
+    }
   } else {
     html += noneRow('not created yet');
   }
@@ -1118,12 +1129,23 @@ SCREENS.workspace = () => {
     '<div class="mcell" style="margin-bottom:14px;border:1px solid var(--border);border-radius:6px;">' +
     '<div class="k">host path</div><div class="v">' + esc(t.path) + '</div></div>' +
     '<table><thead><tr><th>path</th><th>kind</th><th>size</th></tr></thead><tbody>' +
-    entries.map((e) => '<tr><td class="mono">' + esc(e.rel) + (e.dir ? '/' : '') + '</td>' +
-      '<td>' + (e.dir ? 'dir' : 'file') + '</td>' +
-      '<td>' + (e.excluded
-        ? '<span class="badge warn">withheld — credential-shaped</span>'
-        : (e.dir ? '' : esc(fmtBytes(e.bytes)))) + '</td></tr>').join('') +
+    entries.map((e) => {
+      const parts = e.rel.split('/');
+      const depth = parts.length - 1;
+      const leaf = parts[parts.length - 1];
+      return '<tr><td class="mono" style="padding-left:' + (9 + depth * 16) + 'px;">' +
+        (e.dir ? '<span class="muted">▾ </span>' : '') + esc(leaf) + (e.dir ? '/' : '') +
+        '</td>' +
+        '<td>' + (e.dir ? 'dir' : 'file') + '</td>' +
+        '<td>' + (e.excluded
+          ? '<span class="badge warn">withheld — credential-shaped</span>'
+          : (e.dir ? '' : esc(fmtBytes(e.bytes)))) + '</td></tr>';
+    }).join('') +
     '</tbody></table>' +
+    (t.truncated
+      ? '<p class="tag" style="color:var(--warn);margin-top:10px;">Listing truncated at the ' +
+        'entry cap — there are more files than shown. Open the directory on the host.</p>'
+      : '') +
     '<p class="tag" style="margin-top:12px;">Everything here is visible to the sandbox at ' +
     '/workspace and to you on the host. Nothing secret belongs in it — credentials live in ' +
     'the vault and are injected at the egress proxy, never written here.</p>' +
