@@ -20,6 +20,12 @@ import (
 // through a web page.
 type WorkspaceLister interface {
 	Tree(projectID string, depth int) (WorkspaceTree, error)
+	// Scaffold creates a project's workspace and the directories that make it
+	// useful, if it does not exist. Called when a project is created so the
+	// Memory and Workspace panels have somewhere real to point at from the first
+	// minute, rather than both reading empty until somebody discovers they were
+	// meant to mkdir it by hand.
+	Scaffold(projectID string) (string, error)
 }
 
 // WorkspaceTree is one project's workspace, shallowly.
@@ -64,6 +70,59 @@ func (d *Daemon) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 		tree.Entries = []WorkspaceEntry{}
 	}
 	writeJSON(w, http.StatusOK, tree)
+}
+
+// Scaffold creates <root>/ws-<project> with the layout the rest of the product
+// expects, and a README that says what goes where.
+//
+// Nothing here is a secret and nothing is executable: the workspace is a host
+// directory visible to whoever can read it and mounted read-write into every
+// sandbox for this project. That is exactly why credentials never go in it — they
+// live in the vault and are injected at the egress proxy.
+func (t *workspaceTreeFS) Scaffold(projectID string) (string, error) {
+	if projectID == "" || projectID != filepath.Base(projectID) || strings.Contains(projectID, "..") {
+		return "", nil
+	}
+	dir := filepath.Join(t.root, "ws-"+projectID)
+	for _, sub := range []string{
+		filepath.Join(".opslify", "memory"),
+		filepath.Join(".opslify", "skills"),
+		"repos",
+	} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			return "", err
+		}
+	}
+	readme := filepath.Join(dir, ".opslify", "README.md")
+	if _, err := os.Stat(readme); os.IsNotExist(err) {
+		if err := os.WriteFile(readme, []byte(workspaceReadme(projectID)), 0o644); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func workspaceReadme(projectID string) string {
+	return "# " + projectID + " workspace\n\n" +
+		"This directory is mounted read-write at `/workspace` in every sandbox for\n" +
+		"this project. You can edit it here on the host; the agent sees the same files.\n\n" +
+		"## Layout\n\n" +
+		"- `.opslify/skills/*.md` — rules the agent must ALWAYS follow. Injected into\n" +
+		"  every session, so keep them short.\n" +
+		"- `.opslify/memory/**` — documents it might need to CONSULT: runbooks,\n" +
+		"  architecture notes, postmortems. Retrieved on demand and cited, never\n" +
+		"  injected wholesale.\n" +
+		"- `.opslify/instructions.md` — project-wide behaviour, reviewed in a commit.\n" +
+		"- `repos/` — clone what the work needs here.\n\n" +
+		"The rule of thumb: a rule the agent must always follow is a skill; a document\n" +
+		"it might need to look up is memory.\n\n" +
+		"## What does NOT go here\n\n" +
+		"Credentials. This directory is readable by anyone who can read the host path\n" +
+		"and by every sandbox for this project. Secrets live in the daemon's vault\n" +
+		"(`opslify secrets add`) and are injected at the egress proxy, so the sandbox\n" +
+		"authenticates without ever holding one. Files that look like credentials\n" +
+		"(`.env`, `*.pem`, `id_rsa*`, `credentials*`) are refused on the way into a\n" +
+		"sandbox and withheld from the workspace listing.\n"
 }
 
 // workspaceTreeFS is the filesystem implementation, kept here rather than in the

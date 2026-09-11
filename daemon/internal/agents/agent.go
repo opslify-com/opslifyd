@@ -16,6 +16,7 @@ package agents
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -108,6 +109,15 @@ type Agent struct {
 	EnvAllow []string `json:"env_allow,omitempty"`
 	// Description is free text for the operator's own benefit.
 	Description string `json:"description,omitempty"`
+	// BaseURL points an OpenAI-compatible agent at its provider — an Ollama on
+	// this host, an LM Studio, a gateway. Plain configuration, not a credential:
+	// it is a URL, it is shown in the UI, and it is stored in clear.
+	BaseURL string `json:"base_url,omitempty"`
+	// APIKeyRef names a VAULT secret holding the provider's key, when one is
+	// needed. A ref, never a value — the same rule connections follow, and for the
+	// same reason: a value here would be written to the agent store in clear and
+	// rendered into every listing that shows an agent.
+	APIKeyRef string `json:"api_key_ref,omitempty"`
 	// Flavour selects the CONFINEMENT RECIPE used when this agent is given a
 	// prompt to work on. Empty means the agent can be probed and bound but not
 	// driven, because the daemon does not know how to restrict it.
@@ -203,6 +213,20 @@ func (a Agent) Validate() error {
 	if strings.ContainsAny(a.ModelHint, "\x00\n\r") {
 		// It is written into the trace and shown in the cockpit.
 		return fmt.Errorf("%w: agent %q model hint contains a control character", ErrInvalidInput, a.Name)
+	}
+	if a.BaseURL != "" {
+		u, err := url.Parse(a.BaseURL)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("%w: agent %q base_url %q must be an absolute URL (e.g. http://localhost:11434/v1)",
+				ErrInvalidInput, a.Name, a.BaseURL)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("%w: agent %q base_url scheme %q is not http or https",
+				ErrInvalidInput, a.Name, u.Scheme)
+		}
+	}
+	if strings.ContainsAny(a.APIKeyRef, "\x00\n\r") {
+		return fmt.Errorf("%w: agent %q api_key_ref contains a control character", ErrInvalidInput, a.Name)
 	}
 	if a.Flavour != "" && !a.Flavour.Valid() {
 		return fmt.Errorf("%w: agent %q flavour %q is not one the daemon has a confinement recipe for (claude, qwen, codex)",

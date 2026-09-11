@@ -146,6 +146,18 @@ var qwenHostTools = []string{
 
 // Run executes one prompt and streams the agent's output to sink.
 func (r *Runner) Run(ctx context.Context, a Agent, req RunRequest, sink RunSink) error {
+	return r.run(ctx, a, req, sink, "")
+}
+
+// RunWithKey is Run with a provider key resolved from the vault by the caller.
+// The key is passed in rather than fetched here so this package keeps no
+// knowledge of the vault, and so the one place that can read a secret value stays
+// the one place that does.
+func (r *Runner) RunWithKey(ctx context.Context, a Agent, req RunRequest, sink RunSink, key string) error {
+	return r.run(ctx, a, req, sink, key)
+}
+
+func (r *Runner) run(ctx context.Context, a Agent, req RunRequest, sink RunSink, key string) error {
 	if err := a.Validate(); err != nil {
 		return err
 	}
@@ -181,7 +193,25 @@ func (r *Runner) Run(ctx context.Context, a Agent, req RunRequest, sink RunSink)
 	cmd.Dir = dir
 	// The same allowlist the prober uses: a registered command is third-party code
 	// and the daemon's environment may hold anything.
-	cmd.Env = a.Env(os.Environ())
+	env := a.Env(os.Environ())
+	// An OpenAI-compatible agent is pointed at its provider HERE rather than
+	// through the operator's shell, so the daemon knows what it configured and a
+	// run does not depend on an environment nobody recorded.
+	if a.BaseURL != "" {
+		env = append(env, "OPENAI_BASE_URL="+a.BaseURL)
+	}
+	if key != "" {
+		// The value arrives from the vault and lives only in this process's
+		// argument-free child environment. It is never written to the run
+		// directory, which is a file on disk that outlives the call.
+		env = append(env, "OPENAI_API_KEY="+key)
+	} else if a.BaseURL != "" {
+		// A local Ollama rejects an ABSENT key but accepts any value. Sending a
+		// placeholder is what makes "no key needed" actually work, rather than
+		// failing with an authentication error against a server that has no auth.
+		env = append(env, "OPENAI_API_KEY=opslify-local")
+	}
+	cmd.Env = env
 	// No stdin. These CLIs read a piped prompt when one is present, and an agent
 	// that inherited the daemon's stdin would block forever waiting on it.
 	cmd.Stdin = nil

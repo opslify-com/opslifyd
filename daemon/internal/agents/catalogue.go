@@ -1,9 +1,14 @@
 package agents
 
 import (
+	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 )
 
 // The catalogue is how an agent gets registered from the cockpit without the
@@ -37,11 +42,33 @@ type CatalogueEntry struct {
 	DefaultModel string `json:"default_model,omitempty"`
 	// ModelHelp tells an operator where the model names come from.
 	ModelHelp string `json:"model_help,omitempty"`
+	// NeedsBaseURL marks an OpenAI-compatible agent: the UI asks for the endpoint,
+	// because "which Ollama" is a question only the operator can answer.
+	NeedsBaseURL bool `json:"needs_base_url,omitempty"`
+	// DefaultBaseURL is the obvious answer, offered rather than assumed.
+	DefaultBaseURL string `json:"default_base_url,omitempty"`
+	// BaseURLHelp explains what the endpoint is.
+	BaseURLHelp string `json:"base_url_help,omitempty"`
 	// EnvAllow is the minimum this agent needs to inherit to function.
 	EnvAllow []string `json:"env_allow,omitempty"`
 	// ProbeArgs make the command speak MCP for the registration handshake. They
 	// are NOT the arguments used to drive it — see recipe().
 	ProbeArgs []string `json:"-"`
+	// ServesMCP says whether this command can act as an MCP SERVER, which is what
+	// the F8.5 handshake proves.
+	//
+	// The two directions are opposite and conflating them was a real bug: F8.5
+	// registers an agent that OPSLIFY CALLS, and proves it by completing a
+	// handshake. F8.9 registers a CLI that opslify DRIVES, which calls opslify —
+	// it need not serve MCP at all. Claude Code satisfies both only because
+	// `claude mcp serve` happens to exist. Qwen Code does not: `qwen mcp` is its
+	// server-management subcommand and printing usage text to a handshake fails
+	// with "invalid character 'U'", which is a confusing way to learn that the
+	// question was wrong.
+	ServesMCP bool `json:"serves_mcp"`
+	// VerifyArgs run the command cheaply to prove it works, for entries that do
+	// not serve MCP. Exit status only; output is not parsed.
+	VerifyArgs []string `json:"-"`
 
 	// candidates are the absolute paths tried, in order. Never supplied by a
 	// caller: this is the whole point of the catalogue.
@@ -61,7 +88,9 @@ var catalogue = []CatalogueEntry{
 		Flavour: FlavourClaude, Locality: LocalityHosted,
 		DefaultModel: "claude-opus-5",
 		ModelHelp:    "any model your Claude Code login can reach, e.g. claude-opus-5 or claude-sonnet-5",
+		ServesMCP:    true,
 		ProbeArgs:    []string{"mcp", "serve"},
+		VerifyArgs:   []string{"--version"},
 		candidates: []string{
 			"/usr/local/bin/claude", "/usr/bin/claude",
 			"/opt/homebrew/bin/claude",
@@ -77,8 +106,17 @@ var catalogue = []CatalogueEntry{
 		// Qwen Code reaches Ollama through an OpenAI-compatible endpoint, which it
 		// finds through these. Allowlisted rather than inherited wholesale: a
 		// registered command is third-party code.
-		EnvAllow:  []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "OLLAMA_HOST", "HOME", "PATH"},
-		ProbeArgs: []string{"mcp"},
+		EnvAllow: []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "OLLAMA_HOST", "HOME", "PATH"},
+		// Qwen Code consumes MCP; it does not serve it. Verified by running it.
+		ServesMCP:  false,
+		VerifyArgs: []string{"--version"},
+		// Ollama speaks the OpenAI protocol at /v1, which is how a local model is
+		// reached without a provider-specific client. Any compatible server works:
+		// LM Studio, vLLM, a gateway.
+		NeedsBaseURL:   true,
+		DefaultBaseURL: "http://localhost:11434/v1",
+		BaseURLHelp: "any OpenAI-compatible endpoint. Ollama serves one at " +
+			"http://localhost:11434/v1 — change the host if it runs elsewhere",
 		candidates: []string{
 			"/usr/local/bin/qwen", "/usr/bin/qwen",
 			"~/.local/bin/qwen", "~/.qwen/bin/qwen",
@@ -90,7 +128,8 @@ var catalogue = []CatalogueEntry{
 		Flavour:     FlavourCodex, Locality: LocalityHosted,
 		DefaultModel: "",
 		ModelHelp:    "leave blank to use whatever your Codex login defaults to",
-		ProbeArgs:    []string{"mcp"},
+		ServesMCP:    false,
+		VerifyArgs:   []string{"--version"},
 		candidates: []string{
 			"/usr/local/bin/codex", "/usr/bin/codex", "/opt/homebrew/bin/codex",
 		},
@@ -135,6 +174,12 @@ func CatalogueEntryByID(id string) (CatalogueEntry, bool) {
 // The command comes from the ENTRY, never from the caller. A request may choose
 // the name and the model hint — neither of which is executed — and nothing else.
 func (e CatalogueEntry) Resolve(name, model string) (Agent, bool) {
+	return e.ResolveWith(name, model, "", "")
+}
+
+// ResolveWith adds the provider endpoint and an optional vault ref for its key.
+// Neither is executed, so both may come from a caller.
+func (e CatalogueEntry) ResolveWith(name, model, baseURL, apiKeyRef string) (Agent, bool) {
 	path, ok := resolveCandidate(e.candidates)
 	if !ok {
 		return Agent{}, false
@@ -145,11 +190,14 @@ func (e CatalogueEntry) Resolve(name, model string) (Agent, bool) {
 	if model == "" {
 		model = e.DefaultModel
 	}
+	if baseURL == "" {
+		baseURL = e.DefaultBaseURL
+	}
 	return Agent{
 		Name: name, Command: path, Args: e.ProbeArgs,
 		ModelHint: model, Locality: e.Locality,
 		EnvAllow: e.EnvAllow, Description: e.Title,
-		Flavour: e.Flavour,
+		Flavour: e.Flavour, BaseURL: baseURL, APIKeyRef: apiKeyRef,
 	}, true
 }
 
@@ -175,4 +223,30 @@ func resolveCandidate(candidates []string) (string, bool) {
 		return p, true
 	}
 	return "", false
+}
+
+// VerifyRuns starts the command with its verification arguments and waits for a
+// clean exit. Output is discarded: this proves the binary is present and runs,
+// not that it does anything in particular.
+func VerifyRuns(ctx context.Context, a Agent, args []string) error {
+	if len(args) == 0 {
+		args = []string{"--version"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, a.Command, args...)
+	cmd.Env = a.Env(os.Environ())
+	cmd.Stdin = nil
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		snippet := strings.TrimSpace(string(out))
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		if snippet != "" {
+			return fmt.Errorf("%s %s: %v: %s", a.Command, strings.Join(args, " "), err, snippet)
+		}
+		return fmt.Errorf("%s %s: %v", a.Command, strings.Join(args, " "), err)
+	}
+	return nil
 }

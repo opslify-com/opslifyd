@@ -785,10 +785,21 @@ function renderChat() {
     '<textarea id="ask" rows="2" placeholder="' +
     (blocked ? esc(blocked) : 'Ask the agent to do something…') + '"' +
     (blocked || S.chat.busy ? ' disabled' : '') + '></textarea>' +
-    '<div class="crow"><span class="tag" style="font-size:10px;">' +
-    esc(S.projectID || '—') + ' / ' + esc(environment() ? environment().name : '—') +
+    '<div class="crow">' +
+    // The picker sits where the model picker sits in every other agent UI —
+    // beside the box you type in, not on a settings screen. Switching it rebinds
+    // the scope, which is the same action `opslify agent use` performs.
+    '<select id="agentpick" class="projsel" title="which agent runs this">' +
+    S.agents.map((x) =>
+      '<option value="' + esc(x.name) + '"' + (a && a.name === x.name ? ' selected' : '') + '>' +
+      esc(x.name) + (x.model_hint ? ' · ' + esc(x.model_hint) : '') +
+      (x.locality === 'local' ? ' · local' : '') + '</option>').join('') +
+    '<option value="__add">+ connect an agent…</option></select>' +
+    '<span class="tag" style="font-size:10px;">' +
+    esc(S.projectID || '—') + '/' + esc(environment() ? environment().name : '—') +
     (a && a.locality !== 'local'
-      ? ' · <span style="color:var(--warn)">output goes off-host</span>' : '') +
+      ? ' · <span style="color:var(--warn)">off-host</span>'
+      : (a ? ' · <span style="color:var(--ok)">on-host</span>' : '')) +
     '</span><span class="spacer"></span>' +
     (S.chat.busy
       ? '<button class="sm danger" data-chatstop="1">Stop</button>'
@@ -1173,14 +1184,30 @@ SCREENS.tools = () => {
       ? '<table><thead><tr><th>role</th><th>tool</th><th>implies</th><th></th></tr></thead><tbody>' +
         roles.map((r) => {
           const k = known(caps[r]);
+          // Whether this tool can actually reach anything is the column that
+          // matters. A tool with no credential is a label; the button next to it
+          // is how it stops being one.
+          const ref = k && k.secret ? k.secret.ref : '';
+          const stored = ref && S.secrets.some((x) => x.ref === ref);
+          const wired = ref && S.connections.some((c) => c.secret_ref === ref && inScope(c));
           return '<tr><td class="mono">' + esc(r) + '</td>' +
             '<td class="mono">' + esc(caps[r]) + '</td>' +
             '<td>' + (k
               ? (k.gates.length ? '<span class="badge warn">' + k.gates.length + ' gate(s)</span> ' : '') +
-                (k.hosts.length ? '<span class="badge">' + k.hosts.length + ' host(s)</span> ' : '') +
-                (k.secret ? '<span class="badge accent">' + esc(k.secret.ref) + '</span>' : '')
+                (k.hosts.length ? '<span class="badge">' + k.hosts.length + ' host(s)</span> ' : '')
               : '<span class="tag">not in the catalogue</span>') + '</td>' +
-            '<td><button class="sm danger" data-rmtool="' + esc(r) + '">rm</button></td></tr>';
+            '<td>' + (!k || !k.secret
+              ? '<span class="tag">none needed</span>'
+              : wired
+                ? '<span class="badge ok">connected · ' + esc(ref) + '</span>'
+                : stored
+                  ? '<span class="badge warn">secret stored, not bound</span>'
+                  : '<span class="badge danger">no credential</span>') + '</td>' +
+            '<td>' + (k && k.secret
+              ? '<button class="sm primary" data-toolcred="' + esc(k.id) + '">' +
+                (wired ? 'replace' : 'add credential') + '</button> '
+              : '') +
+            '<button class="sm danger" data-rmtool="' + esc(r) + '">rm</button></td></tr>';
         }).join('') + '</tbody></table>' +
         '<p class="tag" style="margin-top:12px;">Recording a tool does not open anything. ' +
         'The gates and egress it implies are separate policy edits — narrowing applies at ' +
@@ -1746,6 +1773,16 @@ function addAgentModal() {
     '<label class="fld"><span class="lb">model</span>' +
     '<input id="m-amodel" class="mono" placeholder="(default)">' +
     '<span class="hint" id="m-ahelp"></span></label>' +
+    '<div id="m-aurlwrap" style="display:none;">' +
+    '<label class="fld"><span class="lb">endpoint (OpenAI-compatible)</span>' +
+    '<input id="m-aurl" class="mono">' +
+    '<span class="hint" id="m-aurlhelp"></span></label>' +
+    '<label class="fld"><span class="lb">api key — secret ref (optional)</span>' +
+    '<select id="m-akey"><option value="">none needed (a local server)</option>' +
+    S.secrets.map((x) => '<option value="' + esc(x.ref) + '">' + esc(x.ref) + '</option>').join('') +
+    '</select><span class="hint">A REF, never the key itself. Store it first from ' +
+    'Secrets; a local Ollama needs none.</span></label>' +
+    '</div>' +
     '<p class="hint">Connecting runs a real MCP handshake against the command before ' +
     'anything is stored, so a broken install is reported now rather than at your first task. ' +
     'It may take a few seconds.</p>',
@@ -1755,6 +1792,8 @@ function addAgentModal() {
         entry,
         name: $('m-aname').value.trim() || undefined,
         model: $('m-amodel').value.trim() || undefined,
+        base_url: ($('m-aurl') || {}).value ? $('m-aurl').value.trim() : undefined,
+        api_key_ref: ($('m-akey') || {}).value || undefined,
       });
       toast('connected ' + (out && out.name ? out.name : entry) +
         ' — ' + (out && out.disclosure ? out.disclosure : ''), 'ok');
@@ -1765,6 +1804,12 @@ function addAgentModal() {
     if (!e) return;
     if ($('m-amodel')) $('m-amodel').placeholder = e.default_model || '(default)';
     if ($('m-ahelp')) $('m-ahelp').textContent = e.model_help || '';
+    const wrap = $('m-aurlwrap');
+    if (wrap) wrap.style.display = e.needs_base_url ? 'block' : 'none';
+    if (e.needs_base_url && $('m-aurl')) {
+      $('m-aurl').value = e.default_base_url || '';
+      if ($('m-aurlhelp')) $('m-aurlhelp').textContent = e.base_url_help || '';
+    }
     document.querySelectorAll('[data-pickagent]').forEach((el) =>
       el.classList.toggle('on', el.getAttribute('data-pickagent') === e.id));
   };
@@ -1775,6 +1820,65 @@ function addAgentModal() {
     sel.addEventListener('change', sync);
   }
   sync();
+}
+
+// toolCredModal does the whole credential step for one tool in one dialog: store
+// the value in the vault, then bind a connection to it by REF.
+//
+// Two actions rather than one because they are genuinely two — a secret outlives
+// the connection that uses it — but an operator onboarding kubernetes should not
+// have to know that, or visit two screens to finish one thought.
+function toolCredModal(toolID) {
+  const t = TOOLS.find((x) => x.id === toolID);
+  const p = project();
+  if (!t || !t.secret || !p) return;
+  const existing = S.secrets.some((x) => x.ref === t.secret.ref);
+
+  modal('Credential for ' + t.name,
+    '<p class="hint">' + esc(t.desc) + '</p>' +
+    '<div class="capbar" style="margin:0 0 14px;border-radius:6px;">the value is encrypted ' +
+    'under the daemon\'s vault key and injected at the egress proxy · <b>it never enters a ' +
+    'sandbox and no route returns it</b></div>' +
+    '<label class="fld"><span class="lb">secret ref</span>' +
+    '<input id="m-cref" class="mono" value="' + esc(t.secret.ref) + '">' +
+    (existing ? '<span class="hint">A secret with this ref already exists. Leave the value ' +
+      'blank to reuse it, or type a new one to replace it.</span>'
+              : '<span class="hint">The name you will reference forever after.</span>') +
+    '</label>' +
+    '<label class="fld"><span class="lb">value' + (existing ? ' (blank = keep the stored one)' : '') +
+    '</span><input id="m-cval" type="password" class="mono" placeholder="paste the token"></label>' +
+    '<label class="fld"><span class="lb">hosts this reaches</span>' +
+    '<input id="m-chosts" class="mono" value="' + esc((t.hosts || []).join(', ')) + '" ' +
+    'placeholder="api.example.com"></label>' +
+    (t.hosts && t.hosts.length
+      ? '<p class="hint" style="color:var(--warn)">Reaching a host also needs it on the egress ' +
+        'allowlist, which WIDENS the policy and becomes a Change for approval. Adding the ' +
+        'credential here does not open the network.</p>'
+      : ''),
+    'Save', async () => {
+      const ref = $('m-cref').value.trim();
+      const val = $('m-cval').value;
+      if (!ref) throw new Error('a secret ref is required');
+      if (!val && !existing) throw new Error('a value is required the first time');
+      if (val) {
+        await send('POST', '/v1/secrets', {
+          ref, provider: t.secret.provider || undefined, value_b64: b64(val),
+        });
+      }
+      const hosts = $('m-chosts').value.split(',').map((h) => h.trim()).filter(Boolean);
+      try {
+        await send('POST', '/v1/connections', {
+          name: t.id, kind: t.secret.kind, secret_ref: ref,
+          hosts: hosts.length ? hosts : undefined,
+          project_id: p.id,
+        });
+      } catch (e) {
+        // A connection that already exists is not a failure of this dialog — the
+        // secret it points at has just been updated, which was the point.
+        if (!/exists/i.test(e.message)) throw e;
+      }
+      toast(t.name + ' credential stored and bound as ' + ref, 'ok');
+    });
 }
 
 function newSessionModal() {
@@ -1816,7 +1920,7 @@ document.addEventListener('click', async (ev) => {
     '[data-close],[data-newtab],[data-drawer],[data-killsession],[data-decide],[data-rmconn],' +
     '[data-dtab],[data-shellrun],[data-shellpop],[data-execdecide],' +
     '[data-ask],[data-chatstop],[data-chatclear],' +
-    '[data-memsearch],[data-memclear],[data-memtoggle],[data-pickagent],' +
+    '[data-memsearch],[data-memclear],[data-memtoggle],[data-pickagent],[data-toolcred],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-modalok],[data-modalcancel]');
@@ -1855,6 +1959,7 @@ document.addEventListener('click', async (ev) => {
     return;
   }
   if (a('data-memclear')) { S.memHits = null; S.memQuery = ''; render(); return; }
+  if (a('data-toolcred')) { toolCredModal(a('data-toolcred')); return; }
   if (a('data-pickagent')) {
     const sel = $('m-aentry');
     if (sel) { sel.value = a('data-pickagent'); sel.dispatchEvent(new Event('change')); }
@@ -2049,6 +2154,20 @@ document.addEventListener('click', async (ev) => {
 });
 
 document.addEventListener('change', async (ev) => {
+  if (ev.target && ev.target.id === 'agentpick') {
+    const v = ev.target.value;
+    if (v === '__add') { addAgentModal(); return; }
+    const e = environment();
+    await guard(async () => {
+      await send('POST', '/v1/agents/' + encodeURIComponent(v) + '/bind', {
+        project_id: S.projectID || undefined,
+        environment_id: e ? e.id : undefined,
+      });
+      toast(v + ' now runs work in this scope', 'ok');
+      await refresh();
+    });
+    return;
+  }
   if (ev.target && ev.target.id === 'shellsess') {
     S.shell.sessionID = ev.target.value;
     S.shell.lines = [];

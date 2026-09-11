@@ -150,6 +150,18 @@ func (d *Daemon) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
+	// Give the project a workspace immediately. Without it the Memory and
+	// Workspace panels both read empty on a project that was just created, which
+	// looks like a broken UI rather than a directory nobody has made yet.
+	//
+	// A scaffold failure is logged, not fatal: the project record is the thing
+	// that was asked for, and a daemon with no workspace root configured is a
+	// valid deployment.
+	if d.workspaces != nil {
+		if _, err := d.workspaces.Scaffold(p.ID); err != nil {
+			d.log.Warn("workspace scaffold failed", "project", p.ID, "error", err)
+		}
+	}
 	writeJSON(w, http.StatusCreated, projectResp(p, envs))
 }
 

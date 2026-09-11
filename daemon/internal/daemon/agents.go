@@ -18,6 +18,11 @@ type AgentRegistry interface {
 	Bindings() (map[string]string, error)
 	Use(projectID, environmentID, agentName string) error
 	Remove(name string) error
+	// AddDriven registers an agent opslify will DRIVE, verified by running it
+	// rather than by an MCP handshake. The two directions are opposite: F8.5
+	// registers an agent opslify CALLS and proves it with a handshake; a driven
+	// agent is an MCP client that calls opslify and need not serve it at all.
+	AddDriven(ctx context.Context, a agents.Agent, verify func(context.Context, agents.Agent) error) error
 }
 
 // AgentDriver hands a registered agent a prompt and streams what it produces.
@@ -62,6 +67,13 @@ type installAgentRequest struct {
 	Entry string `json:"entry"`
 	Name  string `json:"name,omitempty"`
 	Model string `json:"model,omitempty"`
+	// BaseURL points an OpenAI-compatible agent at its provider. A URL, not a
+	// credential.
+	BaseURL string `json:"base_url,omitempty"`
+	// APIKeyRef names a vault secret. A ref, never a value: a key in this body
+	// would be stored in the agent record in clear and rendered into every
+	// listing that shows an agent.
+	APIKeyRef string `json:"api_key_ref,omitempty"`
 }
 
 func (d *Daemon) handleAgentInstall(w http.ResponseWriter, r *http.Request) {
@@ -76,19 +88,39 @@ func (d *Daemon) handleAgentInstall(w http.ResponseWriter, r *http.Request) {
 			"unknown agent "+body.Entry+"; GET /v1/agents/catalogue lists what this daemon can set up")
 		return
 	}
-	a, found := entry.Resolve(body.Name, body.Model)
+	a, found := entry.ResolveWith(body.Name, body.Model, body.BaseURL, body.APIKeyRef)
 	if !found {
 		writeAPIError(w, http.StatusBadRequest, "agent",
 			entry.Title+" is not installed at any location this daemon looks in. "+
 				"Install it, or register it by path with `opslify agent add --command /path/to/it`.")
 		return
 	}
-	tools, err := d.agents.Add(r.Context(), a)
+	// Which verification an entry gets is a property of the entry, not a choice
+	// made here: a command that serves MCP gets the handshake and its tool list; a
+	// command that only consumes MCP gets a liveness check. Reported either way,
+	// so an operator can see what was actually established.
+	if entry.ServesMCP {
+		tools, err := d.agents.Add(r.Context(), a)
+		if err != nil {
+			writeAgentError(w, err)
+			return
+		}
+		resp := agentResp(a, tools)
+		resp.Verified = "mcp-handshake"
+		writeJSON(w, http.StatusCreated, resp)
+		return
+	}
+	verifyArgs := entry.VerifyArgs
+	err := d.agents.AddDriven(r.Context(), a, func(ctx context.Context, ag agents.Agent) error {
+		return agents.VerifyRuns(ctx, ag, verifyArgs)
+	})
 	if err != nil {
 		writeAgentError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, agentResp(a, tools))
+	resp := agentResp(a, nil)
+	resp.Verified = "runs"
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // runAgentRequest is the POST /v1/agents/{name}/run body.
@@ -159,6 +191,13 @@ type agentResponse struct {
 	Disclosure string   `json:"disclosure"`
 	Tools      []string `json:"tools,omitempty"`
 	Flavour    string   `json:"flavour,omitempty"`
+	BaseURL    string   `json:"base_url,omitempty"`
+	APIKeyRef  string   `json:"api_key_ref,omitempty"`
+	// Verified says WHAT was established at registration: "mcp-handshake" means
+	// the command spoke the protocol and its tools were listed; "runs" means only
+	// that the binary started. Stating which keeps a registration from claiming
+	// more than it checked.
+	Verified string `json:"verified,omitempty"`
 	// Drivable says whether this agent can be given a prompt. The cockpit needs
 	// it to decide whether the composer is usable, and an operator needs to know
 	// why it is not.
@@ -173,6 +212,8 @@ func agentResp(a agents.Agent, tools []string) agentResponse {
 		Disclosure: a.Locality.Discloses(),
 		Tools:      tools,
 		Flavour:    string(a.Flavour),
+		BaseURL:    a.BaseURL,
+		APIKeyRef:  a.APIKeyRef,
 		Drivable:   a.Drivable(),
 	}
 }

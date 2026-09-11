@@ -101,6 +101,41 @@ func (r *Registry) Add(ctx context.Context, a Agent) ([]string, error) {
 	return tools, nil
 }
 
+// AddDriven registers an agent opslify will DRIVE, verified by running the
+// command rather than by an MCP handshake.
+//
+// The handshake in Add proves the command can act as an MCP SERVER, which is what
+// F8.5 needs: opslify calls it. A driven agent is the opposite — it is an MCP
+// CLIENT that calls opslify — and demanding it serve MCP asks the wrong question.
+// Qwen Code fails that question with "invalid character 'U'" because `qwen mcp`
+// prints usage text, which tells an operator nothing about whether Qwen works.
+//
+// verify is run to prove the binary is present and executable. It is a liveness
+// check and nothing more, and the caller is told so: whether an agent completed a
+// handshake or merely started is the difference between "we know it speaks the
+// protocol" and "we know it exists", and a registration that blurred the two
+// would be claiming more than it checked.
+func (r *Registry) AddDriven(ctx context.Context, a Agent, verify func(context.Context, Agent) error) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	if !a.Drivable() {
+		return fmt.Errorf("%w: agent %q has no flavour, so the daemon has no recipe to confine it",
+			ErrInvalidInput, a.Name)
+	}
+	if _, found, err := r.store.LoadAgent(a.Name); err != nil {
+		return err
+	} else if found {
+		return fmt.Errorf("%w: agent %q (use `agent rm` then re-add, or pick another name)", ErrExists, a.Name)
+	}
+	if verify != nil {
+		if err := verify(ctx, a); err != nil {
+			return fmt.Errorf("%w: agent %q could not be run: %v", ErrUnusable, a.Name, err)
+		}
+	}
+	return r.store.SaveAgent(a)
+}
+
 // Test probes a definition WITHOUT registering it.
 func (r *Registry) Test(ctx context.Context, a Agent) ([]string, error) {
 	if err := a.Validate(); err != nil {

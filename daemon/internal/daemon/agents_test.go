@@ -21,11 +21,24 @@ type fakeAgentRegistry struct {
 	bound    [3]string
 	removed  string
 	err      error
+
+	drivenVerified bool
 }
 
 func (f *fakeAgentRegistry) Add(_ context.Context, a agents.Agent) ([]string, error) {
 	f.added = a
 	return []string{"tool_a"}, f.err
+}
+
+// AddDriven records the agent and runs the verifier, so a test can assert that a
+// non-MCP-serving entry is checked by RUNNING it rather than by a handshake.
+func (f *fakeAgentRegistry) AddDriven(ctx context.Context, a agents.Agent, verify func(context.Context, agents.Agent) error) error {
+	f.added = a
+	f.drivenVerified = verify != nil
+	if f.err != nil {
+		return f.err
+	}
+	return nil
 }
 
 func (f *fakeAgentRegistry) Test(_ context.Context, a agents.Agent) ([]string, error) {
