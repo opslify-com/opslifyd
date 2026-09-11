@@ -46,6 +46,7 @@ func (d *Daemon) Handler() http.Handler {
 	d.registerSessionRoutes(mux)
 	d.registerSecretRoutes(mux)
 	d.registerProjectRoutes(mux)
+	d.registerAgentRoutes(mux)
 	return mux
 }
 

@@ -93,6 +93,13 @@ type Session struct {
 	// no in-memory chain) and when tracing is unwired. A nil *trace.Recorder is a
 	// valid no-op, so emit sites need no nil check. Set/read under the Manager
 	// mutex or after the session is solely owned (teardown).
+	// agentName, agentModel and agentLocality are the F8.5 bound agent, recorded
+	// in session.start. Empty when no agent is bound — a valid state, since
+	// opslify ships no model.
+	agentName     string
+	agentModel    string
+	agentLocality string
+
 	rec *trace.Recorder
 
 	// assembly is the F8.4 layered instruction set this session runs under. It is

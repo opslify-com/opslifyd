@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/agentcontext"
+	"github.com/opslify-com/opslifyd/internal/agents"
 	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/opslify-com/opslifyd/internal/egressproxy"
@@ -163,8 +164,15 @@ func run() error {
 		return err
 	}
 
+	// F8.5 agent registry. Built before the session manager, which records the
+	// bound agent in session.start at seq 0.
+	agentReg, err := buildAgentRegistry(cfg, log)
+	if err != nil {
+		return err
+	}
+
 	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject, projects,
-		buildContextAssembler(cfg, projects))
+		buildContextAssembler(cfg, projects), agentSource(agentReg))
 	if err != nil {
 		return err
 	}
@@ -180,7 +188,8 @@ func run() error {
 		Verifier:    verifier,
 		Sessions:    mgr,
 		Projects:    projects,
-		Secrets:     vault, // narrow management surface (Put/List/Delete — no Get)
+		Agents:      agentReg, // F8.5: bring your own agent
+		Secrets:     vault,    // narrow management surface (Put/List/Delete — no Get)
 		Ready:       sdNotifyReady,
 		Version:     version,
 		Logger:      log,
@@ -463,6 +472,42 @@ func buildEgressInject(cfg install.Config, brk *broker.Broker, log *slog.Logger)
 // live alongside the session state dir (0700, daemon-private) and survive a
 // restart, which is what lets the reconciler attribute an orphan sandbox to the
 // environment that governed it. project_dir overrides the location.
+// buildAgentRegistry builds the F8.5 registry.
+//
+// The registry is OPTIONAL in a way the project service is not: opslify ships no
+// model, so a daemon with no agent registered is a perfectly valid state for
+// someone driving the CLI directly. A failure to open the store is still fatal —
+// that is a broken daemon, not an absent agent.
+func buildAgentRegistry(cfg install.Config, log *slog.Logger) (*agents.Registry, error) {
+	dir := filepath.Dir(cfg.WorkspaceDir)
+	store, err := agents.NewFileStore(dir)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: agent store: %w", err)
+	}
+	// The REAL prober: `agent add` completes an MCP handshake against the command
+	// before storing it, so a typo'd path or a non-MCP binary is reported at bind
+	// time rather than at the operator's first task.
+	reg, err := agents.NewRegistry(store, agents.NewProber(), log)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: agent registry: %w", err)
+	}
+	log.Info("F8.5 agent registry active", "dir", dir)
+	return reg, nil
+}
+
+// agentSource adapts the registry to the session manager's seam.
+//
+// Resolution failure is NOT fatal here — see session.resolveAgent. A session
+// without a bound agent records no agent identity and runs normally.
+func agentSource(reg *agents.Registry) session.AgentSource {
+	if reg == nil {
+		return nil
+	}
+	return func(projectID, environmentID string) (agents.Agent, error) {
+		return reg.ForScope(projectID, environmentID)
+	}
+}
+
 func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service, error) {
 	dir := cfg.ProjectDir
 	if dir == "" {
@@ -480,7 +525,8 @@ func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service
 	return svc, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service, assembler session.ContextAssembler) (*session.Manager, error) {
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service, assembler session.ContextAssembler,
+	agentSrc session.AgentSource) (*session.Manager, error) {
 	// The assembler is REQUIRED in the daemon. The seam is optional at the package
 	// level so pre-P8 tests need no wiring, but a daemon running without it starts
 	// every session with no house rules and emits no context.assemble — a silent,
@@ -511,7 +557,8 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 		defaultPolicy = p
 	}
 	return session.NewManager(sessionOptions(cfg, stateDir, ttl, approvalTTL, defaultPolicy,
-		egressCtl, log, traceSink, brk, credInjector, egressInject, registryInject, projects, assembler))
+		egressCtl, log, traceSink, brk, credInjector, egressInject, registryInject, projects, assembler,
+		agentSrc))
 }
 
 // sessionOptions is the session manager's composition root, extracted so a test
@@ -532,6 +579,7 @@ func sessionOptions(
 	registryInject *session.RegistryInjector,
 	projects *project.Service,
 	assembler session.ContextAssembler,
+	agentSrc session.AgentSource,
 ) session.Options {
 	return session.Options{
 		Config: session.ManagerConfig{
@@ -562,6 +610,9 @@ func sessionOptions(
 		// out and emitted as context.assemble at seq 1, so every session's evidence
 		// names the rules it ran under.
 		AssembleContext: assembler,
+		// F8.5: which agent a session is attributed to. Optional by design — a
+		// daemon with no agent registered still runs sessions.
+		Agents: agentSrc,
 	}
 }
 

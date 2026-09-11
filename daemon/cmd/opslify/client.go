@@ -833,3 +833,165 @@ func frameStreamLabel(s string) string {
 	}
 	return s
 }
+
+// pathSeg validates and escapes ONE path segment of a request URL.
+//
+// Escaping alone is not enough: url.PathEscape leaves "." and ".." intact, and
+// Go's ServeMux 301-redirects an uncleaned path — which this client follows. That
+// would let a scoped verb reach another route entirely, taking its query string
+// with it. Validating here, rather than per call site, makes that unrepresentable.
+func pathSeg(kind, v string) (string, error) {
+	if v == "" {
+		return "", fmt.Errorf("%s must not be empty", kind)
+	}
+	if v == "." || v == ".." {
+		return "", fmt.Errorf("%s %q is a path segment, not a name", kind, v)
+	}
+	if strings.ContainsAny(v, `/\`) || strings.ContainsRune(v, 0) {
+		return "", fmt.Errorf("%s %q must not contain a path separator", kind, v)
+	}
+	if strings.Contains(v, "..") {
+		return "", fmt.Errorf("%s %q must not contain ..", kind, v)
+	}
+	return url.PathEscape(v), nil
+}
+
+// --- F8.5 agents --------------------------------------------------------------
+
+// addAgentReq is the POST body. There is no credential field: a provider API key
+// is a secret ref used by that command's own configuration, never injected by
+// opslify — so an agent record is not a place a key can end up.
+type addAgentReq struct {
+	Name        string   `json:"name"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args,omitempty"`
+	ModelHint   string   `json:"model_hint,omitempty"`
+	Locality    string   `json:"locality,omitempty"`
+	EnvAllow    []string `json:"env_allow,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
+// agentView is an agent as the daemon reports it, plus what the handshake found.
+type agentView struct {
+	Name       string   `json:"name"`
+	ModelHint  string   `json:"model_hint,omitempty"`
+	Locality   string   `json:"locality"`
+	Disclosure string   `json:"disclosure"`
+	Tools      []string `json:"tools,omitempty"`
+}
+
+type agentBindingView struct {
+	Scope string `json:"scope"`
+	Agent string `json:"agent"`
+}
+
+type agentListView struct {
+	Agents   []agentView        `json:"agents"`
+	Bindings []agentBindingView `json:"bindings,omitempty"`
+}
+
+func (c *client) addAgent(ctx context.Context, req addAgentReq) (agentView, error) {
+	return c.agentWrite(ctx, "/v1/agents", req)
+}
+
+func (c *client) testAgent(ctx context.Context, req addAgentReq) (agentView, error) {
+	return c.agentWrite(ctx, "/v1/agents/test", req)
+}
+
+func (c *client) agentWrite(ctx context.Context, path string, req addAgentReq) (agentView, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return agentView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return agentView{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return agentView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return agentView{}, c.decodeError(resp)
+	}
+	var out agentView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return agentView{}, err
+	}
+	return out, nil
+}
+
+func (c *client) listAgents(ctx context.Context) (agentListView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/agents", nil)
+	if err != nil {
+		return agentListView{}, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return agentListView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return agentListView{}, c.decodeError(resp)
+	}
+	var out agentListView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return agentListView{}, err
+	}
+	return out, nil
+}
+
+// useAgent binds an agent to a scope. The name goes through pathSeg for the same
+// reason every other operator input does.
+func (c *client) useAgent(ctx context.Context, projectID, environmentID, name string) error {
+	seg, err := pathSeg("agent name", name)
+	if err != nil {
+		return err
+	}
+	u := c.baseURL + "/v1/agents/" + seg + "/bind"
+	q := url.Values{}
+	if projectID != "" {
+		q.Set("project", projectID)
+	}
+	if environmentID != "" {
+		q.Set("env", environmentID)
+	}
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}
+
+func (c *client) removeAgent(ctx context.Context, name string) error {
+	seg, err := pathSeg("agent name", name)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/agents/"+seg, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}

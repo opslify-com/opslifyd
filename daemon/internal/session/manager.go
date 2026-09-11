@@ -177,7 +177,11 @@ type Manager struct {
 	// keeps no knowledge of where house rules live; nil means no assembly is
 	// configured and no context.assemble event is emitted.
 	assembleContext ContextAssembler
-	log             *slog.Logger
+	// agents resolves the F8.5 agent bound to a session's scope. A seam so this
+	// package keeps no knowledge of the registry; nil means no agent is bound,
+	// which is a valid state — opslify ships no model.
+	agents AgentSource
+	log    *slog.Logger
 
 	// listenTCP binds a per-session credential-injecting listener (F5.8): the
 	// bridge-gateway-bound F5.1 creds endpoint and F5.7 egress proxy. It mirrors
@@ -289,6 +293,8 @@ type Options struct {
 	// AssembleContext wires the F8.4 instruction assembly. nil => no assembly and
 	// no context.assemble event (every pre-P8 test path).
 	AssembleContext ContextAssembler
+	// Agents wires the F8.5 registry. nil => sessions record no agent identity.
+	Agents AgentSource
 	// Egress programs per-session default-deny egress (F1.4). nil => egress.Noop
 	// (no enforcement) so F1.1–F1.3 tests need no egress wiring; the daemon wires a
 	// real NftController (or a loudly-warned Noop when nft/root is unavailable).
@@ -350,6 +356,7 @@ func NewManager(opts Options) (*Manager, error) {
 		egress:          opts.Egress,
 		sandboxIP:       opts.SandboxIP,
 		assembleContext: opts.AssembleContext,
+		agents:          opts.Agents,
 		log:             opts.Logger,
 		trace:           opts.Trace,
 		redactor:        opts.Redactor,
@@ -818,13 +825,24 @@ func (m *Manager) registerReady(s *Session, origin string) {
 	// the live map — so no concurrent exec can win seq 0. seq 0 is therefore always
 	// session.start, and its payload carries the session-binding fields the chain
 	// root commits to (image_digest + toolchain_lock_hash + policy_hash slot).
+	// F8.5: resolve the bound agent BEFORE the chain opens, so its identity is in
+	// session.start at seq 0 rather than arriving later as a separate event that
+	// could be absent from a truncated trace.
+	m.resolveAgent(s)
 	if m.trace != nil {
 		s.rec = trace.NewRecorder(m.trace, s.ID, m.redactor, m.clock.Now)
 		if err := s.rec.Emit(context.Background(), trace.TypeSessionStart, map[string]any{
-			"schema_version":      trace.SchemaVersion,
-			"tier":                string(s.Tier),
-			"mode":                string(s.Mode),
-			"agent":               "",
+			"schema_version": trace.SchemaVersion,
+			"tier":           string(s.Tier),
+			"mode":           string(s.Mode),
+			// F8.5: WHICH agent ran this session, and which model it was expected to
+			// drive. Bound at seq 0 — the chain root — so a decision is attributable
+			// to a model rather than to "an agent". agent_locality records whether
+			// command output left this host: a disclosure an auditor needs and
+			// cannot reconstruct later.
+			"agent":               s.agentName,
+			"agent_model":         s.agentModel,
+			"agent_locality":      s.agentLocality,
 			"image_digest":        m.cfg.Image,
 			"toolchain_lock_hash": m.toolchainDigest(),
 			"policy_hash":         s.policyHash, // F4.1: resolved policy_hash

@@ -72,6 +72,10 @@ type Options struct {
 	// routes. nil keeps those routes 404 (the same opt-in shape as Sessions), so a
 	// daemon built without the control tower is unchanged.
 	Projects ProjectService
+	// Agents is the F8.5 registry. nil => the routes are not registered at all,
+	// rather than registered and answering 404 — an endpoint that exists but never
+	// works is worse than one that does not exist.
+	Agents AgentRegistry
 	// Secrets is the F5.6 secret MANAGEMENT surface (Put/List/Delete — the narrow
 	// broker.SecretManager, which has NO Get). nil keeps the /v1/secrets routes
 	// 404. There is deliberately no route that returns a secret value — Get is
@@ -92,6 +96,7 @@ type Daemon struct {
 	sessions     SessionService
 	projects     ProjectService
 	secrets      broker.SecretManager
+	agents       AgentRegistry
 
 	version  string
 	tier     string
@@ -121,6 +126,7 @@ func New(opts Options) (*Daemon, error) {
 		log:          opts.Logger,
 		sessions:     opts.Sessions,
 		projects:     opts.Projects,
+		agents:       opts.Agents,
 		secrets:      opts.Secrets,
 		version:      orDefault(opts.Version, "dev"),
 		tier:         opts.Config.Tier,

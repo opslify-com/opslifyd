@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/agentcontext"
+	"github.com/opslify-com/opslifyd/internal/agents"
 	"github.com/opslify-com/opslifyd/internal/install"
 	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/project"
@@ -305,7 +306,7 @@ func TestSessionOptionsWireTheContextAssembler(t *testing.T) {
 		return &agentcontext.Assembly{}, nil
 	})
 	opts := sessionOptions(install.Config{}, t.TempDir(), time.Minute, time.Minute, policy.Policy{},
-		nil, discardLog(), nil, nil, nil, nil, nil, newTestProjectService(t), assembler)
+		nil, discardLog(), nil, nil, nil, nil, nil, newTestProjectService(t), assembler, nil)
 
 	if opts.AssembleContext == nil {
 		t.Fatal("AssembleContext is nil: sessions would run with no instructions and emit no context.assemble")
@@ -331,11 +332,96 @@ func TestSessionOptionsWireTheContextAssembler(t *testing.T) {
 // degradation that is invisible until an agent does something nobody can explain.
 func TestSessionManagerRequiresAnAssembler(t *testing.T) {
 	_, err := buildSessionManager(install.Config{}, discardLog(), nil, nil, nil, nil, nil, nil,
-		newTestProjectService(t), nil)
+		newTestProjectService(t), nil, nil)
 	if err == nil {
 		t.Fatal("a nil context assembler must be refused at startup, not silently accepted")
 	}
 	if !strings.Contains(err.Error(), "assembler") {
 		t.Errorf("the refusal must name the missing dependency: %v", err)
+	}
+}
+
+// --- F8.5 agent registry wiring ------------------------------------------------
+
+// TestAgentSourceResolvesThroughTheRegistry pins the seam the session manager
+// uses: the adapter must actually consult the registry's scope resolution, not
+// return something of its own.
+func TestAgentSourceResolvesThroughTheRegistry(t *testing.T) {
+	store, err := agents.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No prober: this test is about resolution, and probing is covered in the
+	// registry's own tests against a real MCP server.
+	reg, err := agents.NewRegistry(store, nil, discardLog())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, a := range []agents.Agent{
+		{Name: "claude", Command: "/usr/local/bin/claude", ModelHint: "claude-opus-5", Locality: agents.LocalityHosted},
+		{Name: "qwen", Command: "/usr/bin/ollama", ModelHint: "qwen2.5-coder", Locality: agents.LocalityLocal},
+	} {
+		if _, err := reg.Add(ctx, a); err != nil {
+			t.Fatalf("Add %s: %v", a.Name, err)
+		}
+	}
+	if err := reg.Use("", "", "claude"); err != nil { // fallback
+		t.Fatal(err)
+	}
+	if err := reg.Use("tripon", "tripon.prod", "qwen"); err != nil {
+		t.Fatal(err)
+	}
+
+	src := agentSource(reg)
+	if src == nil {
+		t.Fatal("agentSource must return a usable source for a non-nil registry")
+	}
+	got, err := src("tripon", "tripon.prod")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got.Name != "qwen" || got.ModelHint != "qwen2.5-coder" {
+		t.Errorf("resolved %+v, want the environment-bound qwen", got)
+	}
+	// A scope with no binding falls back.
+	fallback, err := src("other", "other.dev")
+	if err != nil || fallback.Name != "claude" {
+		t.Errorf("fallback resolution = %+v (%v), want claude", fallback, err)
+	}
+	// Nothing bound anywhere is an error the session layer treats as non-fatal.
+	empty, _ := agents.NewFileStore(t.TempDir())
+	emptyReg, _ := agents.NewRegistry(empty, nil, discardLog())
+	if _, err := agentSource(emptyReg)("p", "p.e"); err == nil {
+		t.Error("an unbound scope must report an error the caller can choose to ignore")
+	}
+}
+
+// TestAgentSourceIsNilWithoutARegistry keeps the session seam optional.
+func TestAgentSourceIsNilWithoutARegistry(t *testing.T) {
+	if agentSource(nil) != nil {
+		t.Error("a nil registry must yield a nil source, so the manager records no agent")
+	}
+}
+
+// TestSessionOptionsWireTheAgentSource pins the composition root: resolving the
+// agent correctly is worthless if it never reaches the session manager.
+func TestSessionOptionsWireTheAgentSource(t *testing.T) {
+	var called bool
+	src := session.AgentSource(func(string, string) (agents.Agent, error) {
+		called = true
+		return agents.Agent{Name: "probe"}, nil
+	})
+	opts := sessionOptions(install.Config{}, t.TempDir(), time.Minute, time.Minute, policy.Policy{},
+		nil, discardLog(), nil, nil, nil, nil, nil, newTestProjectService(t), nil, src)
+
+	if opts.Agents == nil {
+		t.Fatal("Agents is nil: sessions would record no agent identity, so no decision could be attributed to a model")
+	}
+	if _, err := opts.Agents("p", "e"); err != nil {
+		t.Fatalf("the wired source must be callable: %v", err)
+	}
+	if !called {
+		t.Error("Options carried a different source than the one supplied")
 	}
 }
