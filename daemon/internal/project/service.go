@@ -61,16 +61,32 @@ type Options struct {
 	// session Manager (see SetSandboxes, which completes the mutual reference the
 	// constructor cannot).
 	Sandboxes Sandboxes
+	// EditedLayers supplies the F8.7 operator-edited layers for a scope. nil means
+	// there is no editor wired and only the file-based overlays apply.
+	EditedLayers EditedLayerSource
+}
+
+// EditedLayerSource returns the layers an operator has edited through F8.7, in
+// precedence order (project before environment).
+//
+// It exists because there are TWO sources of an overlay and they are not the
+// same thing: PolicyFile / PolicyOverlay are paths recorded on the records and
+// edited on the host, while F8.7 writes operator edits to a store the daemon
+// owns. ResolveScope consulting only the first is what made every `policy gate`
+// report "applied" and change nothing.
+type EditedLayerSource interface {
+	EditedLayers(projectID, environmentID string) ([]Layer, error)
 }
 
 // Service owns the project/environment records: validation, the ≥1-environment
 // invariant, name uniqueness within a project, scope resolution, and ordered,
 // fail-closed removal.
 type Service struct {
-	mu    sync.Mutex
-	store Store
-	now   func() time.Time
-	log   *slog.Logger
+	mu     sync.Mutex
+	store  Store
+	now    func() time.Time
+	log    *slog.Logger
+	edited EditedLayerSource
 
 	// removing holds environment ids whose removal has been CLAIMED but not yet
 	// completed. The claim is taken under mu together with the >=1 sibling check,
@@ -98,6 +114,7 @@ func NewService(opts Options) (*Service, error) {
 		now:       opts.Clock,
 		log:       opts.Logger,
 		sandboxes: opts.Sandboxes,
+		edited:    opts.EditedLayers,
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -118,6 +135,22 @@ func (s *Service) SetSandboxes(sb Sandboxes) {
 	s.sbMu.Lock()
 	s.sandboxes = sb
 	s.sbMu.Unlock()
+}
+
+// SetEditedLayers completes the other reference the constructor cannot: the F8.7
+// editor needs this Service to resolve a scope, so it is built after it, and the
+// layer store it writes to is what resolution must read back.
+func (s *Service) SetEditedLayers(src EditedLayerSource) {
+	s.sbMu.Lock()
+	s.edited = src
+	s.sbMu.Unlock()
+}
+
+// editedLayers reads the seam under the same lock it is set with.
+func (s *Service) editedLayers() EditedLayerSource {
+	s.sbMu.Lock()
+	defer s.sbMu.Unlock()
+	return s.edited
 }
 
 func (s *Service) liveSandboxes() Sandboxes {
@@ -398,6 +431,22 @@ func (s *Service) ResolveScope(base policy.Policy, projectID, environmentID stri
 			return Scope{}, err
 		}
 		layers = append(layers, Layer{Name: "environment " + env.ID, Policy: pol})
+	}
+	// The F8.7 edits, after the file-based overlays and in the same precedence
+	// order, so an operator edit narrows the host-side file rather than replacing
+	// it. Without this the whole editing surface was inert: `policy gate` wrote a
+	// layer, reported "applied" with a fresh hash, and every session that started
+	// afterwards resolved a policy with no gate in it.
+	//
+	// FAIL CLOSED. An unreadable edited layer aborts resolution rather than
+	// resolving without it — the alternative is a session running with a guardrail
+	// the operator has every reason to believe is in force.
+	if src := s.editedLayers(); src != nil {
+		extra, err := src.EditedLayers(p.ID, env.ID)
+		if err != nil {
+			return Scope{}, fmt.Errorf("%w: edited policy layers for %s: %v", ErrInvalidInput, env.ID, err)
+		}
+		layers = append(layers, extra...)
 	}
 	resolved := ResolvePolicy(base, layers...)
 	for _, clamp := range resolved.Notes {

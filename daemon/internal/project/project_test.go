@@ -830,3 +830,87 @@ func TestSetCapabilitiesOnAnUnknownProject(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+// --- F8.7: an edited layer must reach the resolved policy ----------------------
+
+// fakeEditedLayers is a LayerSource that hands back what an operator "edited".
+type fakeEditedLayers struct {
+	layers []Layer
+	err    error
+	seenP  string
+	seenE  string
+}
+
+func (f *fakeEditedLayers) EditedLayers(projectID, environmentID string) ([]Layer, error) {
+	f.seenP, f.seenE = projectID, environmentID
+	return f.layers, f.err
+}
+
+// TestResolveScopeAppliesEditedLayers.
+//
+// This is the bug that made the whole F8.7 surface inert: policyedit wrote the
+// layer, reported {"applied":true} with a fresh hash, and ResolveScope built its
+// layer list from PolicyFile / PolicyOverlay only — two different stores. Every
+// `opslify policy gate` succeeded and no session ever saw the gate, which is the
+// worst shape a guardrail failure can take: the operator has been told it is on.
+func TestResolveScopeAppliesEditedLayers(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	if _, _, err := svc.CreateProject(ProjectSpec{
+		Name: "tripon", Environments: []EnvironmentSpec{{Name: "prod"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	src := &fakeEditedLayers{layers: []Layer{{
+		Name:   "environment tripon.prod (edited)",
+		Policy: policy.Policy{ApprovalRequired: []string{"^kubectl delete"}},
+	}}}
+	svc.SetEditedLayers(src)
+
+	scope, err := svc.ResolveScope(policy.Policy{}, "tripon", "tripon.prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, g := range scope.Resolved.ApprovalRequired {
+		if g == "^kubectl delete" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the edited gate is missing from the resolved policy: %#v — an edit "+
+			"reported as applied that no session sees is a guardrail that does not exist",
+			scope.Resolved.ApprovalRequired)
+	}
+	if src.seenP != "tripon" || src.seenE != "tripon.prod" {
+		t.Errorf("the source was asked for (%q,%q), want (tripon,tripon.prod)", src.seenP, src.seenE)
+	}
+}
+
+// TestResolveScopeFailsClosedOnAnUnreadableEditedLayer: resolving without a layer
+// the operator believes is in force is exactly the outcome to avoid.
+func TestResolveScopeFailsClosedOnAnUnreadableEditedLayer(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	if _, _, err := svc.CreateProject(ProjectSpec{
+		Name: "tripon", Environments: []EnvironmentSpec{{Name: "prod"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetEditedLayers(&fakeEditedLayers{err: errors.New("unparseable yaml")})
+	if _, err := svc.ResolveScope(policy.Policy{}, "tripon", "tripon.prod"); err == nil {
+		t.Fatal("ResolveScope succeeded with an unreadable edited layer; it must fail closed")
+	}
+}
+
+// TestResolveScopeWithNoEditorIsUnchanged keeps the seam optional.
+func TestResolveScopeWithNoEditorIsUnchanged(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	if _, _, err := svc.CreateProject(ProjectSpec{
+		Name: "tripon", Environments: []EnvironmentSpec{{Name: "prod"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ResolveScope(policy.Policy{}, "tripon", "tripon.prod"); err != nil {
+		t.Fatalf("ResolveScope without an editor: %v", err)
+	}
+}

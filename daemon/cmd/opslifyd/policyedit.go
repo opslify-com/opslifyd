@@ -88,6 +88,38 @@ func (l *policyLayers) Save(s policyedit.Scope, pol policy.Policy) error {
 	return os.Rename(tmp, p)
 }
 
+// EditedLayers implements project.EditedLayerSource: the project layer then the
+// environment layer, in the precedence order ResolveScope applies them.
+//
+// This is the other half of the editing surface. policyedit.Service writes here;
+// until this existed nothing read it back during resolution, so every narrowing
+// edit reported "applied" with a fresh hash and no session ever saw it. An edit
+// that is written, acknowledged and then ignored is worse than one that is
+// refused — the operator has no reason to check.
+func (l *policyLayers) EditedLayers(projectID, environmentID string) ([]project.Layer, error) {
+	var out []project.Layer
+	for _, sc := range []struct {
+		scope policyedit.Scope
+		name  string
+	}{
+		{policyedit.Scope{Layer: policyedit.LayerProject, ProjectID: projectID}, "project " + projectID + " (edited)"},
+		{policyedit.Scope{Layer: policyedit.LayerEnvironment, ProjectID: projectID, EnvironmentID: environmentID}, "environment " + environmentID + " (edited)"},
+	} {
+		if sc.scope.Layer == policyedit.LayerEnvironment && environmentID == "" {
+			continue
+		}
+		pol, ok, err := l.Load(sc.scope)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		out = append(out, project.Layer{Name: sc.name, Policy: pol})
+	}
+	return out, nil
+}
+
 // policyEditor adapts the F8.7 service to what the daemon routes need.
 type policyEditor struct {
 	layers   *policyLayers
@@ -131,6 +163,8 @@ func buildPolicyEditor(cfg install.Config, projects *project.Service, changes *c
 	if err != nil {
 		return nil, err
 	}
+	// Resolution must read back what this editor writes; see SetEditedLayers.
+	projects.SetEditedLayers(layers)
 	svc, err := policyedit.NewService(layers, changes, newID)
 	if err != nil {
 		return nil, err
