@@ -3,6 +3,7 @@ package session
 import (
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/agentcontext"
 	"github.com/opslify-com/opslifyd/internal/policy"
 	"github.com/opslify-com/opslifyd/internal/session/runtime"
 	"github.com/opslify-com/opslifyd/internal/trace"
@@ -100,8 +101,20 @@ type Session struct {
 	// phase two can point the sandbox at it. Empty when no proxy was built.
 	proxyAddr  string
 	proxyCAPEM []byte
+	// agentName, agentModel and agentLocality are the F8.5 bound agent, recorded
+	// in session.start. Empty when no agent is bound — a valid state, since
+	// opslify ships no model.
+	agentName     string
+	agentModel    string
+	agentLocality string
 
 	rec *trace.Recorder
+
+	// assembly is the F8.4 layered instruction set this session runs under. It is
+	// resolved BEFORE the sandbox is handed out and emitted as context.assemble at
+	// seq 1, so a Change can be replayed against the exact rules the agent had.
+	// Nil when no assembler is configured.
+	assembly *agentcontext.Assembly
 
 	// policyHash is the F4.1 policy_hash of the RESOLVED policy in force for this
 	// session (workspace policy narrowed over the daemon default). It is computed

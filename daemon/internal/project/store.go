@@ -57,13 +57,26 @@ func NewFileStore(dir string) (Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("project: create state dir %s: %w", dir, err)
 	}
+	// MkdirAll does not tighten a directory that ALREADY exists, so a state dir
+	// left at 0755 by an earlier release or created by hand stays world-readable
+	// with nothing saying so. Tightening is always the right answer for a
+	// daemon-private directory.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("project: secure state dir %s: %w", dir, err)
+	}
 	projDir := filepath.Join(dir, "projects")
 	if err := os.MkdirAll(projDir, 0o700); err != nil {
 		return nil, fmt.Errorf("project: create project state dir %s: %w", projDir, err)
 	}
+	if err := os.Chmod(projDir, 0o700); err != nil {
+		return nil, fmt.Errorf("project: secure project state dir %s: %w", projDir, err)
+	}
 	envDir := filepath.Join(dir, "environments")
 	if err := os.MkdirAll(envDir, 0o700); err != nil {
 		return nil, fmt.Errorf("project: create environment state dir %s: %w", envDir, err)
+	}
+	if err := os.Chmod(envDir, 0o700); err != nil {
+		return nil, fmt.Errorf("project: secure environment state dir %s: %w", envDir, err)
 	}
 	return &fileStore{projDir: projDir, envDir: envDir, log: slog.Default()}, nil
 }

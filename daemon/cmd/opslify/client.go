@@ -1213,3 +1213,388 @@ func (c *client) removeConnection(ctx context.Context, projectID, environmentID,
 	}
 	return nil
 }
+
+// --- F8.5 agents --------------------------------------------------------------
+
+// addAgentReq is the POST body. There is no credential field: a provider API key
+// is a secret ref used by that command's own configuration, never injected by
+// opslify — so an agent record is not a place a key can end up.
+type addAgentReq struct {
+	Name        string   `json:"name"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args,omitempty"`
+	ModelHint   string   `json:"model_hint,omitempty"`
+	Locality    string   `json:"locality,omitempty"`
+	EnvAllow    []string `json:"env_allow,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
+// agentView is an agent as the daemon reports it, plus what the handshake found.
+type agentView struct {
+	Name       string   `json:"name"`
+	ModelHint  string   `json:"model_hint,omitempty"`
+	Locality   string   `json:"locality"`
+	Disclosure string   `json:"disclosure"`
+	Tools      []string `json:"tools,omitempty"`
+}
+
+type agentBindingView struct {
+	Scope string `json:"scope"`
+	Agent string `json:"agent"`
+}
+
+type agentListView struct {
+	Agents   []agentView        `json:"agents"`
+	Bindings []agentBindingView `json:"bindings,omitempty"`
+}
+
+func (c *client) addAgent(ctx context.Context, req addAgentReq) (agentView, error) {
+	return c.agentWrite(ctx, "/v1/agents", req)
+}
+
+func (c *client) testAgent(ctx context.Context, req addAgentReq) (agentView, error) {
+	return c.agentWrite(ctx, "/v1/agents/test", req)
+}
+
+func (c *client) agentWrite(ctx context.Context, path string, req addAgentReq) (agentView, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return agentView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return agentView{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return agentView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return agentView{}, c.decodeError(resp)
+	}
+	var out agentView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return agentView{}, err
+	}
+	return out, nil
+}
+
+func (c *client) listAgents(ctx context.Context) (agentListView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/agents", nil)
+	if err != nil {
+		return agentListView{}, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return agentListView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return agentListView{}, c.decodeError(resp)
+	}
+	var out agentListView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return agentListView{}, err
+	}
+	return out, nil
+}
+
+// useAgent binds an agent to a scope. The name goes through pathSeg for the same
+// reason every other operator input does.
+func (c *client) useAgent(ctx context.Context, projectID, environmentID, name string) error {
+	seg, err := pathSeg("agent name", name)
+	if err != nil {
+		return err
+	}
+	u := c.baseURL + "/v1/agents/" + seg + "/bind"
+	q := url.Values{}
+	if projectID != "" {
+		q.Set("project", projectID)
+	}
+	if environmentID != "" {
+		q.Set("env", environmentID)
+	}
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, u, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}
+
+func (c *client) removeAgent(ctx context.Context, name string) error {
+	seg, err := pathSeg("agent name", name)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/v1/agents/"+seg, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}
+
+// --- F8.6 changes --------------------------------------------------------------
+
+// changeStepView is one planned step as the daemon reports it.
+type changeStepView struct {
+	Index int      `json:"index"`
+	Argv  []string `json:"argv"`
+	Gated bool     `json:"gated,omitempty"`
+}
+
+// changeView is a Change as the daemon reports it.
+//
+// Revertibility arrives PRE-COMPUTED, with its reason, rather than as raw inverse
+// fields the CLI would have to interpret. A client that had to derive "can this be
+// reverted?" could derive it differently from the daemon, and the operator would
+// be reading a second opinion at the moment it matters most.
+type changeView struct {
+	ID             string           `json:"id"`
+	Intent         string           `json:"intent"`
+	Status         string           `json:"status"`
+	ProposerName   string           `json:"proposer_name"`
+	ProposerModel  string           `json:"proposer_model,omitempty"`
+	ProjectID      string           `json:"project_id,omitempty"`
+	EnvironmentID  string           `json:"environment_id,omitempty"`
+	BlastSummary   string           `json:"blast_summary"`
+	Revertible     bool             `json:"revertible"`
+	RevertReason   string           `json:"revert_reason,omitempty"`
+	InverseKind    string           `json:"inverse_kind,omitempty"`
+	PolicyRule     string           `json:"policy_rule,omitempty"`
+	PolicyEffect   string           `json:"policy_effect,omitempty"`
+	PolicyHash     string           `json:"policy_hash,omitempty"`
+	ContextHash    string           `json:"context_hash,omitempty"`
+	AgentName      string           `json:"agent_name,omitempty"`
+	AgentModel     string           `json:"agent_model,omitempty"`
+	SessionID      string           `json:"session_id,omitempty"`
+	PlanHash       string           `json:"plan_hash,omitempty"`
+	ConnectionRefs []string         `json:"connection_refs,omitempty"`
+	Steps          []changeStepView `json:"steps,omitempty"`
+	Preview        string           `json:"preview,omitempty"`
+}
+
+type decideChangeReq struct {
+	Decision string `json:"decision"`
+	Note     string `json:"note,omitempty"`
+}
+
+func (c *client) listChanges(ctx context.Context) ([]changeView, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/changes", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.decodeError(resp)
+	}
+	var out []changeView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *client) getChange(ctx context.Context, id string) (changeView, error) {
+	seg, err := pathSeg("change id", id)
+	if err != nil {
+		return changeView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/v1/changes/"+seg, nil)
+	if err != nil {
+		return changeView{}, err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return changeView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return changeView{}, c.decodeError(resp)
+	}
+	var out changeView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return changeView{}, err
+	}
+	return out, nil
+}
+
+// decideChange posts a human decision: approve, deny or revert.
+func (c *client) decideChange(ctx context.Context, id, decision, note string) (changeView, error) {
+	seg, err := pathSeg("change id", id)
+	if err != nil {
+		return changeView{}, err
+	}
+	body, err := json.Marshal(decideChangeReq{Decision: decision, Note: note})
+	if err != nil {
+		return changeView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/v1/changes/"+seg+"/decision", bytes.NewReader(body))
+	if err != nil {
+		return changeView{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return changeView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return changeView{}, c.decodeError(resp)
+	}
+	var out changeView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return changeView{}, err
+	}
+	return out, nil
+}
+
+// --- F8.7 policy editing --------------------------------------------------------
+
+// policyLayerView is one layer in the precedence chain.
+type policyLayerView struct {
+	Layer    string `json:"layer"`
+	Editable bool   `json:"editable"`
+	Note     string `json:"note,omitempty"`
+}
+
+// resolvedPolicyView is what is actually in force for a scope.
+type resolvedPolicyView struct {
+	Scope            string            `json:"scope,omitempty"`
+	Hash             string            `json:"hash"`
+	Layers           []policyLayerView `json:"layers"`
+	EgressDomains    []string          `json:"egress_domains,omitempty"`
+	ApprovalRequired []string          `json:"approval_required,omitempty"`
+	SessionTTL       string            `json:"session_ttl,omitempty"`
+	StrictExec       bool              `json:"strict_exec"`
+	// Clamps record where a lower layer tried to widen and was narrowed back. A
+	// silently-clamped policy looks like one that was simply ignored.
+	Clamps []string `json:"clamps,omitempty"`
+}
+
+// policyDiffView is the real difference between two resolved scopes.
+type policyDiffView struct {
+	Direction  string   `json:"direction"`
+	Widenings  []string `json:"widenings,omitempty"`
+	Narrowings []string `json:"narrowings,omitempty"`
+	HashA      string   `json:"hash_a"`
+	HashB      string   `json:"hash_b"`
+}
+
+// policyEditReq is an edit expressed as additions and removals.
+//
+// The wire shape is additive/subtractive even though the SERVICE works on whole
+// documents: an operator adding one egress host should not have to send the whole
+// policy back, which would race with anyone else editing it. The daemon composes
+// the resulting document and classifies THAT, so the thing reviewed is still a
+// complete policy.
+type policyEditReq struct {
+	ProjectID     string   `json:"project_id,omitempty"`
+	EnvironmentID string   `json:"environment_id,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	AddEgress     []string `json:"add_egress,omitempty"`
+	RemoveEgress  []string `json:"remove_egress,omitempty"`
+	AddGates      []string `json:"add_gates,omitempty"`
+	RemoveGates   []string `json:"remove_gates,omitempty"`
+}
+
+// policyEditView is what happened to an edit.
+type policyEditView struct {
+	Applied    bool     `json:"applied"`
+	Direction  string   `json:"direction"`
+	ChangeID   string   `json:"change_id,omitempty"`
+	Widenings  []string `json:"widenings,omitempty"`
+	Narrowings []string `json:"narrowings,omitempty"`
+	Hash       string   `json:"hash,omitempty"`
+}
+
+func (c *client) resolvedPolicy(ctx context.Context, projectID, environmentID string) (resolvedPolicyView, error) {
+	u := c.baseURL + "/v1/policy"
+	q := url.Values{}
+	if projectID != "" {
+		q.Set("project", projectID)
+	}
+	if environmentID != "" {
+		q.Set("env", environmentID)
+	}
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	var out resolvedPolicyView
+	return out, c.getJSON(ctx, u, &out)
+}
+
+func (c *client) policyDiff(ctx context.Context, a, b string) (policyDiffView, error) {
+	q := url.Values{}
+	q.Set("a", a)
+	q.Set("b", b)
+	var out policyDiffView
+	return out, c.getJSON(ctx, c.baseURL+"/v1/policy/diff?"+q.Encode(), &out)
+}
+
+func (c *client) editPolicy(ctx context.Context, req policyEditReq) (policyEditView, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return policyEditView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/policy/edit", bytes.NewReader(body))
+	if err != nil {
+		return policyEditView{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return policyEditView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return policyEditView{}, c.decodeError(resp)
+	}
+	var out policyEditView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return policyEditView{}, err
+	}
+	return out, nil
+}
+
+// getJSON is the shared GET-and-decode used by the read-only policy routes.
+func (c *client) getJSON(ctx context.Context, url string, into any) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.decodeError(resp)
+	}
+	return json.NewDecoder(resp.Body).Decode(into)
+}

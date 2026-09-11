@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/agentcontext"
+	"github.com/opslify-com/opslifyd/internal/agents"
 	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/opslify-com/opslifyd/internal/egressproxy"
@@ -168,8 +170,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// F8.5 agent registry, for the same reason: the manager records the bound
+	// agent in session.start at seq 0.
+	agentReg, err := buildAgentRegistry(cfg, log)
+	if err != nil {
+		return err
+	}
 	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject, projects,
-		connSvc.ForScope)
+		connSvc.ForScope, buildContextAssembler(cfg, projects), agentSource(agentReg))
 	if err != nil {
 		return err
 	}
@@ -182,7 +190,7 @@ func run() error {
 	// connections register here later without changing any caller. It is built
 	// over LIVE config and policy rather than cached, so a delete guard can never
 	// consult a stale picture and permit a removal that breaks a running grant.
-	opts, err := buildDaemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, connSvc, log)
+	opts, err := buildDaemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, connSvc, agentReg, log)
 	if err != nil {
 		return err
 	}
@@ -254,6 +262,45 @@ func buildRegistryInject(cfg install.Config, brk *broker.Broker, log *slog.Logge
 	})
 	log.Info("F5.5 registry proxy config valid; F7.5 per-session install path active", "upstreams", len(rc.Upstreams), "allowlisted", len(rc.Allow), "cache_dir", rp.CacheDir)
 	return ri, nil
+}
+
+// buildContextAssembler wires the F8.4 instruction assembly for a session.
+//
+// It resolves the project's capability map so skill packs are ROUTED rather than
+// loaded wholesale, and takes the environment's name for the overlay. House rules
+// come from the daemon config path and never from the workspace: that is the one
+// layer a repo commit cannot change, and sourcing it from the checkout would
+// silently remove the property.
+//
+// Errors propagate. Create treats them as fatal, which is deliberate — see the
+// fail-closed note in session.Manager.
+func buildContextAssembler(cfg install.Config, projects *project.Service) session.ContextAssembler {
+	return func(projectID, environmentID, workspaceDir string) (*agentcontext.Assembly, error) {
+		var caps agentcontext.CapabilityMap
+		envName := ""
+		if projects != nil && projectID != "" {
+			p, envs, err := projects.Project(projectID)
+			if err != nil {
+				return nil, err
+			}
+			caps = agentcontext.CapabilityMap(p.Capabilities)
+			for _, e := range envs {
+				if e.ID == environmentID {
+					envName = e.Name
+					break
+				}
+			}
+		}
+		return agentcontext.Assemble(agentcontext.Sources{
+			HouseRulesPath: cfg.HouseRulesPath,
+			WorkspaceRoot:  workspaceDir,
+			Env:            envName,
+			Capabilities:   caps,
+			// No role hint at session creation: narrowing wrongly removes the one
+			// skill that mattered, and the failure then looks like a bad agent rather
+			// than a routing bug. A task-scoped narrowing belongs at exec time.
+		})
+	}
 }
 
 // buildSessionManager wires the F1.2 session manager from config. It applies the
@@ -456,6 +503,42 @@ func buildConnectionService(cfg install.Config, vault broker.SecretManager, log 
 	return svc, nil
 }
 
+// buildAgentRegistry builds the F8.5 registry.
+//
+// The registry is OPTIONAL in a way the project service is not: opslify ships no
+// model, so a daemon with no agent registered is a perfectly valid state for
+// someone driving the CLI directly. A failure to open the store is still fatal —
+// that is a broken daemon, not an absent agent.
+func buildAgentRegistry(cfg install.Config, log *slog.Logger) (*agents.Registry, error) {
+	dir := filepath.Dir(cfg.WorkspaceDir)
+	store, err := agents.NewFileStore(dir)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: agent store: %w", err)
+	}
+	// The REAL prober: `agent add` completes an MCP handshake against the command
+	// before storing it, so a typo'd path or a non-MCP binary is reported at bind
+	// time rather than at the operator's first task.
+	reg, err := agents.NewRegistry(store, agents.NewProber(), log)
+	if err != nil {
+		return nil, fmt.Errorf("opslifyd: agent registry: %w", err)
+	}
+	log.Info("F8.5 agent registry active", "dir", dir)
+	return reg, nil
+}
+
+// agentSource adapts the registry to the session manager's seam.
+//
+// Resolution failure is NOT fatal here — see session.resolveAgent. A session
+// without a bound agent records no agent identity and runs normally.
+func agentSource(reg *agents.Registry) session.AgentSource {
+	if reg == nil {
+		return nil
+	}
+	return func(projectID, environmentID string) (agents.Agent, error) {
+		return reg.ForScope(projectID, environmentID)
+	}
+}
+
 func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service, error) {
 	dir := cfg.ProjectDir
 	if dir == "" {
@@ -473,13 +556,20 @@ func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service
 	return svc, nil
 }
 
-func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service, connections session.ContextConnectionSource) (*session.Manager, error) {
-	// REQUIRED in the daemon. Without it every connection an operator defined is
-	// silently ignored, and the failure surfaces inside the agent's work rather
-	// than anywhere that points at the cause. (The call site itself is not covered
-	// by a test, so making the mistake LOUD is the mitigation, not coverage.)
+func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service,
+	connections session.ContextConnectionSource, assembler session.ContextAssembler, agentSrc session.AgentSource) (*session.Manager, error) {
+	// The assembler is REQUIRED in the daemon. The seam is optional at the package
+	// level so pre-P8 tests need no wiring, but a daemon running without it starts
+	// every session with no house rules and emits no context.assemble — a silent,
+	// security-relevant degradation. Refusing turns that into a startup failure.
+	if assembler == nil {
+		return nil, errors.New("opslifyd: a context assembler is required (F8.4 house rules and context.assemble)")
+	}
+	// Same reasoning for connections: without it every connection an operator
+	// defined is silently ignored, and the failure surfaces inside the agent's
+	// work rather than anywhere pointing at the cause.
 	if connections == nil {
-		return nil, errors.New("opslifyd: a connection source is required (F8.2)")
+		return nil, errors.New("opslifyd: a connection source is required (F8.2 connections in force for a scope)")
 	}
 	ttl, err := time.ParseDuration(orDefault(cfg.SessionTTL, install.DefaultSessionTTL))
 	if err != nil {
@@ -496,7 +586,33 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 	if err != nil {
 		return nil, err
 	}
-	return session.NewManager(session.Options{
+	return session.NewManager(sessionOptions(cfg, stateDir, ttl, approvalTTL, defaultPolicy,
+		egressCtl, log, traceSink, brk, credInjector, egressInject, registryInject, projects,
+		connections, assembler, agentSrc))
+}
+
+// sessionOptions is the session manager's composition root, extracted so a test
+// can assert over the SAME literal the binary builds. A dependency dropped from
+// an inlined literal is invisible to every test in the tree while the suite stays
+// green — the failure mode that took three QA rounds to close on F8.3.
+func sessionOptions(
+	cfg install.Config,
+	stateDir string,
+	ttl, approvalTTL time.Duration,
+	defaultPolicy policy.Policy,
+	egressCtl egress.Controller,
+	log *slog.Logger,
+	traceSink trace.TraceSink,
+	brk *broker.Broker,
+	credInjector *broker.Injector,
+	egressInject *session.EgressInjector,
+	registryInject *session.RegistryInjector,
+	projects *project.Service,
+	connections session.ContextConnectionSource,
+	assembler session.ContextAssembler,
+	agentSrc session.AgentSource,
+) session.Options {
+	return session.Options{
 		Config: session.ManagerConfig{
 			Image:               cfg.Image,
 			ToolchainDigest:     cfg.ToolchainDigest,
@@ -512,17 +628,19 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 			DefaultPolicy:       defaultPolicy,
 			DryRun:              true, // F4.4: preview destructive ops before the approval pause
 		},
-		Egress:         egressCtl,
-		Logger:         log,
-		Trace:          traceSink,
-		Redactor:       buildRedactor(cfg), // F3.3: config-driven secret scrubber
-		Broker:         brk,                // F5.6: policy-gated, audited secret resolution
-		CredInjector:   credInjector,       // F5.1: executor-side credential injection
-		EgressInject:   egressInject,       // F5.7: credential-blind HTTP egress path
-		RegistryInject: registryInject,     // F7.5: operator package-install path
-		Projects:       projects,           // F8.1: project/environment scoping
-		Connections:    connections,        // F8.2: connections in force for the scope
-	})
+		Egress:          egressCtl,
+		Logger:          log,
+		Trace:           traceSink,
+		Redactor:        buildRedactor(cfg), // F3.3: config-driven secret scrubber
+		Broker:          brk,                // F5.6: policy-gated, audited secret resolution
+		CredInjector:    credInjector,       // F5.1: executor-side credential injection
+		EgressInject:    egressInject,       // F5.7: credential-blind HTTP egress path
+		RegistryInject:  registryInject,     // F7.5: operator package-install path
+		Projects:        projects,           // F8.1: project/environment scoping
+		Connections:     connections,        // F8.2: connections in force for the scope
+		AssembleContext: assembler,          // F8.4: the layered instruction set
+		Agents:          agentSrc,           // F8.5: which agent a session is attributed to
+	}
 }
 
 // buildRedactor wires the F3.3 secret scrubber from config into the emit seam
@@ -681,6 +799,7 @@ func buildDaemonOptions(
 	projects *project.Service,
 	vault broker.SecretManager,
 	conns *broker.ConnectionService,
+	agentReg *agents.Registry,
 	log *slog.Logger,
 ) (daemon.Options, error) {
 	// LIVE config and policy rather than a cached snapshot, so the delete guard
@@ -694,7 +813,7 @@ func buildDaemonOptions(
 	if err != nil {
 		return daemon.Options{}, err
 	}
-	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc, conns, log), nil
+	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc, conns, agentReg, log), nil
 }
 
 // daemonOptions assembles the Options literal. Kept separate from
@@ -710,6 +829,7 @@ func daemonOptions(
 	vault broker.SecretManager,
 	secretsSvc *broker.SecretsService,
 	connections daemon.ConnectionService,
+	agentReg daemon.AgentRegistry,
 	log *slog.Logger,
 ) daemon.Options {
 	return daemon.Options{

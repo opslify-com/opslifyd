@@ -96,6 +96,14 @@ type Config struct {
 	// daemon-authoritative (upstreams, allowlist, attestation policy); a workspace
 	// can never introduce or widen it.
 	RegistryProxy RegistryProxyConfig `yaml:"registry_proxy,omitempty"`
+	// HouseRulesPath is the F8.4 layer-1 instruction file: the operator's
+	// non-negotiable rules for agent behaviour. Empty => agentcontext's default
+	// (/etc/opslify/house-rules.md). It is DAEMON-HELD on purpose and never
+	// sourced from a workspace — an agent with commit access must not be able to
+	// edit the rule that constrains it. A missing file is fine (no house rules
+	// configured); an unreadable or group/world-writable one is refused, since a
+	// constraint anyone can rewrite is not a constraint.
+	HouseRulesPath string `yaml:"house_rules_path,omitempty"`
 	// EgressInject is the F5.7 daemon-authoritative list mapping an egress host to a
 	// vaulted secret + an auth header the L7 proxy (F5.2) injects at the network
 	// boundary for that host — so a granted `curl https://<host>/...` inside the

@@ -80,6 +80,18 @@ const (
 	// non-secret supply-chain descriptors. Like the other reserved P4/P5 types it is
 	// known-but-unemitted before P5, so a future daemon adds it without a schema bump.
 	TypePkgInstall EventType = "pkg.install"
+	// TypeContextAssemble is emitted once at session start (F8.4) with the layered
+	// instruction set the agent runs under. Payload:
+	// {hash, layers: [{kind, name, hash, bytes, tokens}], tokens, budget, overrun,
+	// routing: {roles, selected, missing}} — names, hashes and SIZES only, never
+	// the instruction CONTENT. Content can carry estate detail (hostnames, who to
+	// page, which box is the primary) that an operator never agreed to persist in
+	// an audit log, and the hash is what replay actually needs.
+	//
+	// Its purpose is answerability: a Change records this hash, so "why did the
+	// agent do that?" resolves to the exact rules it had, and a rule that produced
+	// a bad action is traceable to the commit that introduced it.
+	TypeContextAssemble EventType = "context.assemble"
 )
 
 // Event is one link in a session's hash chain. The shape is fixed

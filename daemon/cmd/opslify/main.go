@@ -68,6 +68,10 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(projectCmd())
 	root.AddCommand(envCmd())
 	root.AddCommand(connectionCmd())
+	root.AddCommand(contextCmd())
+	root.AddCommand(skillCmd())
+	root.AddCommand(agentCmd())
+	root.AddCommand(changeCmd())
 	return root
 }
 

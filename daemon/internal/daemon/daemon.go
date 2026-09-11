@@ -72,6 +72,14 @@ type Options struct {
 	// routes. nil keeps those routes 404 (the same opt-in shape as Sessions), so a
 	// daemon built without the control tower is unchanged.
 	Projects ProjectService
+	// Agents is the F8.5 registry. nil => the routes are not registered at all,
+	// rather than registered and answering 404 — an endpoint that exists but never
+	// works is worse than one that does not exist.
+	Agents AgentRegistry
+	// Changes is the F8.6 review surface. nil => the routes are not registered.
+	Changes ChangeService
+	// PolicyEditor is the F8.7 guardrail surface. nil => the routes are absent.
+	PolicyEditor PolicyEditor
 	// Secrets is the F5.6 secret MANAGEMENT surface (Put/List/Delete — the narrow
 	// broker.SecretManager, which has NO Get). nil keeps the /v1/secrets routes
 	// 404. There is deliberately no route that returns a secret value — Get is
@@ -104,6 +112,9 @@ type Daemon struct {
 	secrets      broker.SecretManager
 	secretsSvc   *broker.SecretsService
 	connections  ConnectionService
+	agents       AgentRegistry
+	changes      ChangeService
+	policyEditor PolicyEditor
 
 	version  string
 	tier     string
@@ -133,6 +144,9 @@ func New(opts Options) (*Daemon, error) {
 		log:          opts.Logger,
 		sessions:     opts.Sessions,
 		projects:     opts.Projects,
+		agents:       opts.Agents,
+		changes:      opts.Changes,
+		policyEditor: opts.PolicyEditor,
 		secrets:      opts.Secrets,
 		secretsSvc:   opts.SecretsSvc,
 		connections:  opts.Connections,
@@ -195,7 +209,10 @@ func (d *Daemon) Listen() (net.Listener, error) {
 // within shutdownGrace and returns. A clean shutdown returns nil (not
 // http.ErrServerClosed). It calls Ready once serving begins.
 func (d *Daemon) Serve(ctx context.Context, ln net.Listener) error {
-	srv := &http.Server{Handler: d.Handler()}
+	// ConnContext captures the peer's kernel-supplied credentials once per
+	// connection, so a human decision (F8.6) is attributed to whoever actually
+	// made it rather than to whatever the request body claims.
+	srv := &http.Server{Handler: d.Handler(), ConnContext: connContext}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- srv.Serve(ln) }()

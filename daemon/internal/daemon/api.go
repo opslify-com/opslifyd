@@ -51,6 +51,9 @@ func (d *Daemon) Handler() http.Handler {
 	// exactly the state an operator setting one up for the first time is in.
 	d.registerConnectionRoutes(mux)
 	d.registerProjectRoutes(mux)
+	d.registerAgentRoutes(mux)
+	d.registerChangeRoutes(mux)
+	d.registerPolicyEditRoutes(mux)
 	return mux
 }
 

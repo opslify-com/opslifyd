@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opslify-com/opslifyd/internal/agentcontext"
 	"github.com/opslify-com/opslifyd/internal/broker"
 	"github.com/opslify-com/opslifyd/internal/egressproxy"
 	"github.com/opslify-com/opslifyd/internal/policy"
@@ -176,7 +177,20 @@ type Manager struct {
 	// seam so this package keeps no knowledge of how they are stored; nil means no
 	// connections are configured.
 	connections ContextConnectionSource
-	log         *slog.Logger
+	// assembleContext resolves the F8.4 layered instruction set for a session's
+	// scope and workspace. A seam rather than a concrete dependency so this package
+	// keeps no knowledge of where house rules live; nil means no assembly is
+	// configured and no context.assemble event is emitted.
+	assembleContext ContextAssembler
+	// agents resolves the F8.5 agent bound to a session's scope. A seam so this
+	// package keeps no knowledge of the registry; nil means no agent is bound,
+	// which is a valid state — opslify ships no model.
+	agents AgentSource
+	// changes records a gated exec as a reviewable F8.6 Change. A seam so this
+	// package keeps no knowledge of how Changes are stored; nil means gates open
+	// without producing one, which is every pre-P8 path.
+	changes ChangeRecorder
+	log     *slog.Logger
 
 	// listenTCP binds a per-session credential-injecting listener (F5.8): the
 	// bridge-gateway-bound F5.1 creds endpoint and F5.7 egress proxy. It mirrors
@@ -272,11 +286,27 @@ type Manager struct {
 
 // Options wires a Manager. Resolve/Clock/Store default to production impls when
 // nil, so main() passes only ManagerConfig + a logger while tests inject fakes.
+// ContextAssembler resolves the layered instruction set a session will run
+// under, given its scope and its workspace directory.
+//
+// It returns an error rather than a partial assembly, and Create treats that as
+// FATAL: a session running with its house rules quietly missing is the failure
+// this layer exists to prevent, and it would be invisible from the outside.
+type ContextAssembler func(projectID, environmentID, workspaceDir string) (*agentcontext.Assembly, error)
+
 type Options struct {
 	Config  ManagerConfig
 	Resolve resolveFunc
 	Clock   Clock
 	Store   Store
+	// AssembleContext wires the F8.4 instruction assembly. nil => no assembly and
+	// no context.assemble event (every pre-P8 test path).
+	AssembleContext ContextAssembler
+	// Agents wires the F8.5 registry. nil => sessions record no agent identity.
+	Agents AgentSource
+	// Changes wires the F8.6 review surface. nil => gates open without producing a
+	// Change.
+	Changes ChangeRecorder
 	// Egress programs per-session default-deny egress (F1.4). nil => egress.Noop
 	// (no enforcement) so F1.1–F1.3 tests need no egress wiring; the daemon wires a
 	// real NftController (or a loudly-warned Noop when nft/root is unavailable).
@@ -333,24 +363,27 @@ func NewManager(opts Options) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:            cfg,
-		approvals:      make(map[string]*approval),
-		resolve:        opts.Resolve,
-		clock:          opts.Clock,
-		store:          opts.Store,
-		egress:         opts.Egress,
-		sandboxIP:      opts.SandboxIP,
-		connections:    opts.Connections,
-		log:            opts.Logger,
-		trace:          opts.Trace,
-		redactor:       opts.Redactor,
-		broker:         opts.Broker,
-		credInjector:   opts.CredInjector,
-		egressInject:   opts.EgressInject,
-		registryInject: opts.RegistryInject,
-		projects:       opts.Projects,
-		sessions:       make(map[string]*Session),
-		inflight:       make(map[string]int),
+		cfg:             cfg,
+		approvals:       make(map[string]*approval),
+		resolve:         opts.Resolve,
+		clock:           opts.Clock,
+		store:           opts.Store,
+		egress:          opts.Egress,
+		sandboxIP:       opts.SandboxIP,
+		connections:     opts.Connections,
+		assembleContext: opts.AssembleContext,
+		agents:          opts.Agents,
+		changes:         opts.Changes,
+		log:             opts.Logger,
+		trace:           opts.Trace,
+		redactor:        opts.Redactor,
+		broker:          opts.Broker,
+		credInjector:    opts.CredInjector,
+		egressInject:    opts.EgressInject,
+		registryInject:  opts.RegistryInject,
+		projects:        opts.Projects,
+		sessions:        make(map[string]*Session),
+		inflight:        make(map[string]int),
 	}
 	if m.redactor == nil {
 		m.redactor = trace.NoopRedactor{}
@@ -764,6 +797,25 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		policy:        resolved,
 	}
 
+	// F8.4: resolve the layered instruction set BEFORE the sandbox is handed out.
+	//
+	// FAIL-CLOSED, and the ordering matters: a session that starts with its house
+	// rules silently missing is the exact outcome layer 1 exists to prevent, and it
+	// would be invisible — the agent would simply behave as though the rule had
+	// never been written. An unreadable or unsafe source (a symlinked skill file
+	// pointing at a host secret, say) therefore aborts the create and rolls the
+	// container back, rather than degrading into a session with less context than
+	// the operator believes it has.
+	if m.assembleContext != nil {
+		a, err := m.assembleContext(scope.projectID, scope.envID, wsDir)
+		if err != nil {
+			_ = rt.Destroy(ctx, handle)
+			m.cleanupWorkspace(wsDir)
+			return nil, fmt.Errorf("session: assemble agent context: %w", err)
+		}
+		s.assembly = a
+	}
+
 	if err := m.store.Save(recordOf(s)); err != nil {
 		// Roll back the container so a persistence failure never leaks a sandbox.
 		_ = rt.Destroy(ctx, handle)
@@ -796,13 +848,24 @@ func (m *Manager) registerReady(s *Session, origin string) error {
 	// the live map — so no concurrent exec can win seq 0. seq 0 is therefore always
 	// session.start, and its payload carries the session-binding fields the chain
 	// root commits to (image_digest + toolchain_lock_hash + policy_hash slot).
+	// F8.5: resolve the bound agent BEFORE the chain opens, so its identity is in
+	// session.start at seq 0 rather than arriving later as a separate event that
+	// could be absent from a truncated trace.
+	m.resolveAgent(s)
 	if m.trace != nil {
 		s.rec = trace.NewRecorder(m.trace, s.ID, m.redactor, m.clock.Now)
 		if err := s.rec.Emit(context.Background(), trace.TypeSessionStart, map[string]any{
-			"schema_version":      trace.SchemaVersion,
-			"tier":                string(s.Tier),
-			"mode":                string(s.Mode),
-			"agent":               "",
+			"schema_version": trace.SchemaVersion,
+			"tier":           string(s.Tier),
+			"mode":           string(s.Mode),
+			// F8.5: WHICH agent ran this session, and which model it was expected to
+			// drive. Bound at seq 0 — the chain root — so a decision is attributable
+			// to a model rather than to "an agent". agent_locality records whether
+			// command output left this host: a disclosure an auditor needs and
+			// cannot reconstruct later.
+			"agent":               s.agentName,
+			"agent_model":         s.agentModel,
+			"agent_locality":      s.agentLocality,
 			"image_digest":        m.cfg.Image,
 			"toolchain_lock_hash": m.toolchainDigest(),
 			"policy_hash":         s.policyHash, // F4.1: resolved policy_hash
@@ -813,6 +876,15 @@ func (m *Manager) registerReady(s *Session, origin string) error {
 			"environment_id": s.EnvironmentID,
 		}); err != nil {
 			m.log.Warn("trace session.start emit failed", "session", s.ID, "err", err)
+		}
+		// F8.4: seq 1, immediately after session.start, so the instruction set is
+		// bound to the chain root alongside the policy hash. The payload carries
+		// layer names, hashes and SIZES only — never instruction CONTENT, which can
+		// hold estate detail an operator never agreed to persist in an audit log.
+		if s.assembly != nil {
+			if err := s.rec.Emit(context.Background(), trace.TypeContextAssemble, s.assembly.TracePayload()); err != nil {
+				m.log.Warn("trace context.assemble emit failed", "session", s.ID, "err", err)
+			}
 		}
 	}
 	// F5.1 executor-side credential injection. Resolve every policy-granted cred and

@@ -280,6 +280,19 @@ func (m *Manager) registerApproval(ctx context.Context, sessionID string, opts E
 	// like every other event: it flows through the session Recorder. The preview_*
 	// fields carry the diff shown beside approve/deny (the diff is already redacted;
 	// the recorder redacts the whole payload again — idempotent on a redacted diff).
+	// F8.6: every gated exec produces a reviewable Change. It is recorded AFTER the
+	// gate is registered and the session paused, so a failure here can never leave
+	// a command running that should have been gated — the gate is the safety
+	// control, the Change is the review surface over it.
+	//
+	// The plan pinned is argvToRun, not opts.Argv: after an F4.4 dry-run rewrite
+	// those differ, and pinning the original would pin something that never runs.
+	m.mu.Lock()
+	sess := m.sessions[sessionID]
+	m.mu.Unlock()
+	changeID := m.recordGatedChange(sess, execID, opts, argvToRun, decision, previewDiff,
+		blastForExec(argvToRun), inverseForExec(argvToRun))
+
 	_ = rec.Emit(ctx, trace.TypeApprovalRequested, map[string]any{
 		"exec_id":        execID,
 		"argv_summary":   summary,
@@ -288,6 +301,10 @@ func (m *Manager) registerApproval(ctx context.Context, sessionID string, opts E
 		"preview_cmd":    previewCmd,
 		"preview_diff":   previewDiff,
 		"preview_status": previewStatus,
+		// Links the gate to the Change a human reviews it through. Empty when no
+		// Change recorder is wired, which keeps the field's absence meaningful
+		// rather than making it look like a lost record.
+		"change_id": changeID,
 	})
 
 	return &ApprovalPendingError{
