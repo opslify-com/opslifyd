@@ -77,6 +77,15 @@ var towerRoutes = []towerRoute{
 	// route here that WRITES a document, and there must not be: memory is a folder
 	// of reviewed files in the project's workspace, and a second unreviewed path
 	// into what the agent reads is the whole thing the review exists to prevent.
+	{http.MethodGet, "/v1/workspace", "opslify ws ls", entitle.FeatureCockpit},
+
+	// The catalogue and install route are how an agent gets connected from the
+	// cockpit without the browser ever naming a command: install takes a
+	// CATALOGUE ENTRY, the daemon owns the paths. POST /v1/agents, which takes a
+	// caller-supplied command, stays refused.
+	{http.MethodGet, "/v1/agents/catalogue", "opslify agent catalogue", entitle.FeatureAgentRegistry},
+	{http.MethodPost, "/v1/agents/install", "opslify agent install <entry>", entitle.FeatureAgentRegistry},
+
 	{http.MethodGet, "/v1/memory", "opslify memory ls", entitle.FeatureCockpit},
 	{http.MethodGet, "/v1/memory/search", "opslify memory search <query>", entitle.FeatureCockpit},
 	{http.MethodPost, "/v1/memory/enable", "opslify memory enable|disable <doc>", entitle.FeatureCockpit},

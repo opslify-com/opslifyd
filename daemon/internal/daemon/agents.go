@@ -35,11 +35,60 @@ func (d *Daemon) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /"+APIVersion+"/agents", d.handleAgentAdd)
 	mux.HandleFunc("POST /"+APIVersion+"/agents/test", d.handleAgentTest)
 	mux.HandleFunc("GET /"+APIVersion+"/agents", d.handleAgentList)
+	mux.HandleFunc("GET /"+APIVersion+"/agents/catalogue", d.handleAgentCatalogue)
+	mux.HandleFunc("POST /"+APIVersion+"/agents/install", d.handleAgentInstall)
 	mux.HandleFunc("POST /"+APIVersion+"/agents/{name}/bind", d.handleAgentBind)
 	mux.HandleFunc("DELETE /"+APIVersion+"/agents/{name}", d.handleAgentDelete)
 	if d.agentDriver != nil {
 		mux.HandleFunc("POST /"+APIVersion+"/agents/{name}/run", d.handleAgentRun)
 	}
+}
+
+// handleAgentCatalogue lists the agents the daemon knows how to set up, with
+// per-host detection. Read-only and safe: it names no filesystem layout beyond
+// the resolved path of a binary the operator already installed.
+func (d *Daemon) handleAgentCatalogue(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"entries": agents.Catalogue()})
+}
+
+// installAgentRequest names a CATALOGUE ENTRY, not a command.
+//
+// That distinction is the whole reason this route can be reachable from a browser
+// while POST /v1/agents cannot. Registering an agent probes it, which runs a
+// command on the host; here the command comes from the daemon's compile-time
+// catalogue and the request may only choose among them. Name and model are
+// caller-supplied because neither is executed.
+type installAgentRequest struct {
+	Entry string `json:"entry"`
+	Name  string `json:"name,omitempty"`
+	Model string `json:"model,omitempty"`
+}
+
+func (d *Daemon) handleAgentInstall(w http.ResponseWriter, r *http.Request) {
+	var body installAgentRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
+		return
+	}
+	entry, ok := agents.CatalogueEntryByID(body.Entry)
+	if !ok {
+		writeAPIError(w, http.StatusBadRequest, "input",
+			"unknown agent "+body.Entry+"; GET /v1/agents/catalogue lists what this daemon can set up")
+		return
+	}
+	a, found := entry.Resolve(body.Name, body.Model)
+	if !found {
+		writeAPIError(w, http.StatusBadRequest, "agent",
+			entry.Title+" is not installed at any location this daemon looks in. "+
+				"Install it, or register it by path with `opslify agent add --command /path/to/it`.")
+		return
+	}
+	tools, err := d.agents.Add(r.Context(), a)
+	if err != nil {
+		writeAgentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, agentResp(a, tools))
 }
 
 // runAgentRequest is the POST /v1/agents/{name}/run body.

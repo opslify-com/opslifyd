@@ -52,6 +52,7 @@ func (d *Daemon) Handler() http.Handler {
 	d.registerConnectionRoutes(mux)
 	d.registerProjectRoutes(mux)
 	d.registerMemoryRoutes(mux)
+	d.registerWorkspaceTreeRoutes(mux)
 	d.registerAgentRoutes(mux)
 	d.registerChangeRoutes(mux)
 	d.registerPolicyEditRoutes(mux)

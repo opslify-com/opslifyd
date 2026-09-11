@@ -81,6 +81,8 @@ type Options struct {
 	AgentDriver AgentDriver
 	// Memory is the F8.10 project corpus. nil => the routes are absent.
 	Memory MemoryService
+	// Workspaces lists a project's workspace for the cockpit. nil => route absent.
+	Workspaces WorkspaceLister
 	// Changes is the F8.6 review surface. nil => the routes are not registered.
 	Changes ChangeService
 	// PolicyEditor is the F8.7 guardrail surface. nil => the routes are absent.
@@ -116,6 +118,7 @@ type Daemon struct {
 	projects     ProjectService
 	agentDriver  AgentDriver
 	memory       MemoryService
+	workspaces   WorkspaceLister
 	secrets      broker.SecretManager
 	secretsSvc   *broker.SecretsService
 	connections  ConnectionService
@@ -154,6 +157,7 @@ func New(opts Options) (*Daemon, error) {
 		agents:       opts.Agents,
 		agentDriver:  opts.AgentDriver,
 		memory:       opts.Memory,
+		workspaces:   opts.Workspaces,
 		changes:      opts.Changes,
 		policyEditor: opts.PolicyEditor,
 		secrets:      opts.Secrets,

@@ -92,6 +92,13 @@ function splitArgv(line) {
   return argv;
 }
 
+const fmtBytes = (n) => {
+  n = Number(n) || 0;
+  if (n < 1024) return n + 'b';
+  if (n < 1024 * 1024) return Math.round(n / 1024) + 'k';
+  return Math.round(n / (1024 * 1024)) + 'M';
+};
+
 const fmtSecs = (n) => {
   n = Math.max(0, Number(n) || 0);
   if (n < 90) return Math.round(n) + 's';
@@ -143,6 +150,8 @@ const S = {
   chat: { turns: [], busy: false },
   bindings: [],
   memory: [],
+  tree: null,
+  catalogue: [],
   memHits: null,
   memQuery: '',
 };
@@ -190,7 +199,7 @@ async function loadAll() {
   const get = async (path, fallback) => {
     try { return await api(path); } catch (e) { return fallback; }
   };
-  const [projects, sessions, connections, secrets, consumers, agents, changes, policy, memoryList, health] =
+  const [projects, sessions, connections, secrets, consumers, agents, changes, policy, health] =
     await Promise.all([
       get('/v1/projects', []),
       get('/v1/sessions', []),
@@ -200,7 +209,6 @@ async function loadAll() {
       get('/v1/agents', { agents: [] }),
       get('/v1/changes', []),
       get('/v1/policy', null),
-      get('/v1/memory' + (S.projectID ? '?project=' + encodeURIComponent(S.projectID) : ''), null),
       get('/v1/health', null),
     ]);
 
@@ -223,7 +231,6 @@ async function loadAll() {
   S.boundAgent = resolveBinding();
   S.changes = changes || [];
   S.policy = policy;
-  S.memory = (memoryList && memoryList.documents) || [];
   S.health = health;
 
   if (!S.projectID || !project()) {
@@ -235,6 +242,20 @@ async function loadAll() {
     const p = project();
     S.envID = p && p.environments && p.environments[0] ? p.environments[0].id : null;
   }
+
+  // Memory and the workspace tree are per-PROJECT, so they are fetched after the
+  // project is resolved — not alongside it. Batching them with the rest sent
+  // ?project= as undefined on the very first load, which read the DEFAULT
+  // project's memory and rendered "no documents" over a populated one.
+  const scope = S.projectID ? '?project=' + encodeURIComponent(S.projectID) : '';
+  const [memoryList, tree, catalogue] = await Promise.all([
+    get('/v1/memory' + scope, null),
+    get('/v1/workspace' + scope, null),
+    get('/v1/agents/catalogue', null),
+  ]);
+  S.memory = (memoryList && memoryList.documents) || [];
+  S.tree = tree;
+  S.catalogue = (catalogue && catalogue.entries) || [];
 }
 
 async function refresh() {
@@ -418,16 +439,38 @@ function renderSide() {
     '<span class="rt" style="color:var(--warn);">approve</span></div>').join('')
     : noneRow('nothing awaiting you');
 
+  // --- workspace --------------------------------------------------------------
+  // The project's directory on the host, mounted at /workspace in every sandbox.
+  // This is a LISTING: names and sizes, never contents. F3.6's refusal to serve
+  // raw workspace bytes to a browser stays closed.
+  const tree = S.tree;
+  const top = tree && tree.entries ? tree.entries.filter((e) => !e.rel.includes('/')) : [];
+  html += esec('Workspace', top.length, null, 'workspace');
+  if (tree && tree.exists) {
+    html += top.slice(0, 10).map((e) =>
+      '<div class="row" data-open="workspace">' +
+      '<span class="ind">' + (e.dir ? '▾' : ' ') + '</span>' +
+      '<span class="nm"' + (e.excluded ? ' style="color:var(--muted);"' : '') + '>' +
+      esc(e.rel) + (e.dir ? '/' : '') + '</span>' +
+      '<span class="rt">' + (e.excluded ? 'withheld' : (e.dir ? '' : fmtBytes(e.bytes))) +
+      '</span></div>').join('');
+  } else {
+    html += noneRow('not created yet');
+  }
+
   // --- agents -----------------------------------------------------------------
   // No + here: registering an agent runs its command on the host, so it is the
   // one thing on this sidebar the cockpit deliberately cannot do.
-  html += esec('Agents', S.agents.length, null, 'agents');
+  // A + here is safe ONLY because it opens the catalogue: the browser picks an
+  // entry and the daemon owns the command. POST /v1/agents, which takes a
+  // caller-supplied path, is still refused by the allowlist.
+  html += esec('Agents', S.agents.length, 'agent', 'agents');
   html += S.agents.length ? S.agents.map((a) =>
     '<div class="row' + (S.boundAgent && S.boundAgent.name === a.name ? ' on' : '') +
     '" data-open="agents"><span class="dot' + (a.locality === 'local' ? '' : ' warn') + '"></span>' +
     '<span class="nm">' + esc(a.name) + '</span>' +
     '<span class="rt">' + esc(a.locality || 'unknown') + '</span></div>').join('')
-    : noneRow('none — opslify agent add');
+    : noneRow('none — click + to connect one');
 
   $('side').innerHTML = html;
 }
@@ -1026,6 +1069,37 @@ SCREENS.shell = () => {
   const sx = shellSession();
   return screenHead('shell', sx ? [short(sx.id, 10), sx.tier || ''] : ['no sandbox']) +
     '<div class="shellfull">' + shellHTML() + '</div>';
+};
+
+SCREENS.workspace = () => {
+  const t = S.tree;
+  if (!t || !t.exists) {
+    return screenHead('workspace') + '<div class="scroll">' +
+      emptyState('No workspace yet',
+        'A workspace is the project\'s directory on this host, mounted read-write at ' +
+        '/workspace in every sandbox. Repos you or the agent clone live here, and so does ' +
+        '.opslify/memory. It is created when the project first needs one.',
+        (t && t.path) ? t.path : 'opslify session create --project ' + (S.projectID || '<id>')) +
+      '</div>';
+  }
+  const entries = t.entries || [];
+  return screenHead('workspace', [entries.length + ' entr(ies)']) +
+    '<div class="capbar">this is a <b>listing</b> — names and sizes only · raw workspace ' +
+    'bytes never reach the browser, and credential-shaped files are withheld entirely</div>' +
+    '<div class="scroll">' +
+    '<div class="mcell" style="margin-bottom:14px;border:1px solid var(--border);border-radius:6px;">' +
+    '<div class="k">host path</div><div class="v">' + esc(t.path) + '</div></div>' +
+    '<table><thead><tr><th>path</th><th>kind</th><th>size</th></tr></thead><tbody>' +
+    entries.map((e) => '<tr><td class="mono">' + esc(e.rel) + (e.dir ? '/' : '') + '</td>' +
+      '<td>' + (e.dir ? 'dir' : 'file') + '</td>' +
+      '<td>' + (e.excluded
+        ? '<span class="badge warn">withheld — credential-shaped</span>'
+        : (e.dir ? '' : esc(fmtBytes(e.bytes)))) + '</td></tr>').join('') +
+    '</tbody></table>' +
+    '<p class="tag" style="margin-top:12px;">Everything here is visible to the sandbox at ' +
+    '/workspace and to you on the host. Nothing secret belongs in it — credentials live in ' +
+    'the vault and are injected at the egress proxy, never written here.</p>' +
+    '</div>';
 };
 
 SCREENS.memory = () => {
@@ -1634,6 +1708,75 @@ function addToolModal() {
     });
 }
 
+// addAgentModal offers the daemon's catalogue. The browser sends an ENTRY ID; the
+// daemon resolves the binary from its own compile-time list and probes it. A
+// caller cannot name a command, which is what makes this reachable from a page at
+// all — registering an agent runs it.
+function addAgentModal() {
+  const entries = S.catalogue;
+  if (!entries.length) {
+    modal('Connect an agent',
+      '<div class="err">The daemon returned no catalogue. It may be an older build.</div>' +
+      '<p class="hint">Register by path instead:</p>' +
+      '<div class="cli">opslify agent add claude --command /usr/bin/claude --arg mcp --arg serve \\<br>' +
+      '&nbsp;&nbsp;--flavour claude --locality hosted</div>',
+      'Close', async () => {});
+    return;
+  }
+  modal('Connect an agent',
+    '<p class="hint">opslify drives the agent you already have. Your subscription or API key ' +
+    'stays inside that CLI — the daemon never sees it, and never asks for one.</p>' +
+    '<div class="grid3" style="margin-bottom:14px;">' + entries.map((e) =>
+      '<div class="tool' + (e.found ? '' : ' off') + '" data-pickagent="' + esc(e.id) + '">' +
+      '<div class="top"><span class="box">✓</span><span class="nm">' + esc(e.title) + '</span></div>' +
+      '<div class="ds">' + esc(e.description) + '</div>' +
+      '<div class="im" style="color:var(--' + (e.found ? 'ok' : 'warn') + ');">' +
+      (e.found ? 'found: ' + esc(e.path) : 'not installed here') + '</div>' +
+      '<div class="im">' + (e.locality === 'local'
+        ? 'prompts stay on this host'
+        : 'command output goes off-host to the provider') + '</div>' +
+      '</div>').join('') + '</div>' +
+    '<label class="fld"><span class="lb">agent</span>' +
+    '<select id="m-aentry">' + entries.map((e) =>
+      '<option value="' + esc(e.id) + '"' + (e.found ? '' : ' disabled') + '>' +
+      esc(e.title) + (e.found ? '' : ' — not installed') + '</option>').join('') +
+    '</select></label>' +
+    '<label class="fld"><span class="lb">name in the registry</span>' +
+    '<input id="m-aname" class="mono" placeholder="(default)"></label>' +
+    '<label class="fld"><span class="lb">model</span>' +
+    '<input id="m-amodel" class="mono" placeholder="(default)">' +
+    '<span class="hint" id="m-ahelp"></span></label>' +
+    '<p class="hint">Connecting runs a real MCP handshake against the command before ' +
+    'anything is stored, so a broken install is reported now rather than at your first task. ' +
+    'It may take a few seconds.</p>',
+    'Connect', async () => {
+      const entry = $('m-aentry').value;
+      const out = await send('POST', '/v1/agents/install', {
+        entry,
+        name: $('m-aname').value.trim() || undefined,
+        model: $('m-amodel').value.trim() || undefined,
+      });
+      toast('connected ' + (out && out.name ? out.name : entry) +
+        ' — ' + (out && out.disclosure ? out.disclosure : ''), 'ok');
+    });
+  // Prefill from whichever entry is selected.
+  const sync = () => {
+    const e = entries.find((x) => x.id === ($('m-aentry') || {}).value);
+    if (!e) return;
+    if ($('m-amodel')) $('m-amodel').placeholder = e.default_model || '(default)';
+    if ($('m-ahelp')) $('m-ahelp').textContent = e.model_help || '';
+    document.querySelectorAll('[data-pickagent]').forEach((el) =>
+      el.classList.toggle('on', el.getAttribute('data-pickagent') === e.id));
+  };
+  const sel = $('m-aentry');
+  if (sel) {
+    const first = entries.find((e) => e.found);
+    if (first) sel.value = first.id;
+    sel.addEventListener('change', sync);
+  }
+  sync();
+}
+
 function newSessionModal() {
   const e = environment();
   modal('New sandbox',
@@ -1673,7 +1816,7 @@ document.addEventListener('click', async (ev) => {
     '[data-close],[data-newtab],[data-drawer],[data-killsession],[data-decide],[data-rmconn],' +
     '[data-dtab],[data-shellrun],[data-shellpop],[data-execdecide],' +
     '[data-ask],[data-chatstop],[data-chatclear],' +
-    '[data-memsearch],[data-memclear],[data-memtoggle],' +
+    '[data-memsearch],[data-memclear],[data-memtoggle],[data-pickagent],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-modalok],[data-modalcancel]');
@@ -1712,6 +1855,11 @@ document.addEventListener('click', async (ev) => {
     return;
   }
   if (a('data-memclear')) { S.memHits = null; S.memQuery = ''; render(); return; }
+  if (a('data-pickagent')) {
+    const sel = $('m-aentry');
+    if (sel) { sel.value = a('data-pickagent'); sel.dispatchEvent(new Event('change')); }
+    return;
+  }
   if (a('data-memtoggle')) {
     const doc = a('data-memtoggle'); const on = a('data-memon') === '1';
     await guard(async () => {
@@ -1732,6 +1880,7 @@ document.addEventListener('click', async (ev) => {
       env: addEnvModal, tool: addToolModal, conn: addConnModal,
       secret: addSecretModal, session: newSessionModal,
       policy: () => openTab('policy', null, 'policy'),
+      agent: addAgentModal,
     }[a('data-add')] || (() => toast('nothing to add there', 'bad')))();
     return;
   }

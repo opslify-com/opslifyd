@@ -114,6 +114,9 @@ func TestAllowlistedRoutesAreAdmitted(t *testing.T) {
 		// back out, which is the invariant that actually matters.
 		{http.MethodPost, "/v1/secrets"},
 		{http.MethodGet, "/v1/memory"},
+		{http.MethodGet, "/v1/workspace"},
+		{http.MethodGet, "/v1/agents/catalogue"},
+		{http.MethodPost, "/v1/agents/install"},
 		{http.MethodGet, "/v1/memory/search"},
 		{http.MethodPost, "/v1/memory/enable"},
 	} {
@@ -450,6 +453,7 @@ func TestEveryAllowlistedMutationIsOnTheDaemon(t *testing.T) {
 		"POST /v1/changes/*/decision":          true,
 		"POST /v1/policy/edit":                 true,
 		"POST /v1/memory/enable":               true,
+		"POST /v1/agents/install":              true,
 	}
 	for _, rt := range towerRoutes {
 		if rt.Method == http.MethodGet {
@@ -535,10 +539,27 @@ func TestTheExplorerOffersAnAddForEverySectionThatHasOne(t *testing.T) {
 			t.Fatal("the section header does not render a + at all")
 		}
 	}
-	// Agents deliberately have no +: registering one runs a command on the host.
-	if regexp.MustCompile(`esec\('Agents', [^,]+, '`).MatchString(js) {
-		t.Error("the Agents section offers a + — registering an agent runs a command " +
-			"on the host and must stay on the CLI")
+	// Agents DO have a +, and it must open the catalogue rather than a form that
+	// takes a command.
+	//
+	// The earlier version of this test asserted the section had no + at all, which
+	// was right while the only way to register was POST /v1/agents with a
+	// caller-supplied path. "Use the CLI" is a bad answer to "how do I connect
+	// Claude", so the browser now picks a catalogue ENTRY and the daemon resolves
+	// the binary from its own compile-time list. The property worth pinning is not
+	// the absence of a button — it is that the page never sends a command.
+	if !strings.Contains(js, "'/v1/agents/install'") {
+		t.Error("the cockpit does not use the catalogue install route")
+	}
+	for _, forbidden := range []string{
+		`'POST', '/v1/agents'`,
+		`"POST", "/v1/agents"`,
+		"command:", // no request body may carry a path to execute
+	} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("the cockpit contains %q — registering an agent runs the command it "+
+				"names, so the browser must never supply one", forbidden)
+		}
 	}
 }
 

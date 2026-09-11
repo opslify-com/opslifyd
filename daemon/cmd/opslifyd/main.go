@@ -848,6 +848,7 @@ func buildDaemonOptions(
 	if mem != nil {
 		memSvc = mem
 	}
+	wsList := daemon.NewWorkspaceLister(cfg.WorkspaceDir)
 	// A typed nil would make daemon.Options.AgentDriver non-nil and register the
 	// route against nothing; the first prompt would panic.
 	var drv daemon.AgentDriver
@@ -855,7 +856,7 @@ func buildDaemonOptions(
 		drv = agentDrv
 	}
 	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc,
-		conns, agentReg, drv, changes, editor, memSvc, log), nil
+		conns, agentReg, drv, changes, editor, memSvc, wsList, log), nil
 }
 
 // daemonOptions assembles the Options literal. Kept separate from
@@ -876,6 +877,7 @@ func daemonOptions(
 	changes daemon.ChangeService,
 	editor daemon.PolicyEditor,
 	mem daemon.MemoryService,
+	wsList daemon.WorkspaceLister,
 	log *slog.Logger,
 ) daemon.Options {
 	return daemon.Options{
@@ -899,6 +901,7 @@ func daemonOptions(
 		Changes:      changes,
 		PolicyEditor: editor,
 		Memory:       mem,
+		Workspaces:   wsList,
 		Ready:        sdNotifyReady,
 		Version:      version,
 		Logger:       log,
