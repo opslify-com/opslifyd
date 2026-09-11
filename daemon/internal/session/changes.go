@@ -104,6 +104,25 @@ func (s *Session) contextHash() string {
 	return s.assembly.Hash
 }
 
+// Instructions returns the session's assembled instruction set as text, plus its
+// hash, for DELIVERY to whatever is driving the session.
+//
+// Until this existed the assembly was computed, hashed into the trace, bound into
+// every Change — and handed to nobody. The house rules layer is the one that
+// makes the whole scheme worth having ("stop before touching db-01"), and no
+// agent had ever read it. A rule the model never sees is not a guardrail; it is a
+// note in a filing cabinet.
+//
+// Deliberately an accessor and not a field: Layer.Content is `json:"-"` so
+// instruction text cannot reach the trace by accident, and an Assembly that
+// exported its content would undo that the first time one was logged.
+func (s *Session) Instructions() (text, hash string) {
+	if s == nil || s.assembly == nil {
+		return "", ""
+	}
+	return s.assembly.Render(), s.assembly.Hash
+}
+
 // inverseForExec states honestly whether this command can be undone.
 //
 // The default is NO, with a reason. That asymmetry is deliberate: claiming

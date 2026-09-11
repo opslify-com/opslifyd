@@ -95,6 +95,16 @@ type createRequest struct {
 type createResponse struct {
 	SessionID string `json:"session_id"`
 	State     string `json:"state"`
+	// Instructions is the F8.4 assembled instruction set for this session's scope,
+	// rendered with per-layer provenance. Returned HERE rather than fetched later
+	// because an agent that has to know to ask will not ask: the house rules are
+	// the layer that makes the scheme worth having, and they have to arrive
+	// unprompted, at the moment the sandbox they govern comes into existence.
+	Instructions string `json:"instructions,omitempty"`
+	// InstructionsHash identifies the set. A second sandbox in the same scope
+	// returns the same hash, so a client can recognise the repeat instead of
+	// re-reading it.
+	InstructionsHash string `json:"instructions_hash,omitempty"`
 }
 
 // execRequest is the POST /v1/sessions/{id}/exec body.
@@ -301,7 +311,11 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		writeSessionError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, createResponse{SessionID: s.ID, State: string(s.State)})
+	instructions, hash := s.Instructions()
+	writeJSON(w, http.StatusCreated, createResponse{
+		SessionID: s.ID, State: string(s.State),
+		Instructions: instructions, InstructionsHash: hash,
+	})
 }
 
 // historyItem is one row of GET /v1/sessions/history: a cheap summary of a

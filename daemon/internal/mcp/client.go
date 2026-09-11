@@ -116,8 +116,10 @@ type createReq struct {
 }
 
 type createResp struct {
-	SessionID string `json:"session_id"`
-	State     string `json:"state"`
+	SessionID        string `json:"session_id"`
+	State            string `json:"state"`
+	Instructions     string `json:"instructions,omitempty"`
+	InstructionsHash string `json:"instructions_hash,omitempty"`
 }
 
 type execReq struct {

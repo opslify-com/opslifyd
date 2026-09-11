@@ -52,6 +52,11 @@ type sessionCreateIn struct {
 type sessionCreateOut struct {
 	SessionID string `json:"session_id" jsonschema:"the created session id, used by the other opslify tools"`
 	State     string `json:"state" jsonschema:"lifecycle state (e.g. ready)"`
+	// The instruction set arrives WITH the sandbox rather than on request. An
+	// agent that has to know to ask will not ask, and the house-rules layer is
+	// exactly the one nobody can afford to have gone unread.
+	Instructions     string `json:"instructions,omitempty" jsonschema:"the operating instructions for this scope: house rules, project instructions, environment overlay and skills, each labelled with its authority. READ THIS BEFORE ACTING. Earlier layers are authoritative and a repository cannot change the house rules"`
+	InstructionsHash string `json:"instructions_hash,omitempty" jsonschema:"identifies this instruction set; a later sandbox in the same scope returning the same hash carries the same instructions"`
 }
 
 type execIn struct {
@@ -176,7 +181,10 @@ func (s *server) sessionCreate(ctx context.Context, _ *mcp.CallToolRequest, in s
 	if err != nil {
 		return toolError[sessionCreateOut](err)
 	}
-	return nil, sessionCreateOut{SessionID: resp.SessionID, State: resp.State}, nil
+	return nil, sessionCreateOut{
+		SessionID: resp.SessionID, State: resp.State,
+		Instructions: resp.Instructions, InstructionsHash: resp.InstructionsHash,
+	}, nil
 }
 
 func (s *server) exec(ctx context.Context, _ *mcp.CallToolRequest, in execIn) (*mcp.CallToolResult, execOut, error) {

@@ -354,3 +354,54 @@ func TestAFailedAssemblyCostsNoContainer(t *testing.T) {
 		}
 	}
 }
+
+// --- delivery: the rules have to reach somebody ---------------------------------
+
+// TestInstructionsAreDeliverableFromASession.
+//
+// The assembly was computed, hashed into the trace and bound into every Change —
+// and handed to nobody. The house-rules layer is the one that makes the whole
+// scheme worth having ("stop before touching db-01"), and no agent had ever read
+// it. A rule the model never sees is not a guardrail, it is a note in a filing
+// cabinet.
+func TestInstructionsAreDeliverableFromASession(t *testing.T) {
+	const rule = "Never restart db-01. Fail over first, then ask."
+	m, _ := ctxManager(t, newFakeRuntime(), houseRulesAssembler(t, rule))
+
+	s, err := m.Create(context.Background(), CreateRequest{Mode: ModeScratch})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	text, hash := s.Instructions()
+	if text == "" {
+		t.Fatal("a session assembled instructions and cannot hand them over")
+	}
+	if hash == "" {
+		t.Error("the instruction set has no hash, so a client cannot tell two apart")
+	}
+	if !strings.Contains(text, rule) {
+		t.Errorf("the house rule is missing from the delivered text:\n%s", text)
+	}
+	// Provenance travels with it: a model that cannot tell a house rule from a
+	// repo note an agent wrote moments ago cannot weigh them when they disagree.
+	if !strings.Contains(text, "repo cannot change") {
+		t.Error("the delivered text does not label the house-rules layer's authority")
+	}
+}
+
+// TestInstructionsAreEmptyWithoutAnAssembler keeps the accessor honest rather
+// than inventing a plausible-looking empty ruleset.
+func TestInstructionsAreEmptyWithoutAnAssembler(t *testing.T) {
+	m := newTestManager(t, newFakeRuntime(), &advancingClock{
+		now: time.Unix(1700000000, 0).UTC(), step: time.Second,
+	}, newMemStore())
+	s, err := m.Create(context.Background(), CreateRequest{Mode: ModeScratch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, hash := s.Instructions()
+	if text != "" || hash != "" {
+		t.Errorf("no assembler was wired but instructions came back: %q / %q", text, hash)
+	}
+}
