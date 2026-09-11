@@ -88,7 +88,7 @@ var opslifyTools = []string{
 var hostTools = []string{
 	// Shell and filesystem.
 	"Bash", "BashOutput", "KillShell", "Read", "Write", "Edit", "MultiEdit",
-	"NotebookEdit", "Glob", "Grep", "ListDir",
+	"NotebookEdit", "Glob", "Grep",
 	// Network.
 	"WebFetch", "WebSearch",
 	// Delegation. The sharpest of these: a subagent is a fresh session, and a
@@ -240,24 +240,42 @@ func pump(r io.Reader, stream string, sink RunSink) {
 // permissions it does not need to worry about, or promises host changes it
 // cannot make.
 func preamble(req RunRequest) string {
-	scope := req.EnvironmentID
-	if scope == "" {
-		scope = req.ProjectID
+	// The scope instruction is the load-bearing line. Everything that makes a
+	// sandbox useful for a particular estate — its connections, its secrets, its
+	// egress allowlist, its instruction set — resolves on (project, environment).
+	// An agent that creates a sandbox without them gets the default project, which
+	// has none of it, and that failure is invisible: the sandbox starts fine and
+	// the first credentialed request simply fails as though the token were wrong.
+	scope := ""
+	if req.ProjectID != "" {
+		scope = "\nYou are working in project \"" + req.ProjectID + "\""
+		if req.EnvironmentID != "" {
+			scope += ", environment \"" + req.EnvironmentID + "\""
+		}
+		scope += ".\n\nEVERY call to opslify_session_create MUST pass project=\"" + req.ProjectID + "\""
+		if req.EnvironmentID != "" {
+			scope += " and environment=\"" + req.EnvironmentID + "\""
+		}
+		scope += ". A sandbox created without them lands in the default project and " +
+			"silently has none of this estate's connections, secrets or egress rules — " +
+			"it will start normally and then fail to reach anything.\n"
+	} else {
+		scope = "\nNo project was specified, so sandboxes will use the default project. " +
+			"It has no connections or secrets configured.\n"
 	}
-	if scope == "" {
-		scope = "the default project"
-	}
+
 	return "You are operating through opslify.\n\n" +
 		"You have NO host shell and NO host filesystem access. Your only tools are " +
 		"opslify's: create a sandbox, exec inside it, and move files through its " +
 		"/workspace. Everything you run happens in a hardened container with " +
-		"default-deny egress.\n\n" +
-		"Credentials are never given to you. A connection is referenced by name and " +
+		"default-deny egress.\n" +
+		scope +
+		"\nCredentials are never given to you. A connection is referenced by name and " +
 		"the daemon injects the value at the egress proxy, so an allowlisted host " +
-		"will authenticate without you ever holding a token. Do not ask for one.\n\n" +
+		"will authenticate without you ever holding a token. Do not ask for one, and " +
+		"do not try to read one — there is no route that returns one.\n\n" +
 		"Commands matching an approval gate will PAUSE rather than run. That is " +
 		"normal; report the pause and stop rather than trying to work around it.\n\n" +
-		"Scope: " + scope + "\n\n" +
 		"Task:\n" + req.Prompt
 }
 

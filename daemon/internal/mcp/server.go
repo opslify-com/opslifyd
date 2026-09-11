@@ -42,6 +42,11 @@ type sessionCreateIn struct {
 	Name  string `json:"name,omitempty" jsonschema:"workspace name (required for mode=workspace); persists /workspace + resumes deps across sessions. [a-z0-9][a-z0-9_-]*"`
 	Image string `json:"image,omitempty" jsonschema:"reserved; the daemon pins the sandbox image from its signed config, so this is currently ignored"`
 	TTL   string `json:"ttl,omitempty" jsonschema:"idle lifetime as a Go duration (e.g. 30m); empty uses the daemon default"`
+	// The scope. Without it the sandbox lands in the default project and has none
+	// of the estate's policy, connections, secrets or instructions — which looks
+	// identical to a working sandbox right up until the agent needs a credential.
+	Project     string `json:"project,omitempty" jsonschema:"project id this sandbox belongs to (e.g. tripon). Determines which connections, secrets and policy apply; omitting it uses the default project, which has none of them"`
+	Environment string `json:"environment,omitempty" jsonschema:"environment within the project, full id (tripon.prod) or bare name (prod)"`
 }
 
 type sessionCreateOut struct {
@@ -121,8 +126,11 @@ func NewServer(opts Options) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "opslify", Version: version}, nil)
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "opslify_session_create",
-		Description: "Create a hardened sandbox session and return its id. Use this before exec/upload/download.",
+		Name: "opslify_session_create",
+		Description: "Create a hardened sandbox session and return its id. Use this before exec/upload/download. " +
+			"PASS THE PROJECT AND ENVIRONMENT you were told to work in: the connections, secrets, " +
+			"egress rules and instructions for an estate resolve on that scope, and a sandbox " +
+			"created without it silently gets none of them.",
 	}, s.sessionCreate)
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -161,7 +169,10 @@ func toolError[Out any](err error) (*mcp.CallToolResult, Out, error) {
 }
 
 func (s *server) sessionCreate(ctx context.Context, _ *mcp.CallToolRequest, in sessionCreateIn) (*mcp.CallToolResult, sessionCreateOut, error) {
-	resp, err := s.c.createSession(ctx, createReq{Mode: in.Mode, Name: in.Name, TTL: in.TTL})
+	resp, err := s.c.createSession(ctx, createReq{
+		Mode: in.Mode, Name: in.Name, TTL: in.TTL,
+		Project: in.Project, Environment: in.Environment,
+	})
 	if err != nil {
 		return toolError[sessionCreateOut](err)
 	}

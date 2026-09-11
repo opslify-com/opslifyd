@@ -202,6 +202,42 @@ func TestThePreambleStatesTheConstraints(t *testing.T) {
 	}
 }
 
+// TestThePreambleDemandsTheScopeOnEverySandbox.
+//
+// This is the load-bearing instruction. Connections, secrets, egress rules and
+// the instruction set all resolve on (project, environment); a sandbox created
+// without them lands in the default project and has none of it. The failure is
+// invisible — the sandbox starts normally and the first credentialed request just
+// fails as though the token were wrong — so the agent has to be told, in the
+// imperative, on every run.
+func TestThePreambleDemandsTheScopeOnEverySandbox(t *testing.T) {
+	p := preamble(testReq())
+	for _, want := range []string{
+		"opslify_session_create",
+		`project="tripon"`,
+		`environment="tripon.prod"`,
+		"MUST",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the preamble does not contain %q — an agent that omits the scope "+
+				"gets a sandbox with none of the estate's connections or secrets", want)
+		}
+	}
+}
+
+// TestThePreambleIsHonestWithNoProject: silence would read as "scoped correctly".
+func TestThePreambleIsHonestWithNoProject(t *testing.T) {
+	req := testReq()
+	req.ProjectID, req.EnvironmentID = "", ""
+	p := preamble(req)
+	if !strings.Contains(p, "default project") {
+		t.Error("with no project the preamble should say so, and say what that costs")
+	}
+	if strings.Contains(p, "MUST pass project") {
+		t.Error("it demands a scope that was never supplied")
+	}
+}
+
 // --- refusals --------------------------------------------------------------------
 
 func TestAnAgentWithNoFlavourCannotBeDriven(t *testing.T) {

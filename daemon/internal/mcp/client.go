@@ -106,6 +106,13 @@ type createReq struct {
 	Mode string `json:"mode,omitempty"`
 	Name string `json:"name,omitempty"`
 	TTL  string `json:"ttl,omitempty"`
+	// Project / Environment place the sandbox in an F8.1 scope. Everything that
+	// makes a sandbox useful for a particular estate resolves on these: the
+	// policy in force, the connections attached, the secrets reachable, and the
+	// F8.4 instruction set. Omitting them is not "unscoped" — it is the DEFAULT
+	// project, which has none of the above.
+	Project     string `json:"project,omitempty"`
+	Environment string `json:"environment,omitempty"`
 }
 
 type createResp struct {
