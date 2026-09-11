@@ -152,6 +152,7 @@ const S = {
   draftFocus: false,
   bindings: [],
   memory: [],
+  skills: [],
   tree: null,
   catalogue: [],
   memHits: null,
@@ -250,14 +251,16 @@ async function loadAll() {
   // ?project= as undefined on the very first load, which read the DEFAULT
   // project's memory and rendered "no documents" over a populated one.
   const scope = S.projectID ? '?project=' + encodeURIComponent(S.projectID) : '';
-  const [memoryList, tree, catalogue] = await Promise.all([
+  const [memoryList, tree, catalogue, skillList] = await Promise.all([
     get('/v1/memory' + scope, null),
     get('/v1/workspace' + scope, null),
     get('/v1/agents/catalogue', null),
+    get('/v1/docs?kind=skill' + (S.projectID ? '&project=' + encodeURIComponent(S.projectID) : ''), null),
   ]);
   S.memory = (memoryList && memoryList.documents) || [];
   S.tree = tree;
   S.catalogue = (catalogue && catalogue.entries) || [];
+  S.skills = (skillList && skillList.docs) || [];
 }
 
 async function refresh() {
@@ -413,13 +416,25 @@ function renderSide() {
     '<span class="rt">' + esc(x.provider || '') + '</span></div>').join('')
     : noneRow('none stored');
 
+  // --- skills -----------------------------------------------------------------
+  // Skills had no section at all: they are read from the workspace by F8.4 and
+  // were visible nowhere, so the only way to know what rules an agent was running
+  // under was to look in the directory.
+  html += esec('Skills', S.skills.length, 'skilldoc', 'skills');
+  html += S.skills.length ? S.skills.map((d) =>
+    '<div class="row" data-editdoc="skill:' + esc(d.path) + '">' +
+    '<span class="kd">md</span><span class="nm" title="' + esc(d.path) + '">' +
+    esc(d.path.replace(/\.md$/, '')) + '</span>' +
+    '<span class="rt">' + esc(fmtBytes(d.bytes)) + '</span></div>').join('')
+    : noneRow('no skills yet');
+
   // --- memory -----------------------------------------------------------------
   // No + that uploads. Memory is a folder of reviewed files in the project's
   // workspace; a button that wrote one would be a second, unreviewed path into
   // what the agent reads.
-  html += esec('Memory', S.memory.length, null, 'memory');
+  html += esec('Memory', S.memory.length, 'memorydoc', 'memory');
   html += S.memory.length ? S.memory.slice(0, 8).map((d) =>
-    '<div class="row" data-open="memory"><span class="kd">md</span>' +
+    '<div class="row" data-editdoc="memory:' + esc(d.rel) + '"><span class="kd">md</span>' +
     '<span class="nm" title="' + esc(d.rel) + '">' + esc(d.title || d.rel) + '</span>' +
     '<span class="rt" style="color:var(--' + (d.enabled ? 'muted' : 'danger') + ');">' +
     (d.enabled ? d.chunks + ' ch' : 'off') + '</span></div>').join('')
@@ -1152,10 +1167,33 @@ SCREENS.workspace = () => {
     '</div>';
 };
 
+SCREENS.skills = () => {
+  const docs = S.skills;
+  return screenHead('skills', [docs.length + ' rule file(s)'],
+    '<button class="primary" data-add="skilldoc">New skill</button>') +
+    '<div class="capbar">a skill is <b>injected into every session</b> for this project · ' +
+    'keep them short — every line costs context on every task · a document the agent might ' +
+    'merely need to look up belongs in <b>memory</b> instead</div>' +
+    '<div class="scroll">' + (docs.length
+      ? '<table><thead><tr><th>file</th><th>bytes</th><th></th></tr></thead><tbody>' +
+        docs.map((d) => '<tr><td class="mono">' + esc(d.path) + '</td>' +
+          '<td>' + esc(fmtBytes(d.bytes)) + '</td>' +
+          '<td><button class="sm" data-editdoc="skill:' + esc(d.path) + '">edit</button> ' +
+          '<button class="sm danger" data-rmdoc="skill:' + esc(d.path) + '">rm</button></td>' +
+          '</tr>').join('') + '</tbody></table>'
+      : emptyState('No skills yet',
+          'A skill is a rule the agent must always follow — "always use --context ' +
+          'tripon-staging", "never delete a namespace". One file per tool reads well.',
+          'opslify doc write --kind skill kubernetes.md < kubernetes.md',
+          '<button class="primary lg" data-add="skilldoc">Write the first one</button>')) +
+    '</div>';
+};
+
 SCREENS.memory = () => {
   const docs = S.memory;
   const hits = S.memHits;
-  return screenHead('memory', [docs.length + ' document(s)']) +
+  return screenHead('memory', [docs.length + ' document(s)'],
+    '<button class="primary" data-add="memorydoc">New document</button>') +
     '<div class="capbar">memory is <b>retrieved, not injected</b> — the agent searches it and ' +
     'cites what it used · a rule it must always follow is a <b>skill</b>; a document it might ' +
     'need to consult is <b>memory</b></div>' +
@@ -1192,18 +1230,23 @@ SCREENS.memory = () => {
           '<td>' + esc(String(d.bytes)) + '</td>' +
           '<td>' + (d.enabled ? '<span class="badge ok">enabled</span>'
                               : '<span class="badge danger">disabled</span>') + '</td>' +
-          '<td><button class="sm" data-memtoggle="' + esc(d.rel) + '" ' +
+          '<td><button class="sm" data-editdoc="memory:' + esc(d.rel) + '">edit</button> ' +
+          '<button class="sm" data-memtoggle="' + esc(d.rel) + '" ' +
           'data-memon="' + (d.enabled ? '0' : '1') + '">' +
-          (d.enabled ? 'disable' : 'enable') + '</button></td></tr>').join('') +
+          (d.enabled ? 'disable' : 'enable') + '</button> ' +
+          '<button class="sm danger" data-rmdoc="memory:' + esc(d.rel) + '">rm</button>' +
+          '</td></tr>').join('') +
         '</tbody></table>'
       : emptyState('No memory documents',
           'Put markdown in the project workspace under .opslify/memory/ (or .claude/memory/, ' +
           'docs/memory/, memory/) and it is indexed on the next search. Clone it with the repo ' +
           'so the runbooks travel with the code.',
-          'opslify memory ls --project ' + (S.projectID || '<id>'))) +
-    '<p class="tag" style="margin-top:14px;">There is no upload button, deliberately. Memory is ' +
-    'reviewed files in the repository; a second path into what the agent reads would be a way ' +
-    'around that review. The agent can search this and nothing else — it has no write path.</p>' +
+          'opslify doc write --kind memory runbooks/deploy.md < deploy.md',
+          '<button class="primary lg" data-add="memorydoc">Write the first one</button>')) +
+    '<p class="tag" style="margin-top:14px;">These are files in the project workspace, so they ' +
+    'version and review like code — you can equally write them in your editor. The AGENT can ' +
+    'search this and nothing else: it has no write path, because one would let it author its ' +
+    'own future justifications.</p>' +
     '</div>';
 };
 
@@ -2029,6 +2072,86 @@ function toolCredModal(toolID) {
     });
 }
 
+// docEditor is the cockpit's markdown editor for the three document kinds a
+// project is made of.
+//
+// It reaches .opslify/{skills,memory} and the instructions file — nothing else.
+// The cloned repositories stay unreachable, which is the difference between this
+// and a file browser, and the reason it can exist at all: F3.6 keeps RAW
+// workspace bytes out of a browser because a page must never read what the AGENT
+// wrote, and these are documents the OPERATOR typed.
+const DOC_KINDS = {
+  skill: {
+    title: 'skill',
+    blurb: 'A rule the agent must ALWAYS follow. Injected into every session for ' +
+      'this project, so keep it short — every line costs context on every task.',
+    placeholder: 'kubernetes.md',
+    template: '# Kubernetes\n\nAlways use --context tripon-staging unless told otherwise.\n' +
+      'Never delete a namespace: the PVCs are not recreated.\n',
+  },
+  memory: {
+    title: 'memory document',
+    blurb: 'Something the agent might need to LOOK UP: a runbook, an incident ' +
+      'write-up, an architecture note. Retrieved on demand and cited, so a corpus ' +
+      'costs nothing until a task matches it. Subdirectories are fine.',
+    placeholder: 'runbooks/deploy.md',
+    template: '# Deploying\n\n## Prerequisites\n\n## Rollback\n\n## Contacts\n',
+  },
+  instructions: {
+    title: 'project instructions',
+    blurb: 'Project-wide behaviour, one file. Injected like a skill.',
+    placeholder: 'instructions.md',
+    template: '# Project instructions\n\n',
+  },
+};
+
+function docEditor(kind, path) {
+  const k = DOC_KINDS[kind] || DOC_KINDS.memory;
+  const editing = !!path;
+  const open = (content) => {
+    modal((editing ? 'Edit ' : 'New ') + k.title,
+      '<p class="hint">' + k.blurb + '</p>' +
+      (kind === 'instructions'
+        ? ''
+        : '<label class="fld"><span class="lb">file name</span>' +
+          '<input id="m-dpath" class="mono" value="' + esc(path || '') + '" ' +
+          (editing ? 'disabled ' : '') + 'placeholder="' + esc(k.placeholder) + '">' +
+          '<span class="hint">Must end in .md' +
+          (kind === 'memory' ? '. Use a subdirectory to organise: runbooks/deploy.md' : '') +
+          '</span></label>') +
+      '<label class="fld"><span class="lb">markdown</span>' +
+      '<textarea id="m-dbody" class="mono" rows="18" spellcheck="false">' +
+      esc(content) + '</textarea></label>' +
+      '<p class="hint">Saved into the project workspace. It takes effect on the next ' +
+      'session — memory on the next search, a skill on the next sandbox.</p>',
+      'Save', async () => {
+        const p = kind === 'instructions'
+          ? 'instructions.md'
+          : ($('m-dpath') ? $('m-dpath').value.trim() : path);
+        const body = $('m-dbody').value;
+        if (!p) throw new Error('a file name is required');
+        if (!body.trim()) throw new Error('an empty document would silently blank this one');
+        await send('PUT', '/v1/docs', {
+          project: S.projectID || undefined, kind, path: p, content: body,
+        });
+        toast('saved ' + p, 'ok');
+      });
+    // A markdown editor should not be a three-line box.
+    const box = $('m-dbody');
+    if (box) { box.style.minHeight = '340px'; box.style.fontSize = '12px'; box.focus(); }
+  };
+
+  if (!editing) { open(k.template); return; }
+  // Fetch before opening, so the box is never briefly empty over a real document —
+  // a save from that state would blank it.
+  guard(async () => {
+    const d = await api('/v1/docs/read?kind=' + encodeURIComponent(kind) +
+      '&path=' + encodeURIComponent(path) +
+      (S.projectID ? '&project=' + encodeURIComponent(S.projectID) : ''));
+    open((d && d.content) || '');
+  });
+}
+
 function newSessionModal() {
   const e = environment();
   modal('New sandbox',
@@ -2069,7 +2192,7 @@ document.addEventListener('click', async (ev) => {
     '[data-dtab],[data-shellrun],[data-shellpop],[data-execdecide],' +
     '[data-ask],[data-chatstop],[data-chatclear],' +
     '[data-memsearch],[data-memclear],[data-memtoggle],[data-pickagent],[data-toolcred],' +
-    '[data-buildtc],' +
+    '[data-buildtc],[data-editdoc],[data-rmdoc],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-modalok],[data-modalcancel]');
@@ -2113,6 +2236,23 @@ document.addEventListener('click', async (ev) => {
   }
   if (a('data-memclear')) { S.memHits = null; S.memQuery = ''; render(); return; }
   if (a('data-toolcred')) { toolCredModal(a('data-toolcred')); return; }
+  if (a('data-editdoc')) {
+    const [kind, ...rest] = a('data-editdoc').split(':');
+    docEditor(kind, rest.join(':'));
+    return;
+  }
+  if (a('data-rmdoc')) {
+    const [kind, ...rest] = a('data-rmdoc').split(':');
+    const path = rest.join(':');
+    await guard(async () => {
+      await send('DELETE', '/v1/docs?kind=' + encodeURIComponent(kind) +
+        '&path=' + encodeURIComponent(path) +
+        (S.projectID ? '&project=' + encodeURIComponent(S.projectID) : ''));
+      toast('removed ' + path, 'ok');
+      await refresh();
+    });
+    return;
+  }
   if (a('data-buildtc')) {
     const p = project();
     if (!p) return;
@@ -2151,6 +2291,8 @@ document.addEventListener('click', async (ev) => {
       secret: addSecretModal, session: newSessionModal,
       policy: () => openTab('policy', null, 'policy'),
       agent: addAgentModal,
+      skilldoc: () => docEditor('skill'),
+      memorydoc: () => docEditor('memory'),
     }[a('data-add')] || (() => toast('nothing to add there', 'bad')))();
     return;
   }

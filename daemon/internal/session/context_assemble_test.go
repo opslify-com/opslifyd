@@ -300,9 +300,12 @@ func TestContextIsAssembledBeforeTheContainerExists(t *testing.T) {
 
 	assembler := func(projectID, envID, wsDir string) (*agentcontext.Assembly, error) {
 		events = append(events, "context.assemble")
-		// The workspace must be READABLE at this point — that is the whole claim.
+		// The root must be readable at this point when it exists — that is the
+		// claim. A project that has never had a workspace created is a normal
+		// starting state and assembling from a missing directory is not an error,
+		// so absence is allowed and only an unreadable one is a failure.
 		if wsDir != "" {
-			if _, err := os.Stat(wsDir); err != nil {
+			if _, err := os.Stat(wsDir); err != nil && !os.IsNotExist(err) {
 				t.Errorf("workspace %s is not readable when the context is assembled: %v", wsDir, err)
 			}
 		}
@@ -403,5 +406,37 @@ func TestInstructionsAreEmptyWithoutAnAssembler(t *testing.T) {
 	text, hash := s.Instructions()
 	if text != "" || hash != "" {
 		t.Errorf("no assembler was wired but instructions came back: %q / %q", text, hash)
+	}
+}
+
+// TestContextComesFromTheProjectWorkspaceNotTheSessionOne.
+//
+// A scratch session's workspace is a fresh empty <root>/<session-id>. A project's
+// skills and instructions.md live in ITS workspace. Assembling from the session's
+// directory meant the rules loaded for workspace-mode sessions and silently
+// vanished for scratch ones — the agent ran without them on exactly the short
+// tasks people run most, and nothing reported it.
+func TestContextComesFromTheProjectWorkspaceNotTheSessionOne(t *testing.T) {
+	var sawRoot string
+	assembler := func(projectID, envID, root string) (*agentcontext.Assembly, error) {
+		sawRoot = root
+		return &agentcontext.Assembly{}, nil
+	}
+	m, _ := ctxManager(t, newFakeRuntime(), assembler)
+
+	s, err := m.Create(context.Background(), CreateRequest{Mode: ModeScratch})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sawRoot == "" {
+		t.Fatal("the assembler was never called")
+	}
+	// The session id must not appear: that would be the ephemeral scratch dir.
+	if strings.Contains(sawRoot, s.ID) {
+		t.Fatalf("context assembled from the session's own scratch directory (%s); a "+
+			"project's skills do not live there", sawRoot)
+	}
+	if !strings.Contains(sawRoot, "ws-") {
+		t.Errorf("context root %q is not a project workspace", sawRoot)
 	}
 }

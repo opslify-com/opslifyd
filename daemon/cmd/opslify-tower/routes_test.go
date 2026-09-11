@@ -115,6 +115,10 @@ func TestAllowlistedRoutesAreAdmitted(t *testing.T) {
 		// back out, which is the invariant that actually matters.
 		{http.MethodPost, "/v1/secrets"},
 		{http.MethodGet, "/v1/memory"},
+		{http.MethodGet, "/v1/docs"},
+		{http.MethodGet, "/v1/docs/read"},
+		{http.MethodPut, "/v1/docs"},
+		{http.MethodDelete, "/v1/docs"},
 		{http.MethodGet, "/v1/workspace"},
 		{http.MethodGet, "/v1/agents/catalogue"},
 		{http.MethodPost, "/v1/agents/install"},
@@ -456,6 +460,8 @@ func TestEveryAllowlistedMutationIsOnTheDaemon(t *testing.T) {
 		"POST /v1/policy/edit":                 true,
 		"POST /v1/memory/enable":               true,
 		"POST /v1/agents/install":              true,
+		"PUT /v1/docs":                         true,
+		"DELETE /v1/docs":                      true,
 	}
 	for _, rt := range towerRoutes {
 		if rt.Method == http.MethodGet {

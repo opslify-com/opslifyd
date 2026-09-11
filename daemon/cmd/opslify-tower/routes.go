@@ -90,6 +90,18 @@ var towerRoutes = []towerRoute{
 	{http.MethodGet, "/v1/memory/search", "opslify memory search <query>", entitle.FeatureCockpit},
 	{http.MethodPost, "/v1/memory/enable", "opslify memory enable|disable <doc>", entitle.FeatureCockpit},
 
+	// The document surface: the markdown a project is MADE of — its skills, its
+	// memory, its instructions file. Writable from the cockpit, which is a
+	// deliberate narrowing of F3.6 rather than a hole in it: that control keeps
+	// RAW workspace bytes out of a browser, and the surface it protects is
+	// whatever the agent cloned. These routes reach three known directories of
+	// operator-authored markdown under .opslify/ and nothing else — the same
+	// content memory search already returns excerpts of.
+	{http.MethodGet, "/v1/docs", "opslify doc ls --kind <k>", entitle.FeatureCockpit},
+	{http.MethodGet, "/v1/docs/read", "opslify doc cat <path>", entitle.FeatureCockpit},
+	{http.MethodPut, "/v1/docs", "opslify doc write <path>", entitle.FeatureCockpit},
+	{http.MethodDelete, "/v1/docs", "opslify doc rm <path>", entitle.FeatureCockpit},
+
 	// --- reads that the cockpit's own screens need --------------------------
 	{http.MethodGet, "/v1/health", "opslify status", entitle.FeatureCockpit},
 	{http.MethodGet, "/v1/sessions/history", "opslify session history", entitle.FeatureCockpit},

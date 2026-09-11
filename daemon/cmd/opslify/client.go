@@ -1751,3 +1751,81 @@ func (c *client) buildToolchain(ctx context.Context, projectID string, tools []s
 	}
 	return out, json.NewDecoder(resp.Body).Decode(&out)
 }
+
+// --- project documents (skills, memory, instructions) ----------------------------
+
+type docView struct {
+	Kind     string `json:"kind"`
+	Path     string `json:"path"`
+	Bytes    int    `json:"bytes"`
+	Modified string `json:"modified"`
+	Content  string `json:"content,omitempty"`
+}
+
+type docListView struct {
+	Project string    `json:"project"`
+	Kind    string    `json:"kind"`
+	Docs    []docView `json:"docs"`
+}
+
+func docQuery(project, kind, path string) string {
+	q := "?kind=" + url.QueryEscape(kind)
+	if project != "" {
+		q += "&project=" + url.QueryEscape(project)
+	}
+	if path != "" {
+		q += "&path=" + url.QueryEscape(path)
+	}
+	return q
+}
+
+func (c *client) docList(ctx context.Context, project, kind string) (docListView, error) {
+	var out docListView
+	return out, c.getJSON(ctx, c.baseURL+"/v1/docs"+docQuery(project, kind, ""), &out)
+}
+
+func (c *client) docRead(ctx context.Context, project, kind, path string) (docView, error) {
+	var out docView
+	return out, c.getJSON(ctx, c.baseURL+"/v1/docs/read"+docQuery(project, kind, path), &out)
+}
+
+func (c *client) docWrite(ctx context.Context, project, kind, path, content string) (docView, error) {
+	var out docView
+	body, _ := json.Marshal(struct {
+		Project string `json:"project,omitempty"`
+		Kind    string `json:"kind"`
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}{project, kind, path, content})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/v1/docs", bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, c.decodeError(resp)
+	}
+	return out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
+func (c *client) docDelete(ctx context.Context, project, kind, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		c.baseURL+"/v1/docs"+docQuery(project, kind, path), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
+}

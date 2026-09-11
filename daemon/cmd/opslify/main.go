@@ -73,6 +73,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(agentCmd())
 	root.AddCommand(changeCmd())
 	root.AddCommand(memoryCmd())
+	root.AddCommand(docCmd())
 	return root
 }
 

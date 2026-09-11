@@ -768,9 +768,26 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	// .opslify/instructions.md: permission denied" — for a file that was merely
 	// absent. Reading the workspace before anything else has claimed it is also
 	// cheaper: a bad source now costs no container at all.
+	// Assembled from the PROJECT's workspace, not the session's.
+	//
+	// Those are different directories and conflating them was a real bug: a
+	// scratch session gets a fresh empty <root>/<session-id>, so a project's
+	// skills and instructions.md — which live in its workspace — loaded for
+	// workspace-mode sessions and silently vanished for scratch ones. The agent
+	// ran without the rules on exactly the short tasks people run most, and
+	// nothing said so.
+	//
+	// An instruction set belongs to the project. The scratch directory is
+	// ephemeral working space and has never held one.
+	ctxRoot := wsDir
+	if scope.workspacePath != "" {
+		ctxRoot = scope.workspacePath
+	} else if m.cfg.WorkspaceRoot != "" && scope.projectID != "" {
+		ctxRoot = filepath.Join(m.cfg.WorkspaceRoot, "ws-"+scope.projectID)
+	}
 	var assembly *agentcontext.Assembly
 	if m.assembleContext != nil {
-		a, err := m.assembleContext(scope.projectID, scope.envID, wsDir)
+		a, err := m.assembleContext(scope.projectID, scope.envID, ctxRoot)
 		if err != nil {
 			m.cleanupWorkspace(wsDir)
 			return nil, fmt.Errorf("session: assemble agent context: %w", err)
