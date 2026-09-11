@@ -141,7 +141,26 @@ const S = {
   // — the daemon owns the durable record of what an agent actually DID (the
   // trace), and a second half-copy of it here would just be a way to disagree.
   chat: { turns: [], busy: false },
+  bindings: [],
 };
+
+// resolveBinding applies F8.5's precedence: the most specific binding wins, and
+// "_fallback" is the daemon-wide default.
+//
+// The API returns `bindings` as scope→agent pairs. The first version of this read
+// a `bound` field that has never existed on any response, so boundAgent was
+// always null and the composer was permanently disabled with "No agent is bound"
+// — while `opslify agent ls` showed one bound perfectly well.
+function resolveBinding() {
+  const env = S.envID;
+  const byScope = {};
+  for (const b of S.bindings) byScope[b.scope] = b.agent;
+  const name = (env && byScope[env]) ||
+    (S.projectID && byScope[S.projectID]) ||
+    byScope._fallback || null;
+  if (!name) return null;
+  return S.agents.find((a) => a.name === name) || null;
+}
 
 const project = () => S.projects.find((p) => p.id === S.projectID) || null;
 const environment = () => {
@@ -196,7 +215,8 @@ async function loadAll() {
   S.secrets = secrets || [];
   S.consumers = consumers || [];
   S.agents = (agents && agents.agents) || [];
-  S.boundAgent = (agents && agents.bound) || S.agents.find((a) => a.bound) || null;
+  S.bindings = (agents && agents.bindings) || [];
+  S.boundAgent = resolveBinding();
   S.changes = changes || [];
   S.policy = policy;
   S.health = health;
