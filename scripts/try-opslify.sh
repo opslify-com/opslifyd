@@ -52,6 +52,18 @@ fi
 # ---------------------------------------------------------------------------
 # 1. Build
 # ---------------------------------------------------------------------------
+# Re-running is the normal case — you rebuild, you look again. The seed steps
+# below are creates, and a create against state from the last run fails ("project
+# already exists"), which read as the script being broken rather than as leftovers.
+# So a second run starts from a clean directory unless asked not to.
+if [[ -d "$ROOT" && "${OPSLIFY_TRY_KEEP:-}" != "1" ]]; then
+  say "found a previous instance at $ROOT — resetting it"
+  say "(set OPSLIFY_TRY_KEEP=1 to keep its state and skip seeding)"
+  stop_all
+  sleep 0.3
+  rm -rf "$ROOT"
+fi
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -d "$REPO/daemon" ]] || die "run this from a checkout: $REPO/daemon not found"
 command -v go >/dev/null || die "go is required to build (this script builds from source)"
@@ -125,6 +137,11 @@ grep -E '"msg":"F8|"msg":"listening' "$ROOT/daemon.log" \
 # ---------------------------------------------------------------------------
 # 4. Seed something worth looking at
 # ---------------------------------------------------------------------------
+if o project show tripon >/dev/null 2>&1; then
+  step "reusing the existing seed data"
+  say "project tripon is already here — skipping the seed steps"
+else
+
 step "creating a project with two environments"
 o project create tripon --env prod --env staging
 
@@ -151,6 +168,8 @@ o policy allow-egress evil.example.com --project tripon --env tripon.prod \
 
 step "the change it created"
 o change ls
+
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Cockpit
