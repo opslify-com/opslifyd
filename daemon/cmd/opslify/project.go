@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -30,6 +32,7 @@ func projectCreateCmd() *cobra.Command {
 		policyFile string
 		envs       []string
 		caps       []string
+		wsPath     string
 	)
 	cmd := &cobra.Command{
 		Use:   "create <name>",
@@ -40,11 +43,19 @@ func projectCreateCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// ~ is expanded here rather than in the daemon: a tilde means the
+			// invoking user's home, and the daemon's is not necessarily theirs.
+			if strings.HasPrefix(wsPath, "~/") {
+				if home, herr := os.UserHomeDir(); herr == nil {
+					wsPath = filepath.Join(home, wsPath[2:])
+				}
+			}
 			req := createProjectReq{
-				Name:         args[0],
-				RepoURL:      repo,
-				Capabilities: capMap,
-				PolicyFile:   policyFile,
+				Name:          args[0],
+				RepoURL:       repo,
+				Capabilities:  capMap,
+				PolicyFile:    policyFile,
+				WorkspacePath: wsPath,
 			}
 			for _, e := range envs {
 				req.Environments = append(req.Environments, addEnvReq{Name: e})
@@ -58,7 +69,22 @@ func projectCreateCmd() *cobra.Command {
 			for _, e := range p.Environments {
 				names = append(names, e.Name)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "created project %s (environments: %s)\n", p.ID, strings.Join(names, ", "))
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "created project %s (environments: %s)\n", p.ID, strings.Join(names, ", "))
+			if p.WorkspacePath != "" {
+				fmt.Fprintf(out, "  workspace   %s (mounted at /workspace; open it in your editor)\n", p.WorkspacePath)
+			}
+			// Said loudly and on stderr: a bind mount has no credential filter, so
+			// every one of these is visible to every sandbox for this project.
+			if len(p.WorkspaceWarnings) > 0 {
+				e := cmd.ErrOrStderr()
+				fmt.Fprintf(e, "\nwarning: %d credential-shaped file(s) in that directory. A bind mount has no\n"+
+					"         filter, so the agent can read all of them:\n", len(p.WorkspaceWarnings))
+				for _, f := range p.WorkspaceWarnings {
+					fmt.Fprintf(e, "           %-40s %s\n", f.Rel, f.Why)
+				}
+				fmt.Fprintln(e, "         Move them out, or point the project at a directory that holds only code.")
+			}
 			return nil
 		},
 	}
@@ -66,6 +92,11 @@ func projectCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&repo, "repo", "", "source repository URL (descriptive metadata)")
 	cmd.Flags().StringVar(&policyFile, "policy", "", "absolute path to the project's policy layer (may only NARROW the daemon policy)")
 	cmd.Flags().StringSliceVar(&envs, "env", nil, "environment to create (repeatable; default: one named 'default')")
+	cmd.Flags().StringVar(&wsPath, "workspace", "",
+		"host directory to use as this project's /workspace (e.g. ~/opslify-workspace/tripon). "+
+			"Its files are what the agent sees and what you can open in an editor. "+
+			"Use a DEDICATED directory: a bind mount has no credential filter, so everything "+
+			"in it is visible to every sandbox for this project")
 	cmd.Flags().StringSliceVar(&caps, "capability", nil, "capability as role=tool (repeatable), e.g. git=gitlab, iac=terraform")
 	return cmd
 }

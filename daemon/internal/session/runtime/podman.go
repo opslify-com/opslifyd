@@ -202,10 +202,38 @@ type podmanRuntime struct {
 //     are masked by podman's default OCI spec and re-implemented harmlessly by
 //     gVisor, so no extra --security-opt=mask is required to close this.)
 func hardeningFlags(seccompProfile string) []string {
+	return hardeningFlagsFor(seccompProfile, false)
+}
+
+// hardeningFlagsFor builds the flag set, choosing the user namespace to match who
+// owns the workspace.
+//
+// `--userns=auto` is the default and the stronger boundary: every sandbox gets
+// its own subuid range, so a process that escapes it lands as a uid that owns
+// nothing on the host. The workspace is then chowned into that range on each
+// start (the `U` mount option), which is fine for a directory only the daemon
+// touches.
+//
+// It is ruinous for a directory the OPERATOR owns. The chown is recursive and
+// re-applied every run, so a project bound to ~/opslify-workspace/thing would
+// have its files taken away from the person editing them, repeatedly.
+// `--userns=keep-id` maps the sandbox user to the operator's own uid instead: no
+// chown is needed and files the agent writes are already theirs.
+//
+// The cost is stated rather than hidden: with keep-id, a process that escapes the
+// sandbox is the operator, with access to everything the operator has. That is a
+// real reduction in the blast radius of an escape, which is why it applies ONLY
+// to projects that opted in by naming a directory, and why gVisor (where an
+// escape is far less likely than under runc) is the tier to run it on.
+func hardeningFlagsFor(seccompProfile string, operatorOwnedWorkspace bool) []string {
+	userns := "--userns=auto"
+	if operatorOwnedWorkspace {
+		userns = "--userns=keep-id"
+	}
 	return []string{
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges",
-		"--userns=auto",
+		userns,
 		"--user=" + SandboxUser,
 		"--read-only",
 		"--pid=private",
@@ -235,7 +263,7 @@ func limitFlags(l ResourceLimits) []string {
 // hardening set, limits, mounts, image, and entrypoint — in a stable order.
 func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 	args := []string{"create", "--runtime", r.runtimeFlag}
-	args = append(args, hardeningFlags(r.seccompProfile)...)
+	args = append(args, hardeningFlagsFor(r.seccompProfile, spec.WorkspaceIsOperatorOwned)...)
 	args = append(args, limitFlags(spec.Limits)...)
 	if spec.Name != "" {
 		args = append(args, "--name", spec.Name)
@@ -261,7 +289,14 @@ func (r *podmanRuntime) createArgs(spec SessionSpec) []string {
 		// --user 1000 process can write even though --userns=auto remapped it to a
 		// subuid. Re-applied every run, so it stays correct across the different
 		// ranges auto may pick.
-		args = append(args, "--volume", spec.Workspace+":/workspace:rw,"+workspaceMountRemap())
+		// No `U` for an operator-owned directory: with keep-id the sandbox already
+		// runs as them, so the chown is both unnecessary and the exact damage this
+		// path exists to avoid.
+		mountOpts := "rw," + workspaceMountRemap()
+		if spec.WorkspaceIsOperatorOwned {
+			mountOpts = "rw"
+		}
+		args = append(args, "--volume", spec.Workspace+":/workspace:"+mountOpts)
 	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Entrypoint...)

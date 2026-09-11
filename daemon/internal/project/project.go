@@ -133,6 +133,15 @@ type Project struct {
 	// NARROW the daemon baseline (F4.1 resolution, see policy.go). Empty means the
 	// project adds no restriction of its own.
 	PolicyFile string `json:"policy_file,omitempty"`
+	// WorkspacePath is a HOST directory the operator chose for this project's
+	// workspace, mounted read-write at /workspace in its sandboxes. Empty means the
+	// daemon manages one under its workspace root.
+	//
+	// Choosing one is what makes "clone the repo, then open it in your editor"
+	// work: the agent and the operator are looking at the same files. It also
+	// changes the sandbox's user namespace — see the session runtime — so it is a
+	// per-project decision rather than a global setting.
+	WorkspacePath string `json:"workspace_path,omitempty"`
 }
 
 // Environment is one risk rung inside a project: staging, prod, whatever the
@@ -172,6 +181,9 @@ type ProjectSpec struct {
 	RepoURL      string
 	Capabilities map[string]string
 	PolicyFile   string
+	// WorkspacePath is the operator-chosen host directory, or empty for a
+	// daemon-managed one.
+	WorkspacePath string
 	// Environments are the environments created with the project. A project owns
 	// at least one environment, so an empty list creates the default one rather
 	// than an environment-less project.
@@ -197,6 +209,9 @@ func (s ProjectSpec) validate() (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
+	if err := ValidateWorkspacePath(s.WorkspacePath); err != nil {
+		return Project{}, err
+	}
 	if err := validatePolicyPath("policy_file", s.PolicyFile); err != nil {
 		return Project{}, err
 	}
@@ -204,11 +219,12 @@ func (s ProjectSpec) validate() (Project, error) {
 		return Project{}, err
 	}
 	return Project{
-		ID:           s.Name,
-		Name:         s.Name,
-		RepoURL:      s.RepoURL,
-		Capabilities: caps,
-		PolicyFile:   s.PolicyFile,
+		ID:            s.Name,
+		Name:          s.Name,
+		RepoURL:       s.RepoURL,
+		Capabilities:  caps,
+		PolicyFile:    s.PolicyFile,
+		WorkspacePath: s.WorkspacePath,
 	}, nil
 }
 

@@ -453,6 +453,10 @@ type sessionScope struct {
 	// clamps records every widening attempt the project/environment layers made
 	// and had clamped, layer-tagged (extends the F4.1 workspace clamp record).
 	clamps []string
+	// workspacePath is the project's own host directory, when it named one. It is
+	// mounted INSTEAD of a daemon-managed directory, so an operator can clone into
+	// it and open the same files in their editor while the agent works.
+	workspacePath string
 }
 
 // Create realises a new sandbox and registers it ready. When a warm pool is
@@ -589,6 +593,7 @@ func (m *Manager) resolveScope(projectID, envID string) (sessionScope, error) {
 	}
 	sc.projectID = resolved.Project.ID
 	sc.envID = resolved.Environment.ID
+	sc.workspacePath = resolved.Project.WorkspacePath
 	sc.base = resolved.Base()
 	sc.clamps = resolved.Clamps()
 	if t := resolved.Environment.DefaultTier; t != "" {
@@ -707,7 +712,22 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	//                and re-mounted on resume so installed deps/clones persist —
 	//                including across a daemon restart (it is just a host directory).
 	var wsDir string
-	if m.cfg.WorkspaceRoot != "" {
+	// A project that named its own directory gets it, for every mode.
+	//
+	// Deliberately not only in workspace mode: the point of choosing a directory
+	// is that the agent's work lands where the operator can see it, and a scratch
+	// session that quietly wrote somewhere else would defeat that for exactly the
+	// short tasks people run most.
+	ownedPath := scope.workspacePath
+	switch {
+	case ownedPath != "":
+		wsDir = ownedPath
+		// 0755, not 0700: the operator opens this directory in an editor, and with
+		// keep-id the sandbox runs as them anyway.
+		if err := os.MkdirAll(wsDir, 0o755); err != nil {
+			return nil, fmt.Errorf("session: create workspace %s: %w", wsDir, err)
+		}
+	case m.cfg.WorkspaceRoot != "":
 		if mode == ModeWorkspace {
 			wsDir = m.workspaceDir(name)
 		} else {
@@ -779,7 +799,8 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		Network:         m.cfg.SandboxNetwork,
 		// A long-lived idle entrypoint so the container stays up for mediated
 		// execs (the daemon spawns each command via Runtime.Exec).
-		Entrypoint: []string{"sleep", "infinity"},
+		Entrypoint:               []string{"sleep", "infinity"},
+		WorkspaceIsOperatorOwned: ownedPath != "",
 	}
 
 	handle, err := rt.Create(ctx, spec)

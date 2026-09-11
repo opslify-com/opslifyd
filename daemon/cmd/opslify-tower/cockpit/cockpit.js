@@ -1324,7 +1324,7 @@ const TOOLS = [
 
 const W = {
   open: false, step: 0,
-  name: '', repo: '',
+  name: '', repo: '', wsPath: '',
   envs: [{ name: 'staging', production: false }, { name: 'prod', production: true }],
   tools: {},
   creds: {},   // toolID -> {mode:'existing'|'new', ref, value}
@@ -1379,7 +1379,16 @@ function wizLeft() {
       '<span class="hint">Lowercase letters, digits and dashes.</span></label>' +
       '<label class="fld"><span class="lb">repository url (optional)</span>' +
       '<input id="w-repo" class="mono" value="' + esc(W.repo) + '" ' +
-      'placeholder="gitlab.example.com/team/infra"></label>';
+      'placeholder="gitlab.example.com/team/infra"></label>' +
+      '<label class="fld"><span class="lb">workspace directory (optional)</span>' +
+      '<input id="w-ws" class="mono" value="' + esc(W.wsPath) + '" ' +
+      'placeholder="/home/you/opslify-workspace/' + esc(W.name || 'project') + '">' +
+      '<span class="hint">A host directory mounted at /workspace in every sandbox for this ' +
+      'project. The agent clones and edits here; you open the same files in your editor. ' +
+      'Leave blank and the daemon manages one.<br><br>' +
+      'Use a DEDICATED directory, not your home. A bind mount has no credential filter, so ' +
+      'everything in it is readable by every sandbox — including a .env or a .ssh that ' +
+      'happens to be sitting there.</span></label>';
   }
   if (W.step === 1) {
     return '<h2>Environments</h2>' +
@@ -1462,6 +1471,10 @@ function wizRight() {
       '<div class="k">project</div>' +
       '<div class="gitem"><span class="mono">' + esc(W.name || '<name>') + '</span></div>' +
       (W.repo ? '<div class="gitem"><span class="mono muted">' + esc(W.repo) + '</span></div>' : '') +
+      (W.wsPath
+        ? '<div class="gitem"><span class="mono">' + esc(W.wsPath) + '</span>' +
+          '<span class="why">your directory</span></div>'
+        : '<div class="gitem muted">workspace managed by the daemon</div>') +
       '</div><div class="gsec"><div class="k">environments</div>' +
       (W.envs.length ? W.envs.map((e) => '<div class="gitem"><span class="mono">' + esc(e.name) +
         '</span>' + (e.production ? '<span class="why" style="color:var(--danger)">production</span>'
@@ -1516,9 +1529,10 @@ function wizRight() {
 
 function wizCollect() {
   if (W.step === 0) {
-    const n = $('w-name'); const r = $('w-repo');
+    const n = $('w-name'); const r = $('w-repo'); const ws = $('w-ws');
     if (n) W.name = n.value.trim();
     if (r) W.repo = r.value.trim();
+    if (ws) W.wsPath = ws.value.trim();
   }
   if (W.step === 3) {
     document.querySelectorAll('[data-wizref]').forEach((el) => {
@@ -1562,13 +1576,22 @@ async function wizCreate() {
   try {
     const caps = {};
     wizTools().forEach((t) => { caps[t.role] = t.id; });
-    await send('POST', '/v1/projects', {
+    const created = await send('POST', '/v1/projects', {
       name: W.name,
       repo_url: W.repo || undefined,
+      workspace_path: W.wsPath || undefined,
       capabilities: Object.keys(caps).length ? caps : undefined,
       environments: W.envs.map((e) => ({ name: e.name, production: e.production })),
     });
     done.push('project ' + W.name + ' with ' + W.envs.length + ' environment(s)');
+    // A bind mount has no credential filter, so this is the one moment the
+    // operator can be told what they just exposed.
+    const warn = (created && created.workspace_warnings) || [];
+    if (warn.length) {
+      toast(warn.length + ' credential-shaped file(s) in that directory — the agent can read ' +
+        'all of them: ' + warn.slice(0, 4).map((f) => f.rel).join(', ') +
+        (warn.length > 4 ? ', …' : '') + '. Move them out or use a directory of only code.', 'bad');
+    }
   } catch (e) {
     W.busy = false; renderWizard();
     toast('could not create the project: ' + e.message, 'bad');
@@ -1656,7 +1679,7 @@ async function wizCreate() {
 }
 
 function wizReset() {
-  W.step = 0; W.name = ''; W.repo = '';
+  W.step = 0; W.name = ''; W.repo = ''; W.wsPath = '';
   W.envs = [{ name: 'staging', production: false }, { name: 'prod', production: true }];
   W.tools = {}; W.creds = {}; W.busy = false;
 }

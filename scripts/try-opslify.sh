@@ -20,7 +20,11 @@
 # ON — use scripts/install.sh.
 set -euo pipefail
 
-ROOT="${OPSLIFY_TRY_DIR:-/tmp/opslify-try}"
+# NOT /tmp: this holds the workspace an operator is invited to open in an editor,
+# and a tmpfs or a reboot-cleaned directory is a bad place to leave work. It is
+# still disposable — `--clean` removes it — just not somewhere the system might
+# remove it for you.
+ROOT="${OPSLIFY_TRY_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/opslify-try}"
 SOCK="$ROOT/api.sock"
 TOWER_ADDR="${OPSLIFY_TRY_ADDR:-127.0.0.1:14646}"
 # A digest-pinned base image is required by config validation. It is never pulled

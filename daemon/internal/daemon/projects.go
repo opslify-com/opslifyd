@@ -50,11 +50,15 @@ func (d *Daemon) registerProjectRoutes(mux *http.ServeMux) {
 
 // createProjectRequest is the POST /v1/projects body.
 type createProjectRequest struct {
-	Name         string                  `json:"name"`
-	RepoURL      string                  `json:"repo_url,omitempty"`
-	Capabilities map[string]string       `json:"capabilities,omitempty"`
-	PolicyFile   string                  `json:"policy_file,omitempty"`
-	Environments []addEnvironmentRequest `json:"environments,omitempty"`
+	Name         string            `json:"name"`
+	RepoURL      string            `json:"repo_url,omitempty"`
+	Capabilities map[string]string `json:"capabilities,omitempty"`
+	PolicyFile   string            `json:"policy_file,omitempty"`
+	// WorkspacePath binds this project to a host directory the operator chose, so
+	// they can open the same files their agent is working on. Empty leaves it
+	// daemon-managed.
+	WorkspacePath string                  `json:"workspace_path,omitempty"`
+	Environments  []addEnvironmentRequest `json:"environments,omitempty"`
 }
 
 // addEnvironmentRequest is the POST /v1/projects/{id}/environments body (and one
@@ -80,13 +84,18 @@ func (r addEnvironmentRequest) spec() project.EnvironmentSpec {
 // projectResponse is a project plus its environments — the GET /v1/projects/{id}
 // body and the POST /v1/projects reply.
 type projectResponse struct {
-	ID           string                `json:"id"`
-	Name         string                `json:"name"`
-	Created      time.Time             `json:"created"`
-	RepoURL      string                `json:"repo_url,omitempty"`
-	Capabilities map[string]string     `json:"capabilities,omitempty"`
-	PolicyFile   string                `json:"policy_file,omitempty"`
-	Environments []environmentResponse `json:"environments"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Created       time.Time         `json:"created"`
+	RepoURL       string            `json:"repo_url,omitempty"`
+	Capabilities  map[string]string `json:"capabilities,omitempty"`
+	PolicyFile    string            `json:"policy_file,omitempty"`
+	WorkspacePath string            `json:"workspace_path,omitempty"`
+	// WorkspaceWarnings names credential-shaped files found in a chosen
+	// directory. A bind mount has no deny-list, so this is the only moment the
+	// exposure can be reported.
+	WorkspaceWarnings []project.SecretFinding `json:"workspace_warnings,omitempty"`
+	Environments      []environmentResponse   `json:"environments"`
 }
 
 // environmentResponse is one environment record.
@@ -116,13 +125,14 @@ func environmentResp(e project.Environment) environmentResponse {
 
 func projectResp(p project.Project, envs []project.Environment) projectResponse {
 	out := projectResponse{
-		ID:           p.ID,
-		Name:         p.Name,
-		Created:      p.Created,
-		RepoURL:      p.RepoURL,
-		Capabilities: p.Capabilities,
-		PolicyFile:   p.PolicyFile,
-		Environments: make([]environmentResponse, 0, len(envs)),
+		ID:            p.ID,
+		Name:          p.Name,
+		Created:       p.Created,
+		RepoURL:       p.RepoURL,
+		Capabilities:  p.Capabilities,
+		PolicyFile:    p.PolicyFile,
+		WorkspacePath: p.WorkspacePath,
+		Environments:  make([]environmentResponse, 0, len(envs)),
 	}
 	for _, e := range envs {
 		out.Environments = append(out.Environments, environmentResp(e))
@@ -137,10 +147,11 @@ func (d *Daemon) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec := project.ProjectSpec{
-		Name:         body.Name,
-		RepoURL:      body.RepoURL,
-		Capabilities: body.Capabilities,
-		PolicyFile:   body.PolicyFile,
+		Name:          body.Name,
+		RepoURL:       body.RepoURL,
+		Capabilities:  body.Capabilities,
+		PolicyFile:    body.PolicyFile,
+		WorkspacePath: body.WorkspacePath,
 	}
 	for _, e := range body.Environments {
 		spec.Environments = append(spec.Environments, e.spec())
@@ -162,7 +173,19 @@ func (d *Daemon) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 			d.log.Warn("workspace scaffold failed", "project", p.ID, "error", err)
 		}
 	}
-	writeJSON(w, http.StatusCreated, projectResp(p, envs))
+	resp := projectResp(p, envs)
+	// A bind mount has NO deny-list — unlike F7.3's copy-in path, which filters
+	// credential-shaped files on the way through. Everything in the chosen
+	// directory is visible to every sandbox for the project, and this is the only
+	// moment that exposure can be reported to the person who chose it.
+	if p.WorkspacePath != "" {
+		if findings, err := project.ScanForSecrets(p.WorkspacePath, 50); err == nil && len(findings) > 0 {
+			resp.WorkspaceWarnings = findings
+			d.log.Warn("workspace contains credential-shaped files",
+				"project", p.ID, "path", p.WorkspacePath, "count", len(findings))
+		}
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 func (d *Daemon) handleProjectList(w http.ResponseWriter, r *http.Request) {

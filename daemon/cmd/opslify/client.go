@@ -124,12 +124,18 @@ type createReq struct {
 // projectView mirrors the daemon's project response (records only — no secret,
 // and a policy layer is a PATH, never content).
 type projectView struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Created      string            `json:"created"`
-	RepoURL      string            `json:"repo_url,omitempty"`
-	Capabilities map[string]string `json:"capabilities,omitempty"`
-	PolicyFile   string            `json:"policy_file,omitempty"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Created       string            `json:"created"`
+	RepoURL       string            `json:"repo_url,omitempty"`
+	Capabilities  map[string]string `json:"capabilities,omitempty"`
+	PolicyFile    string            `json:"policy_file,omitempty"`
+	WorkspacePath string            `json:"workspace_path,omitempty"`
+	// WorkspaceWarnings names credential-shaped files in a chosen directory.
+	WorkspaceWarnings []struct {
+		Rel string `json:"rel"`
+		Why string `json:"why"`
+	} `json:"workspace_warnings,omitempty"`
 	Environments []environmentView `json:"environments"`
 }
 
@@ -147,11 +153,12 @@ type environmentView struct {
 
 // createProjectReq is the POST /v1/projects body.
 type createProjectReq struct {
-	Name         string            `json:"name"`
-	RepoURL      string            `json:"repo_url,omitempty"`
-	Capabilities map[string]string `json:"capabilities,omitempty"`
-	PolicyFile   string            `json:"policy_file,omitempty"`
-	Environments []addEnvReq       `json:"environments,omitempty"`
+	WorkspacePath string            `json:"workspace_path,omitempty"`
+	Name          string            `json:"name"`
+	RepoURL       string            `json:"repo_url,omitempty"`
+	Capabilities  map[string]string `json:"capabilities,omitempty"`
+	PolicyFile    string            `json:"policy_file,omitempty"`
+	Environments  []addEnvReq       `json:"environments,omitempty"`
 }
 
 // addEnvReq is the POST /v1/projects/{id}/environments body.

@@ -70,6 +70,16 @@ type SessionSpec struct {
 	// Workspace is a host path bind-mounted read-write at /workspace. Empty
 	// means no persistent workspace (scratch session).
 	Workspace string
+	// WorkspaceIsOperatorOwned marks a workspace the OPERATOR chose and expects to
+	// edit, rather than one the daemon manages.
+	//
+	// It changes the user namespace, which is the whole reason the distinction
+	// exists. See hardeningFlags: the default `--userns=auto` gives each sandbox
+	// its own subuid range and the mount is chowned into it on every start, which
+	// is correct for a directory only the daemon touches and ruinous for one the
+	// operator opens in an editor — their files would stop being theirs after the
+	// first session.
+	WorkspaceIsOperatorOwned bool
 	// Limits bounds resource use.
 	Limits ResourceLimits
 	// Name is an optional stable container name; empty lets the engine assign.
