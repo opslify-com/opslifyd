@@ -332,8 +332,12 @@ td.mono { font-family: var(--mono); font-size: 11.5px; }
 
 .comp { border-top: 1px solid var(--border); padding: 8px 10px; flex: none; }
 .cbox { border: 1px solid var(--border); border-radius: 6px; background: var(--panel2); padding: 7px 9px; }
-.cbox textarea { border: none; background: transparent; padding: 0; resize: none;
-  font-size: 11.5px; min-height: 34px; }
+/* The composer grows with what you type, up to a third of the panel, then
+ * scrolls. A two-row box that never grows makes a long instruction unreadable
+ * while you are writing it — and a long instruction is the useful kind. */
+.cbox textarea { border: none; background: transparent; padding: 0; resize: vertical;
+  font-size: 11.5px; min-height: 42px; max-height: 40vh; overflow-y: auto;
+  line-height: 1.5; font-family: inherit; }
 .crow { display: flex; align-items: center; gap: 7px; margin-top: 7px; }
 
 /* An agent's output is prose with command output in it: preserve the line breaks

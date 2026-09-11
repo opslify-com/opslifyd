@@ -501,7 +501,7 @@ func TestEveryClickHookIsWired(t *testing.T) {
 	readOnly := map[string]bool{
 		"chg": true, "wizref": true, "wizval": true, "tab": true,
 		// Read off the clicked element rather than being the click target.
-		"memon": true,
+		"memon": true, "wizhost": true,
 	}
 
 	emitted := map[string]bool{}

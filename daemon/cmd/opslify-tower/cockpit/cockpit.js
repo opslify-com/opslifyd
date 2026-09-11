@@ -148,6 +148,8 @@ const S = {
   // — the daemon owns the durable record of what an agent actually DID (the
   // trace), and a second half-copy of it here would just be a way to disagree.
   chat: { turns: [], busy: false },
+  draft: '',
+  draftFocus: false,
   bindings: [],
   memory: [],
   tree: null,
@@ -782,7 +784,7 @@ function renderChat() {
     (turns && gates ? gates : '') +
     '</div>' +
     '<div class="comp"><div class="cbox">' +
-    '<textarea id="ask" rows="2" placeholder="' +
+    '<textarea id="ask" rows="3" placeholder="' +
     (blocked ? esc(blocked) : 'Ask the agent to do something…') + '"' +
     (blocked || S.chat.busy ? ' disabled' : '') + '></textarea>' +
     '<div class="crow">' +
@@ -808,6 +810,21 @@ function renderChat() {
 
   const thr = $('thread');
   if (thr) thr.scrollTop = thr.scrollHeight;
+
+  // renderChat runs on every poll. Without this the box is rebuilt from scratch
+  // every five seconds and whatever was half-typed goes with it — which is what
+  // made the composer feel like it would not accept more than a few words.
+  const box = $('ask');
+  if (box) {
+    if (S.draft) { box.value = S.draft; autogrow(box); }
+    if (document.activeElement !== box && S.draftFocus) { box.focus(); }
+  }
+}
+
+// autogrow sizes a textarea to its content, up to the CSS max-height.
+function autogrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, window.innerHeight * 0.4) + 'px';
 }
 
 // askAgent streams the agent's output into the thread as it arrives. A model
@@ -1260,12 +1277,16 @@ const TOOLS = [
     gates: [], note: 'MR-only mode available' },
   { id: 'kubernetes', role: 'k8s', name: 'Kubernetes', desc: 'kubectl against a cluster',
     hosts: [], secret: { ref: 'kubeconfig', kind: 'kubernetes', provider: 'kubeconfig' },
+    // A kubernetes connection needs exactly one host — the cluster API — and only
+    // the operator knows it. Asked for rather than guessed.
+    needsHost: true, hostLabel: 'cluster API host',
     gates: ['^kubectl delete', '^kubectl scale', '^kubectl patch'], note: '3 approval gates' },
   { id: 'terraform', role: 'iac', name: 'Terraform', desc: 'Plan and apply infrastructure',
     hosts: ['registry.terraform.io'], secret: null,
     gates: ['^terraform apply', '^terraform destroy'], note: 'plan pinning' },
   { id: 'argocd', role: 'deploy', name: 'ArgoCD', desc: 'GitOps sync',
     hosts: [], secret: { ref: 'argocd-token', kind: 'http', provider: 'argocd' },
+    needsHost: true, hostLabel: 'ArgoCD server host',
     gates: ['^argocd app delete'], note: '1 approval gate' },
   { id: 'aws', role: 'cloud', name: 'AWS', desc: 'STS AssumeRole, scoped per session',
     hosts: ['sts.amazonaws.com'], secret: { ref: 'aws-creds', kind: 'http', provider: 'aws' },
@@ -1290,7 +1311,11 @@ const W = {
 
 const wizTools = () => TOOLS.filter((t) => W.tools[t.id]);
 const wizGates = () => wizTools().reduce((a, t) => a.concat(t.gates), []);
-const wizHosts = () => wizTools().reduce((a, t) => a.concat(t.hosts), []);
+const wizHosts = () => wizTools().reduce((a, t) => {
+  const c = W.creds[t.id] || {};
+  // An operator-supplied host needs egress just as much as a catalogue one.
+  return a.concat(t.hosts, c.host ? [c.host] : []);
+}, []);
 const wizSecrets = () => wizTools().filter((t) => t.secret);
 
 const STEPS = ['Project', 'Environments', 'Tools & guardrails', 'Credentials'];
@@ -1392,9 +1417,15 @@ function wizLeft() {
                     'to reuse; change the ref to store a separate one.</div>'
                   : '<label class="fld"><span class="lb">value</span>' +
                     '<input type="password" class="mono" data-wizval="' + t.id + '" value="' +
-                    esc(c.value || '') + '" placeholder="paste the token"></label>' +
-                    '<div class="hint">Leave blank to skip — the connection is created ' +
-                    'without it and will not work until you store one.</div>') +
+                    esc(c.value || '') + '" placeholder="paste the token"></label>') +
+        (t.needsHost
+          ? '<label class="fld"><span class="lb">' + esc(t.hostLabel || 'host') + '</span>' +
+            '<input class="mono" data-wizhost="' + t.id + '" value="' + esc(c.host || '') +
+            '" placeholder="api.cluster.example.com"></label>'
+          : '') +
+        '<div class="hint">Leave blank to skip. The tool is still recorded on the project — ' +
+        'you can add the credential later from the Tools screen, and nothing here is ' +
+        'half-created.</div>' +
         '</div>';
     }).join('');
 }
@@ -1476,6 +1507,10 @@ function wizCollect() {
       const id = el.getAttribute('data-wizval');
       W.creds[id] = Object.assign({}, W.creds[id], { value: el.value });
     });
+    document.querySelectorAll('[data-wizhost]').forEach((el) => {
+      const id = el.getAttribute('data-wizhost');
+      W.creds[id] = Object.assign({}, W.creds[id], { host: el.value.trim() });
+    });
   }
 }
 
@@ -1531,12 +1566,26 @@ async function wizCreate() {
     } catch (e) { failed.push('secret ' + ref + ': ' + e.message); }
   }
 
+  // A connection is created only when it can actually work.
+  //
+  // The first version made one for every selected tool regardless, which failed
+  // outright for Kubernetes: that kind needs exactly one host — the cluster API —
+  // and the catalogue has none to offer, so picking Kubernetes in the wizard
+  // ended in a 400 after the project had already been created. A half-finished
+  // onboarding that reports an error is worse than one that says plainly what is
+  // still missing.
+  const skipped = [];
   for (const t of wizSecrets()) {
-    const ref = (W.creds[t.id] || {}).ref || t.secret.ref;
+    const c = W.creds[t.id] || {};
+    const ref = c.ref || t.secret.ref;
+    const haveSecret = S.secrets.some((x) => x.ref === ref) || !!c.value;
+    const hosts = t.hosts.length ? t.hosts.slice() : (c.host ? [c.host] : []);
+    if (!haveSecret) { skipped.push(t.name + ' (no credential given)'); continue; }
+    if (t.needsHost && !hosts.length) { skipped.push(t.name + ' (no ' + (t.hostLabel || 'host') + ')'); continue; }
     try {
       await send('POST', '/v1/connections', {
         name: t.id, kind: t.secret.kind, secret_ref: ref,
-        hosts: t.hosts.length ? t.hosts : undefined,
+        hosts: hosts.length ? hosts : undefined,
         project_id: W.name,
       });
       done.push('connection ' + t.id);
@@ -1572,6 +1621,10 @@ async function wizCreate() {
   await refresh();
 
   toast('created: ' + done.join('; '), 'ok');
+  if (skipped.length) {
+    toast('still to do: ' + skipped.join(', ') +
+      ' — add these from the Tools screen when you have them', null);
+  }
   if (pending) {
     toast(pending + ' egress host(s) need approval before the sandbox can reach them — ' +
       'see Changes.', null);
@@ -1940,7 +1993,11 @@ document.addEventListener('click', async (ev) => {
   if (a('data-execdecide')) { await shellDecide(a('data-execdecide')); return; }
   if (a('data-ask')) {
     const box = $('ask');
-    if (box && box.value.trim()) { const v = box.value.trim(); box.value = ''; await askAgent(v); }
+    if (box && box.value.trim()) {
+      const v = box.value.trim();
+      box.value = ''; S.draft = ''; autogrow(box);
+      await askAgent(v);
+    }
     return;
   }
   if (a('data-chatstop')) { if (agentAbort) agentAbort.abort(); return; }
@@ -2153,6 +2210,15 @@ document.addEventListener('click', async (ev) => {
   }
 });
 
+// Keep the draft in state as it is typed, and grow the box with it.
+document.addEventListener('input', (ev) => {
+  if (ev.target && ev.target.id === 'ask') {
+    S.draft = ev.target.value;
+    S.draftFocus = true;
+    autogrow(ev.target);
+  }
+});
+
 document.addEventListener('change', async (ev) => {
   if (ev.target && ev.target.id === 'agentpick') {
     const v = ev.target.value;
@@ -2209,7 +2275,8 @@ document.addEventListener('keydown', async (ev) => {
   if (inp && inp.id === 'ask' && ev.key === 'Enter' && !ev.shiftKey) {
     ev.preventDefault();
     if (inp.value.trim() && !S.chat.busy) {
-      const v = inp.value.trim(); inp.value = '';
+      const v = inp.value.trim();
+      inp.value = ''; S.draft = ''; autogrow(inp);
       await askAgent(v);
     }
     return;
