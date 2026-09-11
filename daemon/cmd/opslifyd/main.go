@@ -20,6 +20,7 @@ import (
 	"github.com/opslify-com/opslifyd/internal/agentcontext"
 	"github.com/opslify-com/opslifyd/internal/agents"
 	"github.com/opslify-com/opslifyd/internal/broker"
+	"github.com/opslify-com/opslifyd/internal/change"
 	"github.com/opslify-com/opslifyd/internal/daemon"
 	"github.com/opslify-com/opslifyd/internal/egressproxy"
 	"github.com/opslify-com/opslifyd/internal/env"
@@ -176,8 +177,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// F8.6 changes: the review surface every gated exec produces a record in. It
+	// is built before the session manager because the manager records into it.
+	changeSvc, err := buildChangeService(cfg, log)
+	if err != nil {
+		return err
+	}
 	mgr, err := buildSessionManager(cfg, log, egressCtl, traceSink, brk, credInjector, egressInject, registryInject, projects,
-		connSvc.ForScope, buildContextAssembler(cfg, projects), agentSource(agentReg))
+		connSvc.ForScope, buildContextAssembler(cfg, projects), agentSource(agentReg), changeSvc)
 	if err != nil {
 		return err
 	}
@@ -190,7 +198,8 @@ func run() error {
 	// connections register here later without changing any caller. It is built
 	// over LIVE config and policy rather than cached, so a delete guard can never
 	// consult a stale picture and permit a removal that breaks a running grant.
-	opts, err := buildDaemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault, connSvc, agentReg, log)
+	opts, err := buildDaemonOptions(cfg, *socketPath, *socketGroup, verifier, mgr, projects, vault,
+		connSvc, agentReg, changeSvc, log)
 	if err != nil {
 		return err
 	}
@@ -557,7 +566,8 @@ func buildProjectService(cfg install.Config, log *slog.Logger) (*project.Service
 }
 
 func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.Controller, traceSink trace.TraceSink, brk *broker.Broker, credInjector *broker.Injector, egressInject *session.EgressInjector, registryInject *session.RegistryInjector, projects *project.Service,
-	connections session.ContextConnectionSource, assembler session.ContextAssembler, agentSrc session.AgentSource) (*session.Manager, error) {
+	connections session.ContextConnectionSource, assembler session.ContextAssembler, agentSrc session.AgentSource,
+	changes session.ChangeRecorder) (*session.Manager, error) {
 	// The assembler is REQUIRED in the daemon. The seam is optional at the package
 	// level so pre-P8 tests need no wiring, but a daemon running without it starts
 	// every session with no house rules and emits no context.assemble — a silent,
@@ -588,7 +598,7 @@ func buildSessionManager(cfg install.Config, log *slog.Logger, egressCtl egress.
 	}
 	return session.NewManager(sessionOptions(cfg, stateDir, ttl, approvalTTL, defaultPolicy,
 		egressCtl, log, traceSink, brk, credInjector, egressInject, registryInject, projects,
-		connections, assembler, agentSrc))
+		connections, assembler, agentSrc, changes))
 }
 
 // sessionOptions is the session manager's composition root, extracted so a test
@@ -611,6 +621,7 @@ func sessionOptions(
 	connections session.ContextConnectionSource,
 	assembler session.ContextAssembler,
 	agentSrc session.AgentSource,
+	changes session.ChangeRecorder,
 ) session.Options {
 	return session.Options{
 		Config: session.ManagerConfig{
@@ -640,6 +651,7 @@ func sessionOptions(
 		Connections:     connections,        // F8.2: connections in force for the scope
 		AssembleContext: assembler,          // F8.4: the layered instruction set
 		Agents:          agentSrc,           // F8.5: which agent a session is attributed to
+		Changes:         changes,            // F8.6: every gated exec becomes a reviewable Change
 	}
 }
 
@@ -800,6 +812,7 @@ func buildDaemonOptions(
 	vault broker.SecretManager,
 	conns *broker.ConnectionService,
 	agentReg *agents.Registry,
+	changes *change.Service,
 	log *slog.Logger,
 ) (daemon.Options, error) {
 	// LIVE config and policy rather than a cached snapshot, so the delete guard
@@ -813,7 +826,14 @@ func buildDaemonOptions(
 	if err != nil {
 		return daemon.Options{}, err
 	}
-	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc, conns, agentReg, log), nil
+	// F8.7 needs both the change surface (a widening becomes a Change) and the
+	// resolved baseline (an edit is classified against what is in force).
+	editor, err := buildPolicyEditor(cfg, projects, changes, basePolicy, newChangeID)
+	if err != nil {
+		return daemon.Options{}, err
+	}
+	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc,
+		conns, agentReg, changes, editor, log), nil
 }
 
 // daemonOptions assembles the Options literal. Kept separate from
@@ -830,6 +850,8 @@ func daemonOptions(
 	secretsSvc *broker.SecretsService,
 	connections daemon.ConnectionService,
 	agentReg daemon.AgentRegistry,
+	changes daemon.ChangeService,
+	editor daemon.PolicyEditor,
 	log *slog.Logger,
 ) daemon.Options {
 	return daemon.Options{
@@ -845,9 +867,15 @@ func daemonOptions(
 		// daemon.New so the composition root shows every operator surface in one
 		// place — and so a test can assert this one is wired.
 		Connections: connections,
-		Ready:       sdNotifyReady,
-		Version:     version,
-		Logger:      log,
+		// F8.5/F8.6/F8.7: the remaining operator surfaces. Each is passed here so
+		// the composition root shows every one in a single place — and so a test
+		// can assert it is wired, which is how the last three came to be missing.
+		Agents:       agentReg,
+		Changes:      changes,
+		PolicyEditor: editor,
+		Ready:        sdNotifyReady,
+		Version:      version,
+		Logger:       log,
 	}
 }
 

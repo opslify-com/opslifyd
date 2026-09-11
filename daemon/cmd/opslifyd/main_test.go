@@ -167,7 +167,7 @@ func TestSecretsServiceIndexesConfigAndPolicyConsumers(t *testing.T) {
 func TestDaemonOptionsWireSecretsService(t *testing.T) {
 	cfg := secretsWiringConfig()
 	svc := mustBuildSecretsService(t, cfg, nil, newTestProjectService(t), policy.Policy{})
-	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, nil, nil, discardLog())
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", nil, nil, nil, nil, svc, nil, nil, nil, nil, discardLog())
 
 	if opts.SecretsSvc == nil {
 		t.Fatal("daemon.Options.SecretsSvc is nil: the in-use delete guard is not wired into the running daemon")
@@ -191,7 +191,7 @@ func TestDaemonOptionsCarryEveryStatefulDependency(t *testing.T) {
 	mgr := &session.Manager{}
 	verifier := stubVerifier{}
 
-	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", verifier, mgr, projects, vault, svc, nil, nil, discardLog())
+	opts := daemonOptions(cfg, "/run/opslify/api.sock", "opslify", verifier, mgr, projects, vault, svc, nil, nil, nil, nil, discardLog())
 
 	if opts.SocketPath != "/run/opslify/api.sock" {
 		t.Errorf("SocketPath = %q", opts.SocketPath)
@@ -379,7 +379,7 @@ func TestBuildDaemonOptionsWiresTheWholeSurface(t *testing.T) {
 	projects := newTestProjectService(t)
 	mgr := &session.Manager{}
 
-	opts, err := buildDaemonOptions(cfg, "/run/opslify/api.sock", "opslify", stubVerifier{}, mgr, projects, vault, newTestConnService(t), nil, discardLog())
+	opts, err := buildDaemonOptions(cfg, "/run/opslify/api.sock", "opslify", stubVerifier{}, mgr, projects, vault, newTestConnService(t), nil, nil, discardLog())
 	if err != nil {
 		t.Fatalf("buildDaemonOptions: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestBuildDaemonOptionsFailsClosedOnABadPolicy(t *testing.T) {
 	}
 	cfg := secretsWiringConfig()
 	cfg.PolicyFile = bad
-	if _, err := buildDaemonOptions(cfg, "/s", "g", stubVerifier{}, nil, newTestProjectService(t), &noopSecretManager{}, newTestConnService(t), nil, discardLog()); err == nil {
+	if _, err := buildDaemonOptions(cfg, "/s", "g", stubVerifier{}, nil, newTestProjectService(t), &noopSecretManager{}, newTestConnService(t), nil, nil, discardLog()); err == nil {
 		t.Fatal("an invalid daemon policy must abort startup, not fall back to a permissive default")
 	}
 }
@@ -439,7 +439,7 @@ func TestBuildDaemonOptionsFailsClosedOnABadPolicy(t *testing.T) {
 func TestDaemonOptionsWireTheConnectionService(t *testing.T) {
 	conns := newTestConnService(t)
 	opts, err := buildDaemonOptions(secretsWiringConfig(), "/run/opslify/api.sock", "opslify",
-		stubVerifier{}, &session.Manager{}, newTestProjectService(t), &noopSecretManager{}, conns, nil, discardLog())
+		stubVerifier{}, &session.Manager{}, newTestProjectService(t), &noopSecretManager{}, conns, nil, nil, discardLog())
 	if err != nil {
 		t.Fatalf("buildDaemonOptions: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestSessionManagerRequiresAConnectionSource(t *testing.T) {
 	// the assembler is checked first.
 	assembler := buildContextAssembler(install.Config{}, nil)
 	_, err := buildSessionManager(install.Config{}, discardLog(), nil, nil, nil, nil, nil, nil,
-		newTestProjectService(t), nil, assembler, nil)
+		newTestProjectService(t), nil, assembler, nil, nil)
 	if err == nil {
 		t.Fatal("a nil connection source must be refused at startup")
 	}
@@ -746,7 +746,7 @@ func TestSessionOptionsWireTheContextAssembler(t *testing.T) {
 		return &agentcontext.Assembly{}, nil
 	})
 	opts := sessionOptions(install.Config{}, t.TempDir(), time.Minute, time.Minute, policy.Policy{},
-		nil, discardLog(), nil, nil, nil, nil, nil, newTestProjectService(t), nil, assembler, nil)
+		nil, discardLog(), nil, nil, nil, nil, nil, newTestProjectService(t), nil, assembler, nil, nil)
 
 	if opts.AssembleContext == nil {
 		t.Fatal("AssembleContext is nil: sessions would run with no instructions and emit no context.assemble")
@@ -772,7 +772,7 @@ func TestSessionOptionsWireTheContextAssembler(t *testing.T) {
 // degradation that is invisible until an agent does something nobody can explain.
 func TestSessionManagerRequiresAnAssembler(t *testing.T) {
 	_, err := buildSessionManager(install.Config{}, discardLog(), nil, nil, nil, nil, nil, nil,
-		newTestProjectService(t), nil, nil, nil)
+		newTestProjectService(t), nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("a nil context assembler must be refused at startup, not silently accepted")
 	}
@@ -853,7 +853,7 @@ func TestSessionOptionsWireTheAgentSource(t *testing.T) {
 		return agents.Agent{Name: "probe"}, nil
 	})
 	opts := sessionOptions(install.Config{}, t.TempDir(), time.Minute, time.Minute, policy.Policy{},
-		nil, discardLog(), nil, nil, nil, nil, nil, newTestProjectService(t), nil, nil, src)
+		nil, discardLog(), nil, nil, nil, nil, nil, newTestProjectService(t), nil, nil, src, nil)
 
 	if opts.Agents == nil {
 		t.Fatal("Agents is nil: sessions would record no agent identity, so no decision could be attributed to a model")

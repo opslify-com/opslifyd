@@ -144,7 +144,14 @@ func (d *Daemon) registerSessionRoutes(mux *http.ServeMux) {
 	// F4.1/F7.4 active-policy view: the daemon's resolved baseline policy, read
 	// only, metadata only (no secret values). Backs `opslify policy` and the F7.4
 	// browser policy pane.
-	mux.HandleFunc("GET /"+APIVersion+"/policy", d.handlePolicyGet)
+	//
+	// Registered ONLY when the F8.7 editor is absent. The editor serves the same
+	// path with a superset — the resolved policy plus the precedence chain and the
+	// clamps — and registering both panics the daemon at startup. Skipping here
+	// rather than there keeps the richer view authoritative whenever it exists.
+	if d.policyEditor == nil {
+		mux.HandleFunc("GET /"+APIVersion+"/policy", d.handlePolicyGet)
+	}
 	// F7.5 pre-install allowlist gate: the operator CLI checks a package against the
 	// F5.5 registry allowlist BEFORE running an install (a non-allowlisted name is
 	// refused before any exec; an unconfigured proxy fails closed). Read-only; no
