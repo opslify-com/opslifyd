@@ -283,6 +283,32 @@ td.mono { font-family: var(--mono); font-size: 11.5px; }
 .tli .de { color: var(--fg); font-family: var(--mono); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------------------------------------------------------------- shell --- */
+
+/* The Shell is the default drawer tab, so the drawer is taller when it is open —
+ * a terminal in 226px is a terminal nobody uses. */
+.drawer.tall { height: 310px; }
+
+.shellwrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.shellwrap .term { flex: 1; min-height: 0; }
+.shellwrap .capbar { flex: none; }
+
+.shellin { display: flex; align-items: center; gap: 8px; padding: 7px 13px;
+  border-top: 1px solid var(--border); background: var(--panel2); flex: none; }
+.shellin .ps1 { font-family: var(--mono); font-size: 11.5px; color: var(--ok); flex: none; }
+.shellin input { border: none; background: transparent; padding: 2px 0;
+  font-family: var(--mono); font-size: 11.5px; }
+.shellin input:focus { outline: none; }
+
+.shellgate { border-top: 1px solid var(--warn); background: #1d1c14;
+  padding: 8px 13px; flex: none; }
+.shellgate .h { font-size: 10.5px; color: var(--warn); font-family: var(--mono); margin-bottom: 4px; }
+.shellgate .d { font-size: 11.5px; line-height: 1.45; }
+
+/* The popped-out full tab reuses the same markup. */
+.shellfull { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.shellfull .shellwrap { flex: 1; }
+
 /* ----------------------------------------------------------------- chat --- */
 
 .chat { border-left: 1px solid var(--border); background: var(--panel);

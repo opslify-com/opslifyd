@@ -269,3 +269,88 @@ func sprintPayload(p map[string]any) string {
 	walk(p)
 	return b.String()
 }
+
+// --- ordering: the assembly must precede the container ------------------------
+
+// orderingRuntime records when Create is called relative to the assembler.
+type orderingRuntime struct {
+	runtime.Runtime
+	events *[]string
+}
+
+func (r *orderingRuntime) Create(ctx context.Context, spec runtime.SessionSpec) (runtime.ContainerHandle, error) {
+	*r.events = append(*r.events, "container.create")
+	return r.Runtime.Create(ctx, spec)
+}
+
+// TestContextIsAssembledBeforeTheContainerExists.
+//
+// This ordering is not a preference. The workspace is bind mounted into the
+// sandbox, and podman's --userns=auto idmaps that mount: once the container
+// exists, the directory belongs to a subuid range and the daemon's own lstat
+// inside it returns EPERM. Assembling afterwards failed EVERY create that had a
+// workspace root configured, with "unsafe source: .opslify/instructions.md:
+// permission denied" — for a file that was simply not there.
+//
+// Nothing caught it because every test here uses a fake runtime that does not
+// idmap anything, so the order was invisible. This asserts the order directly.
+func TestContextIsAssembledBeforeTheContainerExists(t *testing.T) {
+	var events []string
+	rt := &orderingRuntime{Runtime: newFakeRuntime(), events: &events}
+
+	assembler := func(projectID, envID, wsDir string) (*agentcontext.Assembly, error) {
+		events = append(events, "context.assemble")
+		// The workspace must be READABLE at this point — that is the whole claim.
+		if wsDir != "" {
+			if _, err := os.Stat(wsDir); err != nil {
+				t.Errorf("workspace %s is not readable when the context is assembled: %v", wsDir, err)
+			}
+		}
+		return &agentcontext.Assembly{}, nil
+	}
+
+	m, _ := ctxManager(t, rt, assembler)
+	if _, err := m.Create(context.Background(), CreateRequest{Mode: ModeScratch}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ai, ci := -1, -1
+	for i, e := range events {
+		if e == "context.assemble" && ai < 0 {
+			ai = i
+		}
+		if e == "container.create" && ci < 0 {
+			ci = i
+		}
+	}
+	if ai < 0 {
+		t.Fatal("the assembler was never called")
+	}
+	if ci < 0 {
+		t.Fatal("the container was never created")
+	}
+	if ai > ci {
+		t.Fatalf("context was assembled AFTER the container (%v) — once podman idmaps "+
+			"the bind-mounted workspace the daemon cannot read it, and every create "+
+			"with a workspace root fails", events)
+	}
+}
+
+// TestAFailedAssemblyCostsNoContainer: assembling first means a bad source is
+// refused before anything is spent.
+func TestAFailedAssemblyCostsNoContainer(t *testing.T) {
+	var events []string
+	rt := &orderingRuntime{Runtime: newFakeRuntime(), events: &events}
+	assembler := func(projectID, envID, wsDir string) (*agentcontext.Assembly, error) {
+		return nil, errors.New("a symlinked skill file")
+	}
+	m, _ := ctxManager(t, rt, assembler)
+	if _, err := m.Create(context.Background(), CreateRequest{Mode: ModeScratch}); err == nil {
+		t.Fatal("Create succeeded with a failing assembler; it must fail closed")
+	}
+	for _, e := range events {
+		if e == "container.create" {
+			t.Error("a container was created even though the context could not be assembled")
+		}
+	}
+}

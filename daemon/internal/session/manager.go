@@ -718,6 +718,33 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		}
 	}
 
+	// F8.4: resolve the layered instruction set BEFORE the sandbox is created.
+	//
+	// FAIL-CLOSED: a session that starts with its house rules silently missing is
+	// the exact outcome layer 1 exists to prevent, and it would be invisible — the
+	// agent would simply behave as though the rule had never been written. An
+	// unreadable or unsafe source (a symlinked skill file pointing at a host
+	// secret, say) aborts the create rather than degrading into a session with
+	// less context than the operator believes it has.
+	//
+	// It runs HERE, before rt.Create, and not after it. The workspace is bind
+	// mounted into the container, and podman's --userns=auto idmaps that mount:
+	// once the container exists, the directory belongs to a subuid range and the
+	// daemon's own lstat inside it returns EPERM. Assembling afterwards therefore
+	// failed EVERY create that had a workspace root configured — "unsafe source:
+	// .opslify/instructions.md: permission denied" — for a file that was merely
+	// absent. Reading the workspace before anything else has claimed it is also
+	// cheaper: a bad source now costs no container at all.
+	var assembly *agentcontext.Assembly
+	if m.assembleContext != nil {
+		a, err := m.assembleContext(scope.projectID, scope.envID, wsDir)
+		if err != nil {
+			m.cleanupWorkspace(wsDir)
+			return nil, fmt.Errorf("session: assemble agent context: %w", err)
+		}
+		assembly = a
+	}
+
 	// Resume base image: ALWAYS the configured base image. Workspace state lives
 	// entirely in the per-name /workspace host dir mounted above — that is what
 	// carries installed deps / clones across sessions and daemon restarts. The
@@ -797,24 +824,7 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 		policy:        resolved,
 	}
 
-	// F8.4: resolve the layered instruction set BEFORE the sandbox is handed out.
-	//
-	// FAIL-CLOSED, and the ordering matters: a session that starts with its house
-	// rules silently missing is the exact outcome layer 1 exists to prevent, and it
-	// would be invisible — the agent would simply behave as though the rule had
-	// never been written. An unreadable or unsafe source (a symlinked skill file
-	// pointing at a host secret, say) therefore aborts the create and rolls the
-	// container back, rather than degrading into a session with less context than
-	// the operator believes it has.
-	if m.assembleContext != nil {
-		a, err := m.assembleContext(scope.projectID, scope.envID, wsDir)
-		if err != nil {
-			_ = rt.Destroy(ctx, handle)
-			m.cleanupWorkspace(wsDir)
-			return nil, fmt.Errorf("session: assemble agent context: %w", err)
-		}
-		s.assembly = a
-	}
+	s.assembly = assembly
 
 	if err := m.store.Save(recordOf(s)); err != nil {
 		// Roll back the container so a persistence failure never leaks a sandbox.

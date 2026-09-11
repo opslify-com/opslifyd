@@ -55,6 +55,51 @@ function b64(str) {
   return btoa(bin);
 }
 
+// splitArgv turns what the operator typed into an argv vector, WITHOUT a shell.
+//
+// This is the security-critical function on the page. The daemon classifies each
+// exec on its argv — that is how "^kubectl delete" becomes an approval gate. Wrap
+// the input in `sh -c "..."` for the convenience of pipes and every gate in the
+// product stops matching, because the classifier would see `sh` and nothing else.
+// So: quotes are honoured, and shell metacharacters are REFUSED rather than
+// passed through as literal arguments, which would silently do the wrong thing.
+function splitArgv(line) {
+  const argv = [];
+  let cur = '', quote = null, any = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (c === '\\' && quote === '"' && i + 1 < line.length) { cur += line[++i]; continue; }
+      if (c === quote) { quote = null; continue; }
+      cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; any = true; continue; }
+    if (c === ' ' || c === '\t') {
+      if (cur || any) { argv.push(cur); cur = ''; any = false; }
+      continue;
+    }
+    if ('|&;<>$`'.includes(c)) {
+      throw new Error('"' + c + '" is a shell metacharacter, and this is not a shell. ' +
+        'Commands run as argv so the policy classifier sees the command you actually ' +
+        'ran — wrapping them in `sh -c` would make every approval gate stop matching.');
+    }
+    cur += c;
+  }
+  if (quote) throw new Error('unbalanced ' + quote + ' quote');
+  if (cur || any) argv.push(cur);
+  if (!argv.length) throw new Error('nothing to run');
+  return argv;
+}
+
+const fmtSecs = (n) => {
+  n = Math.max(0, Number(n) || 0);
+  if (n < 90) return Math.round(n) + 's';
+  if (n < 5400) return Math.round(n / 60) + 'm';
+  if (n < 172800) return Math.round(n / 3600) + 'h';
+  return Math.round(n / 86400) + 'd';
+};
+
 const fmtAge = (iso) => {
   if (!iso) return '—';
   const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -88,6 +133,10 @@ const S = {
   activeTab: null,
   drawerShut: false,
   loadError: null,
+  // The drawer's Shell. sessionID is which sandbox it is attached to; lines is
+  // the scrollback; pending is a gate waiting on a human.
+  drawerTab: 'shell',
+  shell: { sessionID: null, lines: [], busy: false, pending: null, history: [], hpos: -1 },
 };
 
 const project = () => S.projects.find((p) => p.id === S.projectID) || null;
@@ -129,7 +178,16 @@ async function loadAll() {
     ]);
 
   S.projects = projects || [];
-  S.sessions = sessions || [];
+  // session.View is session_id + age_seconds + ttl_remaining_seconds — NOT id,
+  // started and ttl. Normalised HERE, once, so a shape change is a one-line fix
+  // rather than a hunt through every screen. This was found by running a real
+  // sandbox: the evaluation instance has no runtime, so every session list was
+  // empty and every one of these bugs was invisible.
+  S.sessions = (sessions || []).map((x) => Object.assign({}, x, {
+    id: x.session_id || x.id,
+    ttl: x.ttl_remaining_seconds != null ? fmtSecs(x.ttl_remaining_seconds) : (x.ttl || null),
+    age: x.age_seconds != null ? fmtSecs(x.age_seconds) : null,
+  }));
   S.connections = connections || [];
   S.secrets = secrets || [];
   S.consumers = consumers || [];
@@ -355,36 +413,233 @@ function renderWork() {
   const screen = SCREENS[tab.kind];
   if (!screen) { work.innerHTML = '<div class="empty">Unknown screen.</div>'; return; }
   work.innerHTML = screen(tab.arg);
+  if (tab.kind === 'shell') afterShellRender();
 }
 
 function renderDrawer() {
-  $('dtabs').innerHTML = '<span class="t on">Trace</span>' +
-    '<span class="t" data-open="changes">Changes</span>' +
-    '<span class="t" data-open="policy">Policy</span>' +
+  const tabs = [
+    ['shell', 'Shell'],
+    ['trace', 'Trace'],
+    ['changes', 'Changes'],
+    ['policy', 'Policy'],
+  ];
+  $('dtabs').innerHTML = tabs.map(([id, label]) =>
+    '<span class="t' + (S.drawerTab === id ? ' on' : '') + '" data-dtab="' + id + '">' +
+    esc(label) + '</span>').join('') +
     '<span class="sp spacer"></span>' +
+    (S.drawerTab === 'shell'
+      ? '<span class="t" data-shellpop="1" title="open in a full tab">⤢</span>'
+      : '') +
     '<span class="t" data-drawer="1">' + (S.drawerShut ? '▴' : '▾') + '</span>';
-  $('drawer').className = 'drawer' + (S.drawerShut ? ' shut' : '');
+  $('drawer').className = 'drawer' + (S.drawerShut ? ' shut' : '') +
+    (S.drawerTab === 'shell' ? ' tall' : '');
 
+  const body = $('trace');
+  if (S.drawerTab === 'shell') { body.innerHTML = shellHTML(); afterShellRender(); return; }
+  if (S.drawerTab === 'changes') { body.innerHTML = drawerChanges(); return; }
+  if (S.drawerTab === 'policy') { body.innerHTML = drawerPolicy(); return; }
+  body.innerHTML = drawerTrace();
+}
+
+function drawerTrace() {
   // The drawer shows what the daemon can actually attest to. A per-session trace
   // needs a session; with none running there is nothing signed to display, and
   // inventing a plausible timeline here would undermine the one surface whose
   // whole value is that it is not invented.
   const live = S.sessions.filter(inScope);
   if (!live.length) {
-    $('trace').innerHTML = '<div class="empty" style="padding:14px;">' +
+    return '<div class="empty" style="padding:14px;">' +
       'No sandbox running in this scope, so there is no trace segment to show.<br>' +
       '<span class="tag">A trace is per-session and hash-chained from its ' +
       'session.start; it appears here once a sandbox starts.</span></div>';
-    return;
   }
-  $('trace').innerHTML = live.map((s) =>
-    '<div class="tli"><span class="ts">' + esc(fmtAge(s.started)) + ' ago</span>' +
+  return live.map((sx) =>
+    '<div class="tli"><span class="ts">' + esc(sx.age || '—') + ' ago</span>' +
     '<span class="ty" style="color:var(--ok);">session.start</span>' +
-    '<span class="de">sandbox ' + esc(short(s.id, 8)) + ' · tier ' + esc(s.tier || '—') +
-    ' · mode ' + esc(s.mode || '—') + '</span></div>').join('') +
+    '<span class="de">sandbox ' + esc(short(sx.id, 8)) + ' · tier ' + esc(sx.tier || '—') +
+    ' · mode ' + esc(sx.mode || '—') + '</span></div>').join('') +
     '<div class="tli"><span class="ts"></span><span class="ty" style="color:var(--muted);">' +
     'verify</span><span class="de">opslify verify ' + esc(short(live[0].id, 8)) +
     ' — the chain is checked by the CLI, not asserted here</span></div>';
+}
+
+function drawerChanges() {
+  const rows = S.changes.filter(inScope);
+  if (!rows.length) return '<div class="empty" style="padding:14px;">No changes in this scope.</div>';
+  return rows.map((c) =>
+    '<div class="tli" data-open="change:' + esc(c.id) + '" style="cursor:pointer;">' +
+    '<span class="ts">' + esc(c.status) + '</span>' +
+    '<span class="ty" style="color:var(--' +
+    (c.status === 'awaiting_approval' ? 'warn' : c.status === 'applied' ? 'ok' : 'muted') + ');">' +
+    esc(short(c.id, 20)) + '</span>' +
+    '<span class="de">' + esc(c.intent || '') + '</span></div>').join('');
+}
+
+function drawerPolicy() {
+  if (!S.policy) return '<div class="empty" style="padding:14px;">Policy unavailable.</div>';
+  return '<div class="tli"><span class="ts">hash</span><span class="ty">' +
+    esc(short(S.policy.hash, 16)) + '</span><span class="de">binds into the next session</span></div>' +
+    (S.policy.layers || []).map((l) =>
+      '<div class="tli"><span class="ts">' + (l.editable ? 'editable' : 'locked') + '</span>' +
+      '<span class="ty" style="color:var(--' + (l.editable ? 'accent' : 'muted') + ');">' +
+      esc(l.layer) + '</span><span class="de">' + esc(l.note || '') + '</span></div>').join('');
+}
+
+/* ----------------------------------------------------------------- shell --- */
+
+const shellSession = () => {
+  const live = S.sessions.filter(inScope);
+  if (S.shell.sessionID && live.some((x) => x.id === S.shell.sessionID)) {
+    return live.find((x) => x.id === S.shell.sessionID);
+  }
+  return live[0] || null;
+};
+
+function shellHTML() {
+  const sx = shellSession();
+  const live = S.sessions.filter(inScope);
+
+  if (!sx) {
+    // No host shell here, and this says so rather than leaving the operator to
+    // wonder why the box is empty. See the note on shellRun.
+    return '<div class="shellwrap"><div class="empty" style="padding:18px;">' +
+      '<h3>No sandbox to attach to</h3>' +
+      'This shell runs inside a sandbox — gVisor or runc, default-deny egress, ' +
+      'dropped capabilities, read-only rootfs. It is not a shell on this host, and ' +
+      'the daemon has no route that would give the browser one.' +
+      '<div style="margin-top:14px;">' +
+      '<button class="primary lg" data-add="session">Start a sandbox</button></div>' +
+      '<div class="cli">opslify session create --project ' + esc(S.projectID || '&lt;id&gt;') +
+      '</div></div></div>';
+  }
+
+  const sel = live.length > 1
+    ? '<select id="shellsess" class="projsel">' + live.map((x) =>
+        '<option value="' + esc(x.id) + '"' + (x.id === sx.id ? ' selected' : '') + '>' +
+        esc(short(x.id, 10)) + ' · ' + esc(x.tier || '') + '</option>').join('') + '</select>'
+    : '<span class="mono" style="font-size:10.5px;">' + esc(short(sx.id, 10)) + '</span>';
+
+  const pend = S.shell.pending;
+
+  return '<div class="shellwrap">' +
+    '<div class="capbar">sandbox ' + sel + ' · tier <b>' + esc(sx.tier || '—') + '</b> · ' +
+    'commands run as <b>argv, not a shell</b>, so the policy classifier sees what you ' +
+    'actually ran · <b>no credential is inside this sandbox</b></div>' +
+    '<div class="term" id="shellout">' +
+    (S.shell.lines.length
+      ? S.shell.lines.map((l) => '<span class="' + esc(l.k) + '">' + esc(l.t) + '</span>').join('')
+      : '<span class="o">Type a command. It runs inside sandbox ' + esc(short(sx.id, 8)) +
+        '.\nGated commands pause here for approval instead of running.\n\n</span>') +
+    '</div>' +
+    (pend
+      ? '<div class="shellgate"><div class="h">paused — ' + esc(pend.rule || 'approval gate') +
+        '</div><div class="d">' + esc(pend.reason || 'this command needs a human') +
+        '</div><div class="arow">' +
+        '<button class="approve" data-execdecide="approve">Approve and run</button>' +
+        '<button class="deny" data-execdecide="deny">Deny</button></div></div>'
+      : '') +
+    '<div class="shellin">' +
+    '<span class="ps1">' + esc(short(sx.id, 8)) + ' $</span>' +
+    '<input id="shellcmd" class="mono" autocomplete="off" spellcheck="false"' +
+    (S.shell.busy || pend ? ' disabled' : '') +
+    ' placeholder="' + (pend ? 'waiting on the gate above' : 'kubectl get pods') + '">' +
+    '<button data-shellrun="1"' + (S.shell.busy || pend ? ' disabled' : '') + '>Run</button>' +
+    '</div></div>';
+}
+
+function afterShellRender() {
+  const out = $('shellout');
+  if (out) out.scrollTop = out.scrollHeight;
+  const inp = $('shellcmd');
+  if (inp && !inp.disabled && S.drawerTab === 'shell') inp.focus();
+}
+
+const shellPush = (kind, text) => {
+  S.shell.lines.push({ k: kind, t: text });
+  // Bounded: a command that prints forever should not take the tab with it.
+  if (S.shell.lines.length > 900) S.shell.lines.splice(0, S.shell.lines.length - 900);
+};
+
+// shellRun streams the daemon's NDJSON exec frames. It deliberately does NOT
+// offer a host shell: the cockpit is a web page, and a route that ran commands
+// on this machine would make the launch token the only thing between a stray
+// browser tab and the host the sandboxes exist to protect. `opslify exec` in the
+// terminal you launched this from is the host shell.
+async function shellRun(line) {
+  const sx = shellSession();
+  if (!sx) return;
+  let argv;
+  try { argv = splitArgv(line); } catch (e) { shellPush('e', e.message + '\n'); renderDrawer(); return; }
+
+  S.shell.history.push(line); S.shell.hpos = -1;
+  shellPush('p', short(sx.id, 8) + ' $ ' + line + '\n');
+  S.shell.busy = true; renderDrawer();
+
+  try {
+    const res = await fetch('/v1/sessions/' + encodeURIComponent(sx.id) + '/exec', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ argv }),
+    });
+    if (!res.ok) {
+      let msg = await res.text();
+      try { msg = JSON.parse(msg).error || msg; } catch (_) { /* plain text */ }
+      shellPush('e', msg + '\n');
+      S.shell.busy = false; renderDrawer(); return;
+    }
+
+    // Frames arrive as newline-delimited JSON and are rendered as they land, so a
+    // long command shows progress rather than nothing until it finishes.
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const raw = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!raw.trim()) continue;
+        let f;
+        try { f = JSON.parse(raw); } catch (_) { continue; }
+        if (f.status === 'pending') {
+          S.shell.pending = { execID: f.exec_id, rule: f.rule, reason: f.reason, sessionID: sx.id };
+          shellPush('w', 'PAUSED — ' + (f.rule || 'approval gate') +
+            '. Nothing ran; a human decides.\n');
+        } else if (f.error) {
+          shellPush('e', f.error + '\n');
+        } else if (f.truncated) {
+          shellPush('w', '[' + (f.stream || 'output') + ' truncated — output cap reached]\n');
+        } else if (f.exit_code !== undefined && f.exit_code !== null) {
+          shellPush(f.exit_code === 0 ? 'o' : 'e', '[exit ' + f.exit_code + ']\n\n');
+        } else if (f.data) {
+          shellPush(f.stream === 'stderr' ? 'e' : 'o', f.data);
+        }
+        renderDrawer();
+      }
+    }
+  } catch (e) {
+    shellPush('e', 'the stream failed: ' + e.message + '\n');
+  }
+  S.shell.busy = false;
+  renderDrawer();
+}
+
+async function shellDecide(decision) {
+  const p = S.shell.pending;
+  if (!p) return;
+  await guard(async () => {
+    await send('POST', '/v1/sessions/' + encodeURIComponent(p.sessionID) +
+      '/approvals/' + encodeURIComponent(p.execID), { decision });
+    S.shell.pending = null;
+    shellPush(decision === 'approve' ? 'o' : 'w',
+      '[' + decision + 'd] ' + (decision === 'approve'
+        ? 'running — poll the output with `opslify approvals`\n\n'
+        : 'nothing ran\n\n'));
+    renderDrawer();
+    await refresh();
+  });
 }
 
 function renderChat() {
@@ -628,6 +883,12 @@ SCREENS.policy = () => {
     '<p class="tag" style="margin-top:12px;">An applied edit changes the policy hash and ' +
     'binds into the NEXT session. Sandboxes already running keep the hash they started with.</p>' +
     '</div>';
+};
+
+SCREENS.shell = () => {
+  const sx = shellSession();
+  return screenHead('shell', sx ? [short(sx.id, 10), sx.tier || ''] : ['no sandbox']) +
+    '<div class="shellfull">' + shellHTML() + '</div>';
 };
 
 SCREENS.tools = () => {
@@ -1185,17 +1446,25 @@ function newSessionModal() {
     '<label class="fld"><span class="lb">scope</span>' +
     '<input class="mono" value="' + esc(e ? e.id : (S.projectID || '')) + '" disabled></label>' +
     '<label class="fld"><span class="lb">mode</span><select id="m-mode">' +
-    '<option value="interactive">interactive</option><option value="agent">agent</option>' +
+    '<option value="scratch">scratch — an empty /workspace</option>' +
+    '<option value="workspace">workspace — the project workspace mounted</option>' +
     '</select></label>' +
     '<p class="hint">The sandbox starts with this environment\'s resolved policy and keeps ' +
     'that hash for its whole life, even if the policy is edited underneath it.</p>',
     'Create', async () => {
-      await send('POST', '/v1/sessions', {
-        project_id: S.projectID || undefined,
-        environment_id: e ? e.id : undefined,
+      // createRequest takes `project` and `environment` — NOT the project_id /
+      // environment_id spelling the other P8 routes use. decodeJSON rejects
+      // unknown fields, so the wrong names are a 400, not a silently unscoped
+      // sandbox. That is the right strictness; this is just the cost of it.
+      const out = await send('POST', '/v1/sessions', {
+        project: S.projectID || undefined,
+        environment: e ? e.id : undefined,
         mode: $('m-mode').value,
       });
-      toast('sandbox created', 'ok');
+      // Attach the Shell to what was just created; that is why it was created.
+      const id = out && (out.session_id || out.id);
+      if (id) { S.shell.sessionID = id; S.shell.lines = []; S.drawerTab = 'shell'; }
+      toast('sandbox ' + (id ? short(id, 8) : '') + ' created', 'ok');
     });
 }
 
@@ -1208,6 +1477,7 @@ async function guard(fn) {
 document.addEventListener('click', async (ev) => {
   const t = ev.target.closest('[data-wizard],[data-env],[data-add],[data-open],[data-tab],' +
     '[data-close],[data-newtab],[data-drawer],[data-killsession],[data-decide],[data-rmconn],' +
+    '[data-dtab],[data-shellrun],[data-shellpop],[data-execdecide],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-modalok],[data-modalcancel]');
@@ -1217,6 +1487,14 @@ document.addEventListener('click', async (ev) => {
 
   if (a('data-env')) { S.envID = a('data-env'); render(); return; }
   if (a('data-drawer')) { S.drawerShut = !S.drawerShut; renderDrawer(); return; }
+  if (a('data-dtab')) { S.drawerTab = a('data-dtab'); S.drawerShut = false; renderDrawer(); return; }
+  if (a('data-shellpop')) { openTab('shell', null, 'shell'); return; }
+  if (a('data-shellrun')) {
+    const inp = $('shellcmd');
+    if (inp && inp.value.trim()) { const v = inp.value; inp.value = ''; await shellRun(v); }
+    return;
+  }
+  if (a('data-execdecide')) { await shellDecide(a('data-execdecide')); return; }
   if (a('data-wizard')) { wizReset(); W.open = true; renderWizard(); return; }
 
   // One dispatcher for every + in the explorer, so a section header and its
@@ -1385,6 +1663,12 @@ document.addEventListener('click', async (ev) => {
 });
 
 document.addEventListener('change', async (ev) => {
+  if (ev.target && ev.target.id === 'shellsess') {
+    S.shell.sessionID = ev.target.value;
+    S.shell.lines = [];
+    renderDrawer();
+    return;
+  }
   if (ev.target && ev.target.id === 'projsel') {
     S.projectID = ev.target.value;
     S.envID = null;
@@ -1393,7 +1677,30 @@ document.addEventListener('change', async (ev) => {
   }
 });
 
-document.addEventListener('keydown', (ev) => {
+document.addEventListener('keydown', async (ev) => {
+  const inp = ev.target;
+  if (inp && inp.id === 'shellcmd') {
+    if (ev.key === 'Enter' && inp.value.trim()) {
+      ev.preventDefault();
+      const v = inp.value; inp.value = '';
+      await shellRun(v);
+      return;
+    }
+    // Shell history, because retyping a long kubectl line to fix one flag is how
+    // an operator ends up pasting it somewhere else instead.
+    if (ev.key === 'ArrowUp' || ev.key === 'ArrowDown') {
+      const h = S.shell.history;
+      if (!h.length) return;
+      ev.preventDefault();
+      if (S.shell.hpos < 0) S.shell.hpos = h.length;
+      S.shell.hpos += (ev.key === 'ArrowUp' ? -1 : 1);
+      if (S.shell.hpos < 0) S.shell.hpos = 0;
+      if (S.shell.hpos >= h.length) { S.shell.hpos = -1; inp.value = ''; return; }
+      inp.value = h[S.shell.hpos];
+      return;
+    }
+    return;
+  }
   if (ev.key === 'Escape') {
     if (W.open) { W.open = false; }
     closeOverlay();

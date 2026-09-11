@@ -26,6 +26,11 @@ TOWER_ADDR="${OPSLIFY_TRY_ADDR:-127.0.0.1:14646}"
 # A digest-pinned base image is required by config validation. It is never pulled
 # here (no sandbox is started), so the digest only has to be well-formed.
 BASE_IMAGE="${OPSLIFY_TRY_IMAGE:-docker.io/library/alpine@sha256:0000000000000000000000000000000000000000000000000000000000000000}"
+# gVisor is the default and the right one. Without runsc installed no sandbox can
+# start at all, which makes the Shell tab and every exec surface untestable — so
+# OPSLIFY_TRY_TIER=local-docker falls back to runc for a look around. That is a
+# WEAKER boundary: runc shares the host kernel.
+TIER="${OPSLIFY_TRY_TIER:-local-hardened}"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 step() { printf '\n\033[1;36m── %s\033[0m\n' "$*"; }
@@ -83,7 +88,7 @@ step "writing a self-contained config"
 cat > "$ROOT/etc/config.yaml" <<EOF
 image: $BASE_IMAGE
 workspace_dir: $ROOT/workspaces
-tier: local-hardened
+tier: $TIER
 session_ttl: 30m
 vault:
   path: $ROOT/state/vault.db

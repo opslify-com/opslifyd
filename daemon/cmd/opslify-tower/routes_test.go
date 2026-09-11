@@ -727,3 +727,62 @@ func TestTheSPAIsStructurallyBalanced(t *testing.T) {
 		}
 	}
 }
+
+// TestTheShellNeverWrapsCommandsInAShell is the sharpest guard on this page.
+//
+// The daemon classifies every exec on its ARGV — that is how "^kubectl delete"
+// becomes an approval gate. Wrapping what the operator typed in `sh -c "..."` to
+// get pipes would make the classifier see `sh` and nothing else, and every gate
+// in the product would stop matching while appearing to work. The failure would
+// be invisible: commands run, output looks right, and the gates are simply gone.
+func TestTheShellNeverWrapsCommandsInAShell(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+	for _, forbidden := range []string{
+		`'sh', '-c'`, `"sh", "-c"`, `'bash', '-c'`, `"bash", "-c"`,
+		`'/bin/sh'`, `'/bin/bash'`, `argv: ['sh'`, `shell: true`,
+	} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("the cockpit builds %s — an exec wrapped in a shell defeats every "+
+				"argv-based approval gate", forbidden)
+		}
+	}
+	// And the parser must exist and refuse metacharacters rather than passing them
+	// through as literal arguments, which would silently do the wrong thing.
+	if !strings.Contains(js, "function splitArgv") {
+		t.Fatal("splitArgv is gone; what replaced it?")
+	}
+	if !strings.Contains(js, "shell metacharacter") {
+		t.Error("splitArgv no longer refuses shell metacharacters")
+	}
+}
+
+// TestTheCockpitOffersNoHostShell: the shell attaches to a sandbox, never to this
+// machine. A route that ran commands on the host would make the launch token the
+// only thing between a stray browser tab and the host the sandboxes exist to
+// protect.
+func TestTheCockpitOffersNoHostShell(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+	// Every exec the page issues must be scoped to a session.
+	for _, m := range regexp.MustCompile(`'/v1/[a-z/]*exec`).FindAllString(js, -1) {
+		if !strings.Contains(m, "sessions/") {
+			t.Errorf("the cockpit posts to %s, which is not session-scoped", m)
+		}
+	}
+	if strings.Contains(js, "/v1/host") || strings.Contains(js, "host_exec") {
+		t.Error("the cockpit references a host-exec route")
+	}
+	// And no such route exists to be reached, on the allowlist or otherwise.
+	for _, rt := range towerRoutes {
+		if strings.Contains(rt.Path, "exec") && !strings.Contains(rt.Path, "/v1/sessions/") {
+			t.Errorf("allowlisted exec route %s is not session-scoped", rt.Path)
+		}
+	}
+}
