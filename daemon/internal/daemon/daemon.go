@@ -78,6 +78,8 @@ type Options struct {
 	Agents AgentRegistry
 	// Changes is the F8.6 review surface. nil => the routes are not registered.
 	Changes ChangeService
+	// PolicyEditor is the F8.7 guardrail surface. nil => the routes are absent.
+	PolicyEditor PolicyEditor
 	// Secrets is the F5.6 secret MANAGEMENT surface (Put/List/Delete — the narrow
 	// broker.SecretManager, which has NO Get). nil keeps the /v1/secrets routes
 	// 404. There is deliberately no route that returns a secret value — Get is
@@ -100,6 +102,7 @@ type Daemon struct {
 	secrets      broker.SecretManager
 	agents       AgentRegistry
 	changes      ChangeService
+	policyEditor PolicyEditor
 
 	version  string
 	tier     string
@@ -131,6 +134,7 @@ func New(opts Options) (*Daemon, error) {
 		projects:     opts.Projects,
 		agents:       opts.Agents,
 		changes:      opts.Changes,
+		policyEditor: opts.PolicyEditor,
 		secrets:      opts.Secrets,
 		version:      orDefault(opts.Version, "dev"),
 		tier:         opts.Config.Tier,

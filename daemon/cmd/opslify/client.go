@@ -1115,3 +1115,128 @@ func (c *client) decideChange(ctx context.Context, id, decision, note string) (c
 	}
 	return out, nil
 }
+
+// --- F8.7 policy editing --------------------------------------------------------
+
+// policyLayerView is one layer in the precedence chain.
+type policyLayerView struct {
+	Layer    string `json:"layer"`
+	Editable bool   `json:"editable"`
+	Note     string `json:"note,omitempty"`
+}
+
+// resolvedPolicyView is what is actually in force for a scope.
+type resolvedPolicyView struct {
+	Scope            string            `json:"scope,omitempty"`
+	Hash             string            `json:"hash"`
+	Layers           []policyLayerView `json:"layers"`
+	EgressDomains    []string          `json:"egress_domains,omitempty"`
+	ApprovalRequired []string          `json:"approval_required,omitempty"`
+	SessionTTL       string            `json:"session_ttl,omitempty"`
+	StrictExec       bool              `json:"strict_exec"`
+	// Clamps record where a lower layer tried to widen and was narrowed back. A
+	// silently-clamped policy looks like one that was simply ignored.
+	Clamps []string `json:"clamps,omitempty"`
+}
+
+// policyDiffView is the real difference between two resolved scopes.
+type policyDiffView struct {
+	Direction  string   `json:"direction"`
+	Widenings  []string `json:"widenings,omitempty"`
+	Narrowings []string `json:"narrowings,omitempty"`
+	HashA      string   `json:"hash_a"`
+	HashB      string   `json:"hash_b"`
+}
+
+// policyEditReq is an edit expressed as additions and removals.
+//
+// The wire shape is additive/subtractive even though the SERVICE works on whole
+// documents: an operator adding one egress host should not have to send the whole
+// policy back, which would race with anyone else editing it. The daemon composes
+// the resulting document and classifies THAT, so the thing reviewed is still a
+// complete policy.
+type policyEditReq struct {
+	ProjectID     string   `json:"project_id,omitempty"`
+	EnvironmentID string   `json:"environment_id,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	AddEgress     []string `json:"add_egress,omitempty"`
+	RemoveEgress  []string `json:"remove_egress,omitempty"`
+	AddGates      []string `json:"add_gates,omitempty"`
+	RemoveGates   []string `json:"remove_gates,omitempty"`
+}
+
+// policyEditView is what happened to an edit.
+type policyEditView struct {
+	Applied    bool     `json:"applied"`
+	Direction  string   `json:"direction"`
+	ChangeID   string   `json:"change_id,omitempty"`
+	Widenings  []string `json:"widenings,omitempty"`
+	Narrowings []string `json:"narrowings,omitempty"`
+	Hash       string   `json:"hash,omitempty"`
+}
+
+func (c *client) resolvedPolicy(ctx context.Context, projectID, environmentID string) (resolvedPolicyView, error) {
+	u := c.baseURL + "/v1/policy"
+	q := url.Values{}
+	if projectID != "" {
+		q.Set("project", projectID)
+	}
+	if environmentID != "" {
+		q.Set("env", environmentID)
+	}
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	var out resolvedPolicyView
+	return out, c.getJSON(ctx, u, &out)
+}
+
+func (c *client) policyDiff(ctx context.Context, a, b string) (policyDiffView, error) {
+	q := url.Values{}
+	q.Set("a", a)
+	q.Set("b", b)
+	var out policyDiffView
+	return out, c.getJSON(ctx, c.baseURL+"/v1/policy/diff?"+q.Encode(), &out)
+}
+
+func (c *client) editPolicy(ctx context.Context, req policyEditReq) (policyEditView, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return policyEditView{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/policy/edit", bytes.NewReader(body))
+	if err != nil {
+		return policyEditView{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return policyEditView{}, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return policyEditView{}, c.decodeError(resp)
+	}
+	var out policyEditView
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return policyEditView{}, err
+	}
+	return out, nil
+}
+
+// getJSON is the shared GET-and-decode used by the read-only policy routes.
+func (c *client) getJSON(ctx context.Context, url string, into any) error {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.decodeError(resp)
+	}
+	return json.NewDecoder(resp.Body).Decode(into)
+}

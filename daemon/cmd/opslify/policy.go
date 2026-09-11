@@ -13,9 +13,13 @@ import (
 func policyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "policy",
-		Short: "Author and validate opslify.policy.yaml",
+		Short: "Inspect and edit guardrails (show, diff, allow-egress, gate, check)",
+		Long: "Guardrails are edited by DIRECTION: tightening applies immediately, widening\n" +
+			"needs approval. The daemon baseline and the repo policy are read-only here —\n" +
+			"the first is host-side by design, the second changes by a reviewed commit.",
 	}
-	cmd.AddCommand(policyCheckCmd())
+	cmd.AddCommand(policyCheckCmd(), policyShowCmd(), policyDiffCmd(),
+		policyAllowEgressCmd(), policyDenyEgressCmd(), policyGateCmd())
 	return cmd
 }
 
