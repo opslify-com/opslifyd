@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/opslify-com/opslifyd/internal/daemon"
 	"os"
 	"path/filepath"
 	"sort"
@@ -65,10 +66,10 @@ func newMemoryService(workspaceRoot string, projects *project.Service, stateDir 
 // The FIRST matching root wins rather than merging them, so two copies of a
 // runbook in two conventions cannot both be retrieved and disagree.
 func (s *memoryService) rootFor(projectID string) string {
-	if projectID == "" {
-		projectID = project.DefaultProjectID
+	ws := daemon.WorkspaceDirFor(s.projects, s.workspaceRoot, projectID)
+	if ws == "" {
+		return ""
 	}
-	ws := filepath.Join(s.workspaceRoot, "ws-"+projectID)
 	for _, r := range s.roots {
 		p := filepath.Join(ws, filepath.FromSlash(r))
 		if fi, err := os.Stat(p); err == nil && fi.IsDir() {

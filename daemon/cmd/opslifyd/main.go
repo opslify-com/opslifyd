@@ -848,7 +848,7 @@ func buildDaemonOptions(
 	if mem != nil {
 		memSvc = mem
 	}
-	wsList := daemon.NewWorkspaceLister(cfg.WorkspaceDir)
+	wsList := daemon.NewWorkspaceLister(cfg.WorkspaceDir, projects)
 	// F0.2 per project. The builder is nil when this host has no nix/devbox, and
 	// that is reported as "unavailable" rather than as a failure: nothing is wrong
 	// with the request, the machine simply cannot serve it, and telling an

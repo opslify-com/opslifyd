@@ -88,10 +88,10 @@ func (d *Daemon) handleWorkspaceTree(w http.ResponseWriter, r *http.Request) {
 // sandbox for this project. That is exactly why credentials never go in it — they
 // live in the vault and are injected at the egress proxy.
 func (t *workspaceTreeFS) Scaffold(projectID string) (string, error) {
-	if projectID == "" || projectID != filepath.Base(projectID) || strings.Contains(projectID, "..") {
+	dir := WorkspaceDirFor(t.lookup, t.root, projectID)
+	if dir == "" {
 		return "", nil
 	}
-	dir := filepath.Join(t.root, "ws-"+projectID)
 	for _, sub := range []string{
 		filepath.Join(".opslify", "memory"),
 		filepath.Join(".opslify", "skills"),
@@ -136,26 +136,25 @@ func workspaceReadme(projectID string) string {
 // workspaceTreeFS is the filesystem implementation, kept here rather than in the
 // composition root because the exclusion and symlink rules are the interesting
 // part and they belong next to the type that promises them.
-type workspaceTreeFS struct{ root string }
+type workspaceTreeFS struct {
+	root   string
+	lookup ProjectLookup
+}
 
-// NewWorkspaceLister returns a lister over <root>/ws-<project>.
-func NewWorkspaceLister(root string) WorkspaceLister {
+// NewWorkspaceLister returns a lister over a project's workspace — its own
+// directory when it named one, otherwise <root>/ws-<project>.
+func NewWorkspaceLister(root string, lookup ProjectLookup) WorkspaceLister {
 	if root == "" {
 		return nil
 	}
-	return &workspaceTreeFS{root: root}
+	return &workspaceTreeFS{root: root, lookup: lookup}
 }
 
 func (t *workspaceTreeFS) Tree(projectID string, depth int) (WorkspaceTree, error) {
-	if projectID == "" {
-		projectID = "default"
-	}
-	// One path segment, resolved by the daemon. A project id containing a
-	// separator would otherwise walk out of the workspace root.
-	if projectID != filepath.Base(projectID) || strings.Contains(projectID, "..") {
+	dir := WorkspaceDirFor(t.lookup, t.root, projectID)
+	if dir == "" {
 		return WorkspaceTree{}, nil
 	}
-	dir := filepath.Join(t.root, "ws-"+projectID)
 	out := WorkspaceTree{Project: projectID, Path: dir}
 	fi, err := os.Stat(dir)
 	if err != nil || !fi.IsDir() {
