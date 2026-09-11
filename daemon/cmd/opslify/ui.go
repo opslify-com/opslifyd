@@ -2,10 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
 	"embed"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net"
@@ -19,91 +16,9 @@ import (
 	"time"
 
 	"github.com/opslify-com/opslifyd/internal/daemon"
+	"github.com/opslify-com/opslifyd/internal/uiguard"
 	"github.com/spf13/cobra"
 )
-
-// uiTokenCookie is the name of the HttpOnly cookie the server sets from a valid
-// ?token= launch URL so the SPA's same-origin fetches carry the token
-// automatically — the token never has to live in JS.
-const uiTokenCookie = "opslify_ui_token"
-
-// uiTokenHeader is the header alternative to the cookie, for curl/tests and any
-// non-browser client that cannot round-trip a Set-Cookie.
-const uiTokenHeader = "X-Opslify-UI-Token"
-
-// mintUIToken generates a fresh, cryptographically-random per-launch token
-// (256-bit, hex-encoded). It is a DISPOSABLE secret — unrelated to the daemon's
-// durable audit key, which is never loaded or used in the UI path.
-func mintUIToken() (string, error) {
-	b := make([]byte, 32) // 256 bits of entropy
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("ui: mint launch token: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
-
-// tokenMatches compares a presented token against the launch token in constant
-// time, so a network attacker cannot recover it byte-by-byte via timing. Empty
-// values never match.
-func tokenMatches(want, got string) bool {
-	if want == "" || got == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(want), []byte(got)) == 1
-}
-
-// presentedToken extracts a candidate token from the request, in preference
-// order: the ?token= query (the launch-URL bootstrap), the X-Opslify-UI-Token
-// header (curl/tests), an Authorization: Bearer header, then the auth cookie
-// (what the browser sends on every same-origin request after bootstrap). The
-// bool reports whether the token arrived via the ?token= query, which is the
-// only case where the server (re)sets the HttpOnly cookie.
-func presentedToken(r *http.Request) (tok string, fromQuery bool) {
-	if q := r.URL.Query().Get("token"); q != "" {
-		return q, true
-	}
-	if h := r.Header.Get(uiTokenHeader); h != "" {
-		return h, false
-	}
-	if a := r.Header.Get("Authorization"); a != "" {
-		if v, ok := strings.CutPrefix(a, "Bearer "); ok && v != "" {
-			return v, false
-		}
-	}
-	if c, err := r.Cookie(uiTokenCookie); err == nil {
-		return c.Value, false
-	}
-	return "", false
-}
-
-// tokenAuthGuard requires a valid per-launch token on EVERY route — the SPA
-// index, static assets, and all /v1/* proxy routes alike. A request presenting
-// no token or a wrong token gets 401. When the token arrives via the ?token=
-// launch URL and is valid, the server sets an HttpOnly, SameSite=Strict,
-// Path=/ cookie so subsequent same-origin requests authenticate automatically
-// without any token handling in JS. This is the gap the Host-guard alone left:
-// a DNS-rebind page has a loopback Host but never the token, so it is refused.
-func tokenAuthGuard(token string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		presented, fromQuery := presentedToken(r)
-		if !tokenMatches(token, presented) {
-			http.Error(w, "opslify ui: missing or invalid launch token (open the ?token= URL printed by `opslify ui`)", http.StatusUnauthorized)
-			return
-		}
-		if fromQuery {
-			// Bootstrap: stamp the token into an HttpOnly cookie so the browser
-			// carries it on every later fetch and it never touches JS.
-			http.SetCookie(w, &http.Cookie{
-				Name:     uiTokenCookie,
-				Value:    token,
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
-			})
-		}
-		next.ServeHTTP(w, r)
-	})
-}
 
 // webuiFS holds the self-contained SPA served by `opslify ui`. Everything the
 // browser loads (HTML/CSS/JS) is embedded here — no CDN, font, image, or script
@@ -132,12 +47,12 @@ func uiCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Enforce the localhost trust boundary in code, not just config: refuse
 			// to bind anything but a loopback interface.
-			if err := assertLoopbackHost(host); err != nil {
+			if err := uiguard.AssertLoopbackHost(host); err != nil {
 				return err
 			}
 			// Mint a fresh per-launch token; a new `opslify ui` run mints a new one.
 			// It is a disposable same-machine secret — NOT the durable audit key.
-			token, err := mintUIToken()
+			token, err := uiguard.MintToken()
 			if err != nil {
 				return err
 			}
@@ -152,7 +67,7 @@ func uiCmd() *cobra.Command {
 				return fmt.Errorf("ui: bind %s: %w", addr, err)
 			}
 			// Belt-and-suspenders: verify the bound address really is loopback.
-			if err := assertLoopbackAddr(ln.Addr()); err != nil {
+			if err := uiguard.AssertLoopbackAddr(ln.Addr()); err != nil {
 				ln.Close()
 				return err
 			}
@@ -263,18 +178,18 @@ func newUIServer(socketPath, token string) (http.Handler, error) {
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
 	// Compose two additive guards, outermost first:
-	//   1. loopbackHostGuard — a non-loopback Host header is refused (403) as a
+	//   1. uiguard.LoopbackHost — a non-loopback Host header is refused (403) as a
 	//      DNS-rebinding defense (checked first, so a foreign Host is a 403, not a
 	//      token 401).
-	//   2. tokenAuthGuard — every route (SPA, assets, /v1/*) requires the valid
+	//   2. uiguard.TokenAuth — every route (SPA, assets, /v1/*) requires the valid
 	//      per-launch token or gets 401. This closes the gap the Host-guard alone
 	//      left: a DNS-rebind page has a loopback Host but never the token.
-	return loopbackHostGuard(tokenAuthGuard(token, mux)), nil
+	return uiguard.LoopbackHost(uiguard.TokenAuth(token, mux)), nil
 }
 
 // allowedProxyRoute is the browser-reachable /v1 allowlist. Since F7.4 it exposes
 // the operator's full CLI parity — BUT every route here is still reached only
-// behind the F7.1 tokenAuthGuard + loopbackHostGuard, so a random local page (or
+// behind the F7.1 uiguard.TokenAuth + uiguard.LoopbackHost, so a random local page (or
 // a DNS-rebind attacker) holds none of it. It permits:
 //   - GET/POST /v1/sessions                     (live list; F7.4 create)
 //   - GET  /v1/sessions/history                 (F3.6 past-session list — read)
@@ -403,73 +318,6 @@ func allowedProxyRoute(method, p string) bool {
 func isApprovalsResolvePath(rest string) bool {
 	parts := strings.Split(strings.TrimSuffix(rest, "/"), "/")
 	return len(parts) == 3 && parts[0] != "" && parts[1] == "approvals" && parts[2] != ""
-}
-
-// loopbackHostGuard rejects any request whose Host header is not loopback. This
-// is the DNS-rebinding defense: even though the socket binds 127.0.0.1, a
-// browser tricked by a rebound DNS name would send that name in Host; we require
-// 127.0.0.1 / ::1 / localhost (any port) so only a genuinely local origin passes.
-func loopbackHostGuard(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !hostIsLoopback(r.Host) {
-			http.Error(w, "opslify ui: refusing request with non-loopback Host header (DNS-rebinding guard)", http.StatusForbidden)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// hostIsLoopback reports whether an HTTP Host header (host or host:port) names a
-// loopback address or "localhost". No DNS is performed — a literal check only.
-func hostIsLoopback(hostport string) bool {
-	if hostport == "" {
-		return false
-	}
-	host, _, err := net.SplitHostPort(hostport)
-	if err != nil {
-		host = hostport // no port present
-	}
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// assertLoopbackHost rejects any bind host that is not loopback. It resolves
-// literal IPs via net.IP (checking IsLoopback) and permits only the "localhost"
-// hostname, so the guard is deterministic and needs no DNS. A hostname that
-// could resolve off-host (or 0.0.0.0 / a LAN IP) is refused — the local UI must
-// never be reachable from another host.
-func assertLoopbackHost(host string) error {
-	if host == "" {
-		return fmt.Errorf("ui: refusing empty bind host; the UI binds loopback only")
-	}
-	if host == "localhost" {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf("ui: refusing non-loopback bind host %q; only 127.0.0.1, ::1, or localhost are allowed", host)
-	}
-	if !ip.IsLoopback() {
-		return fmt.Errorf("ui: refusing non-loopback bind %q; the UI must not be reachable off-host (use the cloud plane for remote access)", host)
-	}
-	return nil
-}
-
-// assertLoopbackAddr re-checks an already-bound address is loopback (defense in
-// depth against a host that resolved to a routable IP).
-func assertLoopbackAddr(addr net.Addr) error {
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return fmt.Errorf("ui: cannot parse bound address %q: %w", addr, err)
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("ui: bound address %q is not loopback; refusing to serve", addr)
-	}
-	return nil
 }
 
 // openBrowser best-effort opens uiURL in the operator's browser. It never fails

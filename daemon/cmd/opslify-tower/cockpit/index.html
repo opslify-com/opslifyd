@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>opslify cockpit</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/cockpit.css">
+<body>
+<header id="top">
+  <div class="brand">opslify <span>cockpit</span></div>
+  <!-- The agent indicator is permanent, not a panel you open. Which model is
+       about to act on an estate is not a detail to go looking for. -->
+  <div id="agent" class="agent" title="the agent bound to this scope">
+    <span class="dot"></span><span id="agent-name">no agent bound</span>
+    <span id="agent-model" class="muted"></span>
+    <span id="agent-locality" class="pill"></span>
+  </div>
+</header>
+
+<main>
+  <nav id="sidebar">
+    <div class="scope">
+      <label for="scope-select">scope</label>
+      <select id="scope-select"></select>
+    </div>
+    <ul id="sections"></ul>
+  </nav>
+
+  <section id="work">
+    <div id="tabs" class="tabs"></div>
+    <div id="panel" class="panel"><p class="muted">loading…</p></div>
+  </section>
+</main>
+
+<footer id="status"><span id="conn">connecting…</span></footer>
+<script src="/cockpit.js"></script>
+</body>

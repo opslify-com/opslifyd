@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"github.com/opslify-com/opslifyd/internal/uiguard"
 	"io"
 	"io/fs"
 	"net"
@@ -41,9 +42,9 @@ func (b *syncBuf) String() string {
 // testToken mints a token for tests and fails hard if the CSPRNG errors.
 func testToken(t *testing.T) string {
 	t.Helper()
-	tok, err := mintUIToken()
+	tok, err := uiguard.MintToken()
 	if err != nil {
-		t.Fatalf("mintUIToken: %v", err)
+		t.Fatalf("uiguard.MintToken: %v", err)
 	}
 	return tok
 }
@@ -65,7 +66,7 @@ func doTok(t *testing.T, method, url, token string, body io.Reader) *http.Respon
 	t.Helper()
 	req, _ := http.NewRequest(method, url, body)
 	if token != "" {
-		req.Header.Set(uiTokenHeader, token)
+		req.Header.Set(uiguard.TokenHeader, token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -79,23 +80,23 @@ func doTok(t *testing.T, method, url, token string, body io.Reader) *http.Respon
 func TestAssertLoopbackHost(t *testing.T) {
 	ok := []string{"127.0.0.1", "::1", "localhost"}
 	for _, h := range ok {
-		if err := assertLoopbackHost(h); err != nil {
+		if err := uiguard.AssertLoopbackHost(h); err != nil {
 			t.Errorf("loopback host %q wrongly rejected: %v", h, err)
 		}
 	}
 	bad := []string{"0.0.0.0", "192.168.1.10", "10.0.0.1", "::", "example.com", ""}
 	for _, h := range bad {
-		if err := assertLoopbackHost(h); err == nil {
+		if err := uiguard.AssertLoopbackHost(h); err == nil {
 			t.Errorf("non-loopback host %q wrongly accepted", h)
 		}
 	}
 }
 
 func TestAssertLoopbackAddr(t *testing.T) {
-	if err := assertLoopbackAddr(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4646}); err != nil {
+	if err := uiguard.AssertLoopbackAddr(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 4646}); err != nil {
 		t.Errorf("127.0.0.1 addr rejected: %v", err)
 	}
-	if err := assertLoopbackAddr(&net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 4646}); err == nil {
+	if err := uiguard.AssertLoopbackAddr(&net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 4646}); err == nil {
 		t.Error("0.0.0.0 addr wrongly accepted")
 	}
 }
@@ -260,7 +261,7 @@ func TestUIProxyStreamsSSEIncrementally(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/sessions/s1/trace?from_seq=0", nil)
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set(uiTokenHeader, tok)
+	req.Header.Set(uiguard.TokenHeader, tok)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
@@ -321,12 +322,12 @@ func TestUIRefusesNonLoopbackHost(t *testing.T) {
 
 	// The unit check directly, incl. loopback names/ports that MUST pass.
 	for _, ok := range []string{"127.0.0.1:4646", "localhost:4646", "[::1]:4646", "127.0.0.1"} {
-		if !hostIsLoopback(ok) {
+		if !uiguard.HostIsLoopback(ok) {
 			t.Errorf("loopback Host %q wrongly refused", ok)
 		}
 	}
 	for _, bad := range []string{"evil.com", "evil.com:4646", "10.0.0.5:4646", ""} {
-		if hostIsLoopback(bad) {
+		if uiguard.HostIsLoopback(bad) {
 			t.Errorf("non-loopback Host %q wrongly accepted", bad)
 		}
 	}
@@ -434,7 +435,7 @@ func TestUIProxyForwardsApprovalResolve(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/sessions/s7/approvals/e9",
 		strings.NewReader(`{"decision":"approve","comment":"lgtm"}`))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(uiTokenHeader, tok)
+	req.Header.Set(uiguard.TokenHeader, tok)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post: %v", err)
@@ -588,17 +589,17 @@ func TestUIRejectsMissingToken(t *testing.T) {
 
 func TestTokenMatchesConstantTimePath(t *testing.T) {
 	tok := testToken(t)
-	if !tokenMatches(tok, tok) {
+	if !uiguard.TokenMatches(tok, tok) {
 		t.Error("identical tokens must match")
 	}
-	if tokenMatches(tok, "") || tokenMatches("", tok) || tokenMatches("", "") {
+	if uiguard.TokenMatches(tok, "") || uiguard.TokenMatches("", tok) || uiguard.TokenMatches("", "") {
 		t.Error("empty token must never match")
 	}
-	if tokenMatches(tok, tok[:len(tok)-1]+"x") {
+	if uiguard.TokenMatches(tok, tok[:len(tok)-1]+"x") {
 		t.Error("a one-byte-different token must not match")
 	}
 	// Differing lengths must not match (ConstantTimeCompare returns 0).
-	if tokenMatches(tok, tok+"a") {
+	if uiguard.TokenMatches(tok, tok+"a") {
 		t.Error("a longer token must not match")
 	}
 }
@@ -618,7 +619,7 @@ func TestUITokenCookieBootstrap(t *testing.T) {
 	}
 	var cookie *http.Cookie
 	for _, c := range resp.Cookies() {
-		if c.Name == uiTokenCookie {
+		if c.Name == uiguard.TokenCookie {
 			cookie = c
 		}
 	}
