@@ -171,6 +171,42 @@ step "a WIDENING policy edit — refused, becomes a change for approval"
 o policy allow-egress evil.example.com --project tripon --env tripon.prod \
   --reason "evaluation walkthrough"
 
+step "seeding project memory (runbooks the agent can search)"
+# Memory lives in the project's workspace so it travels with the repo. Written
+# here so the Memory screen and opslify_memory_search have something real.
+MEM="$ROOT/workspaces/ws-tripon/.opslify/memory"
+mkdir -p "$MEM/runbooks" "$MEM/architecture"
+cat > "$MEM/runbooks/deploy.md" <<'MD'
+# Deploying yarvel
+
+## Prerequisites
+The pipeline must be green and a maintainer must be on call.
+Deploys are frozen on Fridays after 14:00 UTC.
+
+## Rollback
+To revert a bad release, re-apply the previous manifest with argocd, then drain
+the old replicaset. Never delete the namespace — it holds the persistent volume
+claims and recreating it loses staging data.
+
+## Contacts
+Page the on-call rota in #tripon-ops.
+MD
+cat > "$MEM/architecture/overview.md" <<'MD'
+# tripon architecture
+
+## Services
+yarvel-main is the API. activity-ms and recent-search are behind the ocelot
+gateway. rihla-social-server is independent and has its own database.
+
+## Databases
+db-01 is the primary Postgres. db-02 is a streaming replica with automatic
+failover managed by Patroni. Failover takes roughly 30 seconds.
+
+## Ingress
+All external traffic enters through the ocelot gateway on gitlab.tripon.io.
+MD
+o memory ls --project tripon
+
 step "the change it created"
 o change ls
 

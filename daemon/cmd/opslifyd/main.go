@@ -839,6 +839,15 @@ func buildDaemonOptions(
 	if err != nil {
 		return daemon.Options{}, err
 	}
+	// F8.10: the project's document corpus, read out of its workspace.
+	mem, err := newMemoryService(cfg.WorkspaceDir, projects, filepath.Dir(cfg.WorkspaceDir))
+	if err != nil {
+		return daemon.Options{}, err
+	}
+	var memSvc daemon.MemoryService
+	if mem != nil {
+		memSvc = mem
+	}
 	// A typed nil would make daemon.Options.AgentDriver non-nil and register the
 	// route against nothing; the first prompt would panic.
 	var drv daemon.AgentDriver
@@ -846,7 +855,7 @@ func buildDaemonOptions(
 		drv = agentDrv
 	}
 	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc,
-		conns, agentReg, drv, changes, editor, log), nil
+		conns, agentReg, drv, changes, editor, memSvc, log), nil
 }
 
 // daemonOptions assembles the Options literal. Kept separate from
@@ -866,6 +875,7 @@ func daemonOptions(
 	agentDrv daemon.AgentDriver,
 	changes daemon.ChangeService,
 	editor daemon.PolicyEditor,
+	mem daemon.MemoryService,
 	log *slog.Logger,
 ) daemon.Options {
 	return daemon.Options{
@@ -888,6 +898,7 @@ func daemonOptions(
 		AgentDriver:  agentDrv,
 		Changes:      changes,
 		PolicyEditor: editor,
+		Memory:       mem,
 		Ready:        sdNotifyReady,
 		Version:      version,
 		Logger:       log,

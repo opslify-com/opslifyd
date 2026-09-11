@@ -241,6 +241,7 @@ func TestToolsListExposesFive(t *testing.T) {
 		"opslify_upload":         false,
 		"opslify_download":       false,
 		"opslify_session_end":    false,
+		"opslify_memory_search":  false,
 	}
 	for _, tool := range lt.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -250,8 +251,11 @@ func TestToolsListExposesFive(t *testing.T) {
 			t.Errorf("tool %s has nil input schema", tool.Name)
 		}
 	}
-	if len(lt.Tools) != 5 {
-		t.Errorf("want 5 tools, got %d", len(lt.Tools))
+	// An exact count, not a minimum. The tool set is the agent's entire surface,
+	// and one appearing that nobody added deliberately is the shape of a mistake
+	// worth failing on.
+	if len(lt.Tools) != len(want) {
+		t.Errorf("want %d tools, got %d", len(want), len(lt.Tools))
 	}
 	for name, seen := range want {
 		if !seen {

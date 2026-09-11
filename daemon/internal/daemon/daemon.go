@@ -79,6 +79,8 @@ type Options struct {
 	// AgentDriver runs a registered agent against a prompt. nil => the /run route
 	// is absent, and the cockpit's composer says so rather than failing on click.
 	AgentDriver AgentDriver
+	// Memory is the F8.10 project corpus. nil => the routes are absent.
+	Memory MemoryService
 	// Changes is the F8.6 review surface. nil => the routes are not registered.
 	Changes ChangeService
 	// PolicyEditor is the F8.7 guardrail surface. nil => the routes are absent.
@@ -113,6 +115,7 @@ type Daemon struct {
 	sessions     SessionService
 	projects     ProjectService
 	agentDriver  AgentDriver
+	memory       MemoryService
 	secrets      broker.SecretManager
 	secretsSvc   *broker.SecretsService
 	connections  ConnectionService
@@ -150,6 +153,7 @@ func New(opts Options) (*Daemon, error) {
 		projects:     opts.Projects,
 		agents:       opts.Agents,
 		agentDriver:  opts.AgentDriver,
+		memory:       opts.Memory,
 		changes:      opts.Changes,
 		policyEditor: opts.PolicyEditor,
 		secrets:      opts.Secrets,

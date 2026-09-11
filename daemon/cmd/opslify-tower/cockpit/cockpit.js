@@ -142,6 +142,9 @@ const S = {
   // trace), and a second half-copy of it here would just be a way to disagree.
   chat: { turns: [], busy: false },
   bindings: [],
+  memory: [],
+  memHits: null,
+  memQuery: '',
 };
 
 // resolveBinding applies F8.5's precedence: the most specific binding wins, and
@@ -187,7 +190,7 @@ async function loadAll() {
   const get = async (path, fallback) => {
     try { return await api(path); } catch (e) { return fallback; }
   };
-  const [projects, sessions, connections, secrets, consumers, agents, changes, policy, health] =
+  const [projects, sessions, connections, secrets, consumers, agents, changes, policy, memoryList, health] =
     await Promise.all([
       get('/v1/projects', []),
       get('/v1/sessions', []),
@@ -197,6 +200,7 @@ async function loadAll() {
       get('/v1/agents', { agents: [] }),
       get('/v1/changes', []),
       get('/v1/policy', null),
+      get('/v1/memory' + (S.projectID ? '?project=' + encodeURIComponent(S.projectID) : ''), null),
       get('/v1/health', null),
     ]);
 
@@ -219,6 +223,7 @@ async function loadAll() {
   S.boundAgent = resolveBinding();
   S.changes = changes || [];
   S.policy = policy;
+  S.memory = (memoryList && memoryList.documents) || [];
   S.health = health;
 
   if (!S.projectID || !project()) {
@@ -384,6 +389,18 @@ function renderSide() {
     '<span class="nm">' + esc(x.ref) + '</span>' +
     '<span class="rt">' + esc(x.provider || '') + '</span></div>').join('')
     : noneRow('none stored');
+
+  // --- memory -----------------------------------------------------------------
+  // No + that uploads. Memory is a folder of reviewed files in the project's
+  // workspace; a button that wrote one would be a second, unreviewed path into
+  // what the agent reads.
+  html += esec('Memory', S.memory.length, null, 'memory');
+  html += S.memory.length ? S.memory.slice(0, 8).map((d) =>
+    '<div class="row" data-open="memory"><span class="kd">md</span>' +
+    '<span class="nm" title="' + esc(d.rel) + '">' + esc(d.title || d.rel) + '</span>' +
+    '<span class="rt" style="color:var(--' + (d.enabled ? 'muted' : 'danger') + ');">' +
+    (d.enabled ? d.chunks + ' ch' : 'off') + '</span></div>').join('')
+    : noneRow('no documents');
 
   // --- policy -----------------------------------------------------------------
   html += esec('Policy', S.policy ? short(S.policy.hash, 8) : null, 'policy', 'policy');
@@ -1011,6 +1028,61 @@ SCREENS.shell = () => {
     '<div class="shellfull">' + shellHTML() + '</div>';
 };
 
+SCREENS.memory = () => {
+  const docs = S.memory;
+  const hits = S.memHits;
+  return screenHead('memory', [docs.length + ' document(s)']) +
+    '<div class="capbar">memory is <b>retrieved, not injected</b> — the agent searches it and ' +
+    'cites what it used · a rule it must always follow is a <b>skill</b>; a document it might ' +
+    'need to consult is <b>memory</b></div>' +
+    '<div class="scroll">' +
+    '<div class="envedit" style="margin-bottom:16px;">' +
+    '<label class="fld" style="flex:1 1 320px;"><span class="lb">search this memory as the agent does</span>' +
+    '<input id="memq" class="mono" value="' + esc(S.memQuery) + '" ' +
+    'placeholder="how do we roll back a bad release"></label>' +
+    '<button class="primary" data-memsearch="1">Search</button>' +
+    (hits ? '<button data-memclear="1">Clear</button>' : '') +
+    '</div>' +
+    (hits
+      ? (hits.length
+          ? '<div class="k tag" style="margin-bottom:8px;">' + hits.length +
+            ' excerpt(s), best first — this is exactly what the agent receives</div>' +
+            hits.map((e) =>
+              '<div class="envcard" style="display:block;margin-bottom:11px;">' +
+              '<div style="display:flex;align-items:center;gap:9px;margin-bottom:7px;">' +
+              '<span class="nm">' + esc(e.doc) + ':' + e.start_line + '-' + e.end_line + '</span>' +
+              (e.heading ? '<span class="badge">' + esc(e.heading) + '</span>' : '') +
+              (e.truncated ? '<span class="badge warn">truncated</span>' : '') +
+              '</div>' +
+              '<div class="agentout" style="color:var(--muted);">' + esc(e.text) + '</div>' +
+              '</div>').join('')
+          : '<p class="tag">no matches for ' + esc(S.memQuery) + '</p>')
+      : '') +
+    (docs.length
+      ? '<div class="k tag" style="margin:16px 0 6px;">documents</div>' +
+        '<table><thead><tr><th>document</th><th>title</th><th>chunks</th><th>bytes</th>' +
+        '<th>state</th><th></th></tr></thead><tbody>' +
+        docs.map((d) => '<tr><td class="mono">' + esc(d.rel) + '</td>' +
+          '<td>' + esc(d.title || '') + '</td>' +
+          '<td>' + esc(String(d.chunks)) + '</td>' +
+          '<td>' + esc(String(d.bytes)) + '</td>' +
+          '<td>' + (d.enabled ? '<span class="badge ok">enabled</span>'
+                              : '<span class="badge danger">disabled</span>') + '</td>' +
+          '<td><button class="sm" data-memtoggle="' + esc(d.rel) + '" ' +
+          'data-memon="' + (d.enabled ? '0' : '1') + '">' +
+          (d.enabled ? 'disable' : 'enable') + '</button></td></tr>').join('') +
+        '</tbody></table>'
+      : emptyState('No memory documents',
+          'Put markdown in the project workspace under .opslify/memory/ (or .claude/memory/, ' +
+          'docs/memory/, memory/) and it is indexed on the next search. Clone it with the repo ' +
+          'so the runbooks travel with the code.',
+          'opslify memory ls --project ' + (S.projectID || '<id>'))) +
+    '<p class="tag" style="margin-top:14px;">There is no upload button, deliberately. Memory is ' +
+    'reviewed files in the repository; a second path into what the agent reads would be a way ' +
+    'around that review. The agent can search this and nothing else — it has no write path.</p>' +
+    '</div>';
+};
+
 SCREENS.tools = () => {
   const p = project();
   if (!p) return screenHead('tools') + '<div class="scroll">' +
@@ -1601,6 +1673,7 @@ document.addEventListener('click', async (ev) => {
     '[data-close],[data-newtab],[data-drawer],[data-killsession],[data-decide],[data-rmconn],' +
     '[data-dtab],[data-shellrun],[data-shellpop],[data-execdecide],' +
     '[data-ask],[data-chatstop],[data-chatclear],' +
+    '[data-memsearch],[data-memclear],[data-memtoggle],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-modalok],[data-modalcancel]');
@@ -1625,6 +1698,31 @@ document.addEventListener('click', async (ev) => {
   }
   if (a('data-chatstop')) { if (agentAbort) agentAbort.abort(); return; }
   if (a('data-chatclear')) { S.chat.turns = []; renderChat(); return; }
+
+  if (a('data-memsearch')) {
+    const q = ($('memq') || {}).value || '';
+    if (!q.trim()) { toast('type something to search for', 'bad'); return; }
+    await guard(async () => {
+      const r = await api('/v1/memory/search?q=' + encodeURIComponent(q) +
+        (S.projectID ? '&project=' + encodeURIComponent(S.projectID) : ''));
+      S.memQuery = q;
+      S.memHits = (r && r.excerpts) || [];
+      render();
+    });
+    return;
+  }
+  if (a('data-memclear')) { S.memHits = null; S.memQuery = ''; render(); return; }
+  if (a('data-memtoggle')) {
+    const doc = a('data-memtoggle'); const on = a('data-memon') === '1';
+    await guard(async () => {
+      await send('POST', '/v1/memory/enable', {
+        project: S.projectID || undefined, doc, enabled: on,
+      });
+      toast(doc + (on ? ' enabled' : ' disabled — it will not be returned by search'), 'ok');
+      await refresh();
+    });
+    return;
+  }
   if (a('data-wizard')) { wizReset(); W.open = true; renderWizard(); return; }
 
   // One dispatcher for every + in the explorer, so a section header and its
@@ -1706,7 +1804,16 @@ document.addEventListener('click', async (ev) => {
   if (a('data-rmconn')) {
     const name = a('data-rmconn');
     await guard(async () => {
-      await send('DELETE', '/v1/connections/' + encodeURIComponent(name));
+      // The scope is part of the identity: connections are stored per project, so
+      // a bare name resolves only for a global one and 404s for every other. The
+      // rm button was dead for exactly the connections an operator actually has.
+      const e = environment();
+      let u = '/v1/connections/' + encodeURIComponent(name);
+      const q = [];
+      if (S.projectID) q.push('project=' + encodeURIComponent(S.projectID));
+      if (e) q.push('environment=' + encodeURIComponent(e.id));
+      if (q.length) u += '?' + q.join('&');
+      await send('DELETE', u);
       toast('connection ' + name + ' removed', 'ok');
       await refresh();
     });

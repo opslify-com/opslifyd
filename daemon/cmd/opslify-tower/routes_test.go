@@ -113,6 +113,9 @@ func TestAllowlistedRoutesAreAdmitted(t *testing.T) {
 		// Storing a value the operator typed carries it IN. No route carries one
 		// back out, which is the invariant that actually matters.
 		{http.MethodPost, "/v1/secrets"},
+		{http.MethodGet, "/v1/memory"},
+		{http.MethodGet, "/v1/memory/search"},
+		{http.MethodPost, "/v1/memory/enable"},
 	} {
 		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
 			if reason := admit(tc.method, mustURL(t, tc.path)); reason != "" {
@@ -446,6 +449,7 @@ func TestEveryAllowlistedMutationIsOnTheDaemon(t *testing.T) {
 		"POST /v1/sessions/*/approvals/*":      true,
 		"POST /v1/changes/*/decision":          true,
 		"POST /v1/policy/edit":                 true,
+		"POST /v1/memory/enable":               true,
 	}
 	for _, rt := range towerRoutes {
 		if rt.Method == http.MethodGet {
@@ -490,7 +494,11 @@ func TestEveryClickHookIsWired(t *testing.T) {
 
 	// Attributes read off an element rather than clicked. Listed explicitly so
 	// adding one is a decision, not an accident.
-	readOnly := map[string]bool{"chg": true, "wizref": true, "wizval": true, "tab": true}
+	readOnly := map[string]bool{
+		"chg": true, "wizref": true, "wizval": true, "tab": true,
+		// Read off the clicked element rather than being the click target.
+		"memon": true,
+	}
 
 	emitted := map[string]bool{}
 	for _, m := range regexp.MustCompile(`data-([a-z]+)=`).FindAllStringSubmatch(js, -1) {

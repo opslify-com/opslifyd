@@ -73,6 +73,14 @@ var towerRoutes = []towerRoute{
 	{http.MethodGet, "/v1/policy", "opslify policy show", entitle.FeaturePolicyEdit},
 	{http.MethodGet, "/v1/policy/diff", "opslify policy diff <a> <b>", entitle.FeaturePolicyEdit},
 
+	// F8.10 memory. Read-only plus the operator's enable/disable — there is no
+	// route here that WRITES a document, and there must not be: memory is a folder
+	// of reviewed files in the project's workspace, and a second unreviewed path
+	// into what the agent reads is the whole thing the review exists to prevent.
+	{http.MethodGet, "/v1/memory", "opslify memory ls", entitle.FeatureCockpit},
+	{http.MethodGet, "/v1/memory/search", "opslify memory search <query>", entitle.FeatureCockpit},
+	{http.MethodPost, "/v1/memory/enable", "opslify memory enable|disable <doc>", entitle.FeatureCockpit},
+
 	// --- reads that the cockpit's own screens need --------------------------
 	{http.MethodGet, "/v1/health", "opslify status", entitle.FeatureCockpit},
 	{http.MethodGet, "/v1/sessions/history", "opslify session history", entitle.FeatureCockpit},

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -383,4 +384,54 @@ func (b *cappedBuffer) String() string {
 		return string(b.buf)
 	}
 	return fmt.Sprintf("%s\n[truncated: %d bytes omitted]", b.buf, b.omitted)
+}
+
+// memorySearchResp mirrors the daemon's GET /v1/memory/search reply.
+type memorySearchResp struct {
+	Query    string           `json:"query"`
+	Excerpts []memoryExcerptW `json:"excerpts"`
+}
+
+type memoryExcerptW struct {
+	Doc       string `json:"doc"`
+	Title     string `json:"title"`
+	Heading   string `json:"heading"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+}
+
+// memorySearch is READ-ONLY, and there is deliberately no companion write call.
+// An agent that could add to memory could author its own future justifications,
+// and a poisoned document would persist across sessions looking as authoritative
+// as one a human wrote. Adding to memory is an operator action.
+func (c *client) memorySearch(ctx context.Context, query, project string, k int) (memorySearchResp, error) {
+	var out memorySearchResp
+	if strings.TrimSpace(query) == "" {
+		return out, fmt.Errorf("opslify_memory_search: a query is required")
+	}
+	u := c.baseURL + "/v1/memory/search?q=" + url.QueryEscape(query)
+	if project != "" {
+		u += "&project=" + url.QueryEscape(project)
+	}
+	if k > 0 {
+		u += "&k=" + strconv.Itoa(k)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return out, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, c.decodeError(resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return out, err
+	}
+	return out, nil
 }

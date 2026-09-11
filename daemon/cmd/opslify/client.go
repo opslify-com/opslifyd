@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1632,4 +1633,78 @@ func (c *client) getJSON(ctx context.Context, url string, into any) error {
 		return c.decodeError(resp)
 	}
 	return json.NewDecoder(resp.Body).Decode(into)
+}
+
+// --- F8.10 memory ---------------------------------------------------------------
+
+type memoryDocView struct {
+	Rel     string `json:"rel"`
+	Title   string `json:"title"`
+	Bytes   int    `json:"bytes"`
+	Hash    string `json:"hash"`
+	Enabled bool   `json:"enabled"`
+	Chunks  int    `json:"chunks"`
+}
+
+type memoryListView struct {
+	Project   string          `json:"project"`
+	Documents []memoryDocView `json:"documents"`
+}
+
+type memoryExcerptView struct {
+	Doc       string `json:"doc"`
+	Title     string `json:"title"`
+	Heading   string `json:"heading"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+}
+
+type memorySearchView struct {
+	Query    string              `json:"query"`
+	Excerpts []memoryExcerptView `json:"excerpts"`
+}
+
+func (c *client) memoryList(ctx context.Context, project string) (memoryListView, error) {
+	var out memoryListView
+	u := c.baseURL + "/v1/memory"
+	if project != "" {
+		u += "?project=" + url.QueryEscape(project)
+	}
+	return out, c.getJSON(ctx, u, &out)
+}
+
+func (c *client) memorySearch(ctx context.Context, query, project string, k int) (memorySearchView, error) {
+	var out memorySearchView
+	u := c.baseURL + "/v1/memory/search?q=" + url.QueryEscape(query)
+	if project != "" {
+		u += "&project=" + url.QueryEscape(project)
+	}
+	if k > 0 {
+		u += "&k=" + strconv.Itoa(k)
+	}
+	return out, c.getJSON(ctx, u, &out)
+}
+
+func (c *client) memoryEnable(ctx context.Context, project, doc string, enabled bool) error {
+	body, _ := json.Marshal(struct {
+		Project string `json:"project,omitempty"`
+		Doc     string `json:"doc"`
+		Enabled bool   `json:"enabled"`
+	}{project, doc, enabled})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/memory/enable", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return c.wireError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return c.decodeError(resp)
+	}
+	return nil
 }
