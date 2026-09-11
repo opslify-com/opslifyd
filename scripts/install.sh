@@ -78,10 +78,17 @@ fi
 if [ -z "$BIN_SRC" ]; then
   if [ -x "$REPO_ROOT/daemon/cmd/opslify" ] || command -v go >/dev/null 2>&1; then
     say "Building binaries from source ($REPO_ROOT/daemon)"
-    ( cd "$REPO_ROOT/daemon" && go build -o /tmp/opslify.build.opslify ./cmd/opslify && go build -o /tmp/opslify.build.opslifyd ./cmd/opslifyd )
-    install -m 0755 /tmp/opslify.build.opslify  "$PREFIX/opslify"
-    install -m 0755 /tmp/opslify.build.opslifyd "$PREFIX/opslifyd"
-    rm -f /tmp/opslify.build.opslify /tmp/opslify.build.opslifyd
+    ( cd "$REPO_ROOT/daemon" \
+        && go build -o /tmp/opslify.build.opslify       ./cmd/opslify \
+        && go build -o /tmp/opslify.build.opslifyd      ./cmd/opslifyd \
+        && go build -o /tmp/opslify.build.opslify-tower ./cmd/opslify-tower )
+    install -m 0755 /tmp/opslify.build.opslify       "$PREFIX/opslify"
+    install -m 0755 /tmp/opslify.build.opslifyd      "$PREFIX/opslifyd"
+    # The cockpit is a separate binary and a CLIENT of the daemon: it runs as the
+    # OPERATOR, not as a service, and is never started by the unit below. Killing
+    # it leaves the daemon and its sandboxes untouched.
+    install -m 0755 /tmp/opslify.build.opslify-tower "$PREFIX/opslify-tower"
+    rm -f /tmp/opslify.build.opslify /tmp/opslify.build.opslifyd /tmp/opslify.build.opslify-tower
   else
     die "no OPSLIFY_BIN_SRC given and 'go' not installed to build from source"
   fi
@@ -90,8 +97,16 @@ else
   [ -x "$BIN_SRC/opslify" ] && [ -x "$BIN_SRC/opslifyd" ] || die "$BIN_SRC must contain executable opslify and opslifyd"
   install -m 0755 "$BIN_SRC/opslify"  "$PREFIX/opslify"
   install -m 0755 "$BIN_SRC/opslifyd" "$PREFIX/opslifyd"
+  # The cockpit is optional in a binary drop: a headless install is a complete
+  # install, because every cockpit action has a CLI equivalent.
+  if [ -x "$BIN_SRC/opslify-tower" ]; then
+    install -m 0755 "$BIN_SRC/opslify-tower" "$PREFIX/opslify-tower"
+  else
+    warn "no opslify-tower in $BIN_SRC — installing headless (the CLI is complete on its own)"
+  fi
 fi
 say "Installed $PREFIX/opslify and $PREFIX/opslifyd"
+[ -x "$PREFIX/opslify-tower" ] && say "Installed $PREFIX/opslify-tower (run it as yourself: opslify-tower)"
 
 # Warn if some other 'opslify' earlier in the invoking user's PATH would shadow
 # the one we just installed (a common cause of "unknown command"/stale behavior).

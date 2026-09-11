@@ -28,7 +28,7 @@ for c in $(podman ps -aq --filter "name=opslify-sess" 2>/dev/null); do podman rm
 nft list tables 2>/dev/null | grep opslify_sess | while read -r _ fam tbl; do nft delete table "$fam" "$tbl" 2>/dev/null || true; done
 
 say "Removing binaries"
-rm -f "$PREFIX/opslify" "$PREFIX/opslifyd"
+rm -f "$PREFIX/opslify" "$PREFIX/opslifyd" "$PREFIX/opslify-tower"
 
 if [ "$PURGE" -eq 1 ]; then
   say "PURGE: removing config, state, network, base image, and group"
