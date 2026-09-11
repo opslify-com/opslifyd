@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/opslify-com/opslifyd/internal/agents"
 	"strings"
 	"text/tabwriter"
 
@@ -22,7 +23,7 @@ func agentCmd() *cobra.Command {
 			"policy gates are identical whichever agent is bound. Capability lives in\n" +
 			"policy, not here.",
 	}
-	cmd.AddCommand(agentAddCmd(), agentLsCmd(), agentUseCmd(), agentTestCmd(), agentRmCmd())
+	cmd.AddCommand(agentAddCmd(), agentLsCmd(), agentUseCmd(), agentTestCmd(), agentRmCmd(), agentRunCmd())
 	return cmd
 }
 
@@ -34,6 +35,7 @@ type agentFlags struct {
 	locality    string
 	envAllow    []string
 	description string
+	flavour     string
 }
 
 func (f *agentFlags) bind(cmd *cobra.Command) {
@@ -46,12 +48,17 @@ func (f *agentFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().StringSliceVar(&f.envAllow, "env-allow", nil,
 		"environment variable this command may inherit (repeatable). Everything else is withheld")
 	cmd.Flags().StringVar(&f.description, "description", "", "free-text note")
+	cmd.Flags().StringVar(&f.flavour, "flavour", "",
+		"claude|qwen|codex — selects the daemon-held confinement recipe used when this "+
+			"agent is given a prompt. Without one the agent can be bound but not driven, "+
+			"because the daemon does not know how to take its host tools away")
 }
 
 func (f *agentFlags) request(name string) addAgentReq {
 	return addAgentReq{
 		Name: name, Command: f.command, Args: f.args, ModelHint: f.modelHint,
 		Locality: f.locality, EnvAllow: f.envAllow, Description: f.description,
+		Flavour: f.flavour,
 	}
 }
 
@@ -78,6 +85,23 @@ func agentAddCmd() *cobra.Command {
 			fmt.Fprintf(out, "registered agent %s\n", view.Name)
 			fmt.Fprintf(out, "  handshake   ok — %d tool(s): %s\n", len(view.Tools), strings.Join(view.Tools, ", "))
 			fmt.Fprintf(out, "  disclosure  %s\n", view.Disclosure)
+			if f.flavour != "" {
+				fmt.Fprintf(out, "  confinement %s recipe — driven runs get opslify's tools and nothing else\n", f.flavour)
+			} else {
+				fmt.Fprintln(out, "  confinement none — this agent can be bound but not driven (`--flavour`)")
+			}
+			// The denylist that takes a driven agent's host tools away is a
+			// blocklist, and the handshake has just told us what this command
+			// actually exposes. Comparing the two here is the one moment an
+			// operator is deciding whether to trust it.
+			if unconfined := agents.UnconfinedTools(view.Tools); len(unconfined) > 0 && f.flavour != "" {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: %d tool(s) this command exposes are not on the confinement denylist "+
+						"and would remain available to a driven run: %s\n"+
+						"         Report them so the recipe can be updated; until then prefer `opslify agent run` "+
+						"only for work you would let this command do unsupervised.\n",
+					len(unconfined), strings.Join(unconfined, ", "))
+			}
 			if view.Locality == "unknown" {
 				// Said loudly: an undeclared locality is a disclosure gap, and the
 				// operator is the only one who can close it.

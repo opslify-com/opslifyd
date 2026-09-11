@@ -1261,6 +1261,7 @@ type addAgentReq struct {
 	Locality    string   `json:"locality,omitempty"`
 	EnvAllow    []string `json:"env_allow,omitempty"`
 	Description string   `json:"description,omitempty"`
+	Flavour     string   `json:"flavour,omitempty"`
 }
 
 // agentView is an agent as the daemon reports it, plus what the handshake found.

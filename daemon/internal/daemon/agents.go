@@ -20,6 +20,13 @@ type AgentRegistry interface {
 	Remove(name string) error
 }
 
+// AgentDriver hands a registered agent a prompt and streams what it produces.
+// Separate from AgentRegistry because a daemon may have a registry without a
+// runner wired (the routes then stay absent rather than 500).
+type AgentDriver interface {
+	Run(ctx context.Context, name string, req agents.RunRequest, sink agents.RunSink) error
+}
+
 // registerAgentRoutes adds the F8.5 endpoints when the registry is wired.
 func (d *Daemon) registerAgentRoutes(mux *http.ServeMux) {
 	if d.agents == nil {
@@ -30,6 +37,44 @@ func (d *Daemon) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /"+APIVersion+"/agents", d.handleAgentList)
 	mux.HandleFunc("POST /"+APIVersion+"/agents/{name}/bind", d.handleAgentBind)
 	mux.HandleFunc("DELETE /"+APIVersion+"/agents/{name}", d.handleAgentDelete)
+	if d.agentDriver != nil {
+		mux.HandleFunc("POST /"+APIVersion+"/agents/{name}/run", d.handleAgentRun)
+	}
+}
+
+// runAgentRequest is the POST /v1/agents/{name}/run body.
+type runAgentRequest struct {
+	Prompt        string `json:"prompt"`
+	ProjectID     string `json:"project_id,omitempty"`
+	EnvironmentID string `json:"environment_id,omitempty"`
+}
+
+// handleAgentRun streams the agent's output as newline-delimited JSON, the same
+// frame shape as exec — so one reader in the cockpit handles both.
+//
+// Streaming rather than a single reply is not a nicety. A model working through
+// an estate takes minutes, and an operator who cannot see what it is doing until
+// it finishes cannot stop it doing the wrong thing.
+func (d *Daemon) handleAgentRun(w http.ResponseWriter, r *http.Request) {
+	var body runAgentRequest
+	if err := decodeJSON(r, &body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "input", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	sink := newHTTPSink(w)
+	err := d.agentDriver.Run(r.Context(), r.PathValue("name"), agents.RunRequest{
+		Prompt:        body.Prompt,
+		ProjectID:     body.ProjectID,
+		EnvironmentID: body.EnvironmentID,
+	}, sink)
+	if err != nil {
+		if !sink.wrote {
+			writeAgentError(w, err)
+			return
+		}
+		_ = sink.errorFrame(err)
+	}
 }
 
 // addAgentRequest is the POST body. No credential field, by construction.
@@ -41,6 +86,7 @@ type addAgentRequest struct {
 	Locality    string   `json:"locality,omitempty"`
 	EnvAllow    []string `json:"env_allow,omitempty"`
 	Description string   `json:"description,omitempty"`
+	Flavour     string   `json:"flavour,omitempty"`
 }
 
 func (r addAgentRequest) agent() agents.Agent {
@@ -53,6 +99,7 @@ func (r addAgentRequest) agent() agents.Agent {
 	return agents.Agent{
 		Name: r.Name, Command: r.Command, Args: r.Args, ModelHint: r.ModelHint,
 		Locality: loc, EnvAllow: r.EnvAllow, Description: r.Description,
+		Flavour: agents.Flavour(r.Flavour),
 	}
 }
 
@@ -62,6 +109,11 @@ type agentResponse struct {
 	Locality   string   `json:"locality"`
 	Disclosure string   `json:"disclosure"`
 	Tools      []string `json:"tools,omitempty"`
+	Flavour    string   `json:"flavour,omitempty"`
+	// Drivable says whether this agent can be given a prompt. The cockpit needs
+	// it to decide whether the composer is usable, and an operator needs to know
+	// why it is not.
+	Drivable bool `json:"drivable"`
 }
 
 func agentResp(a agents.Agent, tools []string) agentResponse {
@@ -71,6 +123,8 @@ func agentResp(a agents.Agent, tools []string) agentResponse {
 		// it, and so it is the same sentence everywhere.
 		Disclosure: a.Locality.Discloses(),
 		Tools:      tools,
+		Flavour:    string(a.Flavour),
+		Drivable:   a.Drivable(),
 	}
 }
 

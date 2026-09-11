@@ -137,6 +137,10 @@ const S = {
   // the scrollback; pending is a gate waiting on a human.
   drawerTab: 'shell',
   shell: { sessionID: null, lines: [], busy: false, pending: null, history: [], hpos: -1 },
+  // The agent thread: what you asked, and what it said back. Kept in memory only
+  // — the daemon owns the durable record of what an agent actually DID (the
+  // trace), and a second half-copy of it here would just be a way to disagree.
+  chat: { turns: [], busy: false },
 };
 
 const project = () => S.projects.find((p) => p.id === S.projectID) || null;
@@ -645,6 +649,7 @@ async function shellDecide(decision) {
 function renderChat() {
   const pending = S.changes.filter((c) => inScope(c) && c.status === 'awaiting_approval');
   const a = S.boundAgent;
+  const drivable = !!(a && a.drivable);
 
   const gates = pending.map((c) =>
     '<div class="m"><div class="a ag">!</div><div class="b">' +
@@ -659,28 +664,123 @@ function renderChat() {
     '<button class="sm" data-open="change:' + esc(c.id) + '">Open</button>' +
     '</div></div></div></div>').join('');
 
+  const turns = S.chat.turns.map((t) => t.role === 'you'
+    ? '<div class="m"><div class="a">you</div><div class="b">' +
+      '<div class="w2">You</div>' + esc(t.text) + '</div></div>'
+    : '<div class="m"><div class="a ag">ag</div><div class="b">' +
+      '<div class="w2">' + esc(t.name || 'Agent') +
+      (t.done && t.exit ? ' · exited ' + esc(String(t.exit)) : '') + '</div>' +
+      '<div class="agentout">' + esc(t.text || '') +
+      (t.busy ? '<span class="cursor">▋</span>' : '') + '</div>' +
+      (t.err ? '<div class="err" style="margin:6px 0 0;">' + esc(t.err) + '</div>' : '') +
+      '</div></div>').join('');
+
+  // Why the composer is unusable, when it is. A disabled box with no reason is a
+  // bug report waiting to happen.
+  let blocked = null;
+  if (!a) blocked = 'No agent is bound to this scope. Bind one from the Agents screen.';
+  else if (!drivable) {
+    blocked = a.name + ' was registered without a flavour, so the daemon has no recipe ' +
+      'for taking away its host tools. Re-add it with --flavour claude|qwen|codex.';
+  }
+
   $('chat').innerHTML =
     '<div class="ch"><span style="font-weight:600;">Agent</span>' +
-    (a ? '<span class="badge accent">' + esc(a.name) + '</span>' : '<span class="tag">none bound</span>') +
+    (a ? '<span class="badge accent">' + esc(a.name) + '</span>' +
+         (a.locality === 'local' ? '<span class="badge ok">on-host</span>'
+                                 : '<span class="badge warn">off-host</span>')
+       : '<span class="tag">none bound</span>') +
     '<span class="spacer"></span>' +
+    (S.chat.turns.length ? '<button class="sm" data-chatclear="1">Clear</button>' : '') +
     '<button class="sm" data-open="agents">' + (a ? 'Switch' : 'Bind') + '</button></div>' +
-    '<div class="thr">' +
-    (gates || '<div class="m"><div class="a">·</div><div class="b">' +
-      '<div class="w2">Nothing awaiting you</div>' +
-      'Gated changes arrive here for approval, with their blast radius and whether ' +
-      'a revert exists — stated before you approve, not after it fails.</div></div>') +
+    '<div class="thr" id="thread">' +
+    (turns || gates || '<div class="m"><div class="a">·</div><div class="b">' +
+      '<div class="w2">Nothing yet</div>' +
+      'Ask the agent to do something. It works only through opslify\'s tools — ' +
+      'every command it runs lands in a sandbox, through the same gates and the ' +
+      'same trace as anything you run yourself.</div></div>') +
+    (turns && gates ? gates : '') +
     '</div>' +
-    // The composer is disabled and says why. A box that looks like it drives the
-    // agent but silently does nothing is worse than one that admits the wiring is
-    // absent: the operator would think the instruction had been sent.
     '<div class="comp"><div class="cbox">' +
-    '<textarea placeholder="Driving the agent from the cockpit is not wired yet — ' +
-    'start it against the daemon over MCP." disabled></textarea>' +
+    '<textarea id="ask" rows="2" placeholder="' +
+    (blocked ? esc(blocked) : 'Ask the agent to do something…') + '"' +
+    (blocked || S.chat.busy ? ' disabled' : '') + '></textarea>' +
     '<div class="crow"><span class="tag" style="font-size:10px;">' +
     esc(S.projectID || '—') + ' / ' + esc(environment() ? environment().name : '—') +
+    (a && a.locality !== 'local'
+      ? ' · <span style="color:var(--warn)">output goes off-host</span>' : '') +
     '</span><span class="spacer"></span>' +
-    '<button class="sm" disabled>Send</button></div>' +
-    '</div></div>';
+    (S.chat.busy
+      ? '<button class="sm danger" data-chatstop="1">Stop</button>'
+      : '<button class="sm primary" data-ask="1"' + (blocked ? ' disabled' : '') + '>Send</button>') +
+    '</div></div></div>';
+
+  const thr = $('thread');
+  if (thr) thr.scrollTop = thr.scrollHeight;
+}
+
+// askAgent streams the agent's output into the thread as it arrives. A model
+// working an estate takes minutes; an operator who cannot see what it is doing
+// until it finishes cannot stop it doing the wrong thing.
+let agentAbort = null;
+
+async function askAgent(text) {
+  const a = S.boundAgent;
+  if (!a || !a.drivable) return;
+  const e = environment();
+
+  S.chat.turns.push({ role: 'you', text });
+  const turn = { role: 'agent', name: a.name, text: '', busy: true };
+  S.chat.turns.push(turn);
+  S.chat.busy = true;
+  renderChat();
+
+  agentAbort = new AbortController();
+  try {
+    const res = await fetch('/v1/agents/' + encodeURIComponent(a.name) + '/run', {
+      method: 'POST', credentials: 'same-origin', signal: agentAbort.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: text,
+        project_id: S.projectID || undefined,
+        environment_id: e ? e.id : undefined,
+      }),
+    });
+    if (!res.ok) {
+      let msg = await res.text();
+      try { msg = JSON.parse(msg).error || msg; } catch (_) { /* plain text */ }
+      turn.err = msg;
+    } else {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const raw = buf.slice(0, nl); buf = buf.slice(nl + 1);
+          if (!raw.trim()) continue;
+          let f;
+          try { f = JSON.parse(raw); } catch (_) { continue; }
+          if (f.error) turn.err = f.error;
+          else if (f.exit_code !== undefined && f.exit_code !== null) turn.exit = f.exit_code;
+          // stderr is where these CLIs put their progress chatter. It belongs in
+          // the thread: hiding it is how a run that is working looks like a hang.
+          else if (f.data) turn.text += f.data;
+          renderChat();
+        }
+      }
+    }
+  } catch (err) {
+    turn.err = err.name === 'AbortError' ? 'stopped' : err.message;
+  }
+  turn.busy = false; turn.done = true;
+  S.chat.busy = false; agentAbort = null;
+  renderChat();
+  // The agent's work shows up as sandboxes, changes and trace entries.
+  await refresh();
 }
 
 /* --------------------------------------------------------------- screens --- */
@@ -939,8 +1039,10 @@ SCREENS.agents = () => {
           '<td>' + (a.locality === 'local'
             ? '<span class="badge ok">on-host</span>'
             : '<span class="badge warn">' + esc(a.locality || 'unknown') + ' · off-host</span>') + '</td>' +
-          '<td class="mono">' + esc(a.command || '—') + '</td>' +
-          '<td>' + esc(a.description || '') + '</td>' +
+          '<td class="mono">' + esc(a.flavour || '—') + '</td>' +
+          '<td>' + (a.drivable
+            ? '<span class="badge ok">yes</span>'
+            : '<span class="badge">no — registered without a flavour</span>') + '</td>' +
           '<td><button class="sm" data-bind="' + esc(a.name) + '">bind</button></td>' +
           '</tr>').join('') + '</tbody></table>' +
         '<p class="tag" style="margin-top:12px;">An agent whose locality is unknown is ' +
@@ -1478,6 +1580,7 @@ document.addEventListener('click', async (ev) => {
   const t = ev.target.closest('[data-wizard],[data-env],[data-add],[data-open],[data-tab],' +
     '[data-close],[data-newtab],[data-drawer],[data-killsession],[data-decide],[data-rmconn],' +
     '[data-dtab],[data-shellrun],[data-shellpop],[data-execdecide],' +
+    '[data-ask],[data-chatstop],[data-chatclear],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-modalok],[data-modalcancel]');
@@ -1495,6 +1598,13 @@ document.addEventListener('click', async (ev) => {
     return;
   }
   if (a('data-execdecide')) { await shellDecide(a('data-execdecide')); return; }
+  if (a('data-ask')) {
+    const box = $('ask');
+    if (box && box.value.trim()) { const v = box.value.trim(); box.value = ''; await askAgent(v); }
+    return;
+  }
+  if (a('data-chatstop')) { if (agentAbort) agentAbort.abort(); return; }
+  if (a('data-chatclear')) { S.chat.turns = []; renderChat(); return; }
   if (a('data-wizard')) { wizReset(); W.open = true; renderWizard(); return; }
 
   // One dispatcher for every + in the explorer, so a section header and its
@@ -1698,6 +1808,14 @@ document.addEventListener('keydown', async (ev) => {
       if (S.shell.hpos >= h.length) { S.shell.hpos = -1; inp.value = ''; return; }
       inp.value = h[S.shell.hpos];
       return;
+    }
+    return;
+  }
+  if (inp && inp.id === 'ask' && ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    if (inp.value.trim() && !S.chat.busy) {
+      const v = inp.value.trim(); inp.value = '';
+      await askAgent(v);
     }
     return;
   }

@@ -98,6 +98,11 @@ var towerRoutes = []towerRoute{
 	// Binding and removing an agent move a pointer; REGISTERING one does not —
 	// see the absence note above.
 	{http.MethodPost, "/v1/agents/*/bind", "opslify agent bind <name>", entitle.FeatureAgentRegistry},
+	// F8.9: hand a registered agent a prompt. This does NOT run a command the
+	// browser chose — it runs the one the registry already probed, under the
+	// daemon's own confinement recipe, which is why it is admitted where
+	// POST /v1/agents is not.
+	{http.MethodPost, "/v1/agents/*/run", "opslify agent run <name> <prompt>", entitle.FeatureAgentRegistry},
 	{http.MethodDelete, "/v1/agents/*", "opslify agent rm <name>", entitle.FeatureAgentRegistry},
 
 	// Storing a secret is a WRITE of a value the browser already holds — the

@@ -108,6 +108,7 @@ func TestAllowlistedRoutesAreAdmitted(t *testing.T) {
 		{http.MethodPost, "/v1/connections/test"},
 		{http.MethodDelete, "/v1/connections/gitlab"},
 		{http.MethodPost, "/v1/agents/claude/bind"},
+		{http.MethodPost, "/v1/agents/claude/run"},
 		{http.MethodDelete, "/v1/agents/claude"},
 		// Storing a value the operator typed carries it IN. No route carries one
 		// back out, which is the invariant that actually matters.
@@ -436,6 +437,7 @@ func TestEveryAllowlistedMutationIsOnTheDaemon(t *testing.T) {
 		"POST /v1/connections/test":            true,
 		"DELETE /v1/connections/*":             true,
 		"POST /v1/agents/*/bind":               true,
+		"POST /v1/agents/*/run":                true,
 		"DELETE /v1/agents/*":                  true,
 		"POST /v1/secrets":                     true,
 		"POST /v1/sessions":                    true,

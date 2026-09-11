@@ -832,8 +832,21 @@ func buildDaemonOptions(
 	if err != nil {
 		return daemon.Options{}, err
 	}
+	// F8.9: the seam that lets a registered agent be given a prompt. It is built
+	// from the registry, so only a command that completed a real MCP handshake at
+	// `agent add` can ever be driven.
+	agentDrv, err := newAgentDriver(agentReg, filepath.Dir(cfg.WorkspaceDir), socketPath)
+	if err != nil {
+		return daemon.Options{}, err
+	}
+	// A typed nil would make daemon.Options.AgentDriver non-nil and register the
+	// route against nothing; the first prompt would panic.
+	var drv daemon.AgentDriver
+	if agentDrv != nil {
+		drv = agentDrv
+	}
 	return daemonOptions(cfg, socketPath, socketGroup, verifier, mgr, projects, vault, secretsSvc,
-		conns, agentReg, changes, editor, log), nil
+		conns, agentReg, drv, changes, editor, log), nil
 }
 
 // daemonOptions assembles the Options literal. Kept separate from
@@ -850,6 +863,7 @@ func daemonOptions(
 	secretsSvc *broker.SecretsService,
 	connections daemon.ConnectionService,
 	agentReg daemon.AgentRegistry,
+	agentDrv daemon.AgentDriver,
 	changes daemon.ChangeService,
 	editor daemon.PolicyEditor,
 	log *slog.Logger,
@@ -871,6 +885,7 @@ func daemonOptions(
 		// the composition root shows every one in a single place — and so a test
 		// can assert it is wired, which is how the last three came to be missing.
 		Agents:       agentReg,
+		AgentDriver:  agentDrv,
 		Changes:      changes,
 		PolicyEditor: editor,
 		Ready:        sdNotifyReady,

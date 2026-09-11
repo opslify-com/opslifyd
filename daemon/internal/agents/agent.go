@@ -108,7 +108,43 @@ type Agent struct {
 	EnvAllow []string `json:"env_allow,omitempty"`
 	// Description is free text for the operator's own benefit.
 	Description string `json:"description,omitempty"`
+	// Flavour selects the CONFINEMENT RECIPE used when this agent is given a
+	// prompt to work on. Empty means the agent can be probed and bound but not
+	// driven, because the daemon does not know how to restrict it.
+	Flavour Flavour `json:"flavour,omitempty"`
 }
+
+// Flavour names a CLI whose confinement recipe the daemon knows.
+//
+// It is a closed set, and the recipes live in this package rather than in the
+// registry record, deliberately. Confinement is a handful of flags — for Claude
+// Code, --strict-mcp-config plus a tool allowlist — and an operator-supplied
+// argv that quietly omitted one of them would produce an agent with host shell
+// access that looked exactly like a confined one. The operator chooses WHICH
+// recipe; they cannot edit it.
+type Flavour string
+
+const (
+	// FlavourClaude is Claude Code in headless print mode.
+	FlavourClaude Flavour = "claude"
+	// FlavourQwen is Qwen Code, which reads its configuration from a project
+	// directory rather than per-run flags.
+	FlavourQwen Flavour = "qwen"
+	// FlavourCodex is the OpenAI Codex CLI.
+	FlavourCodex Flavour = "codex"
+)
+
+// Valid reports whether the daemon has a recipe for this flavour.
+func (f Flavour) Valid() bool {
+	switch f {
+	case FlavourClaude, FlavourQwen, FlavourCodex:
+		return true
+	}
+	return false
+}
+
+// Drivable reports whether this agent can be given a prompt.
+func (a Agent) Drivable() bool { return a.Flavour.Valid() }
 
 // nameRe bounds an agent name to one safe identifier/filename segment, for the
 // same reason project and connection names are bounded: it becomes a record id
@@ -167,6 +203,10 @@ func (a Agent) Validate() error {
 	if strings.ContainsAny(a.ModelHint, "\x00\n\r") {
 		// It is written into the trace and shown in the cockpit.
 		return fmt.Errorf("%w: agent %q model hint contains a control character", ErrInvalidInput, a.Name)
+	}
+	if a.Flavour != "" && !a.Flavour.Valid() {
+		return fmt.Errorf("%w: agent %q flavour %q is not one the daemon has a confinement recipe for (claude, qwen, codex)",
+			ErrInvalidInput, a.Name, a.Flavour)
 	}
 	for _, key := range a.EnvAllow {
 		if !envKeyRe.MatchString(key) {

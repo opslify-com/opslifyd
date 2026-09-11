@@ -76,6 +76,9 @@ type Options struct {
 	// rather than registered and answering 404 — an endpoint that exists but never
 	// works is worse than one that does not exist.
 	Agents AgentRegistry
+	// AgentDriver runs a registered agent against a prompt. nil => the /run route
+	// is absent, and the cockpit's composer says so rather than failing on click.
+	AgentDriver AgentDriver
 	// Changes is the F8.6 review surface. nil => the routes are not registered.
 	Changes ChangeService
 	// PolicyEditor is the F8.7 guardrail surface. nil => the routes are absent.
@@ -109,6 +112,7 @@ type Daemon struct {
 	log          *slog.Logger
 	sessions     SessionService
 	projects     ProjectService
+	agentDriver  AgentDriver
 	secrets      broker.SecretManager
 	secretsSvc   *broker.SecretsService
 	connections  ConnectionService
@@ -145,6 +149,7 @@ func New(opts Options) (*Daemon, error) {
 		sessions:     opts.Sessions,
 		projects:     opts.Projects,
 		agents:       opts.Agents,
+		agentDriver:  opts.AgentDriver,
 		changes:      opts.Changes,
 		policyEditor: opts.PolicyEditor,
 		secrets:      opts.Secrets,
