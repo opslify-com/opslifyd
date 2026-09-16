@@ -143,6 +143,8 @@ const S = {
   // The drawer's Shell. sessionID is which sandbox it is attached to; lines is
   // the scrollback; pending is a gate waiting on a human.
   drawerTab: 'shell',
+  // Collapsed by default: a sidebar that opens showing everything shows nothing.
+  shut: { ws: true, skills: true, mem: true, sec: true, conn: true, pol: true, tools: true },
   trace: {},
   traceSession: null,
   shell: { sessionID: null, lines: [], busy: false, pending: null, history: [], hpos: -1 },
@@ -300,26 +302,28 @@ function render() {
 
 function renderHeader() {
   const p = project(); const e = environment();
-  // OptionC2 has no project rail, so the crumb IS the switcher. The + beside it
-  // is the only way into the wizard now, which makes it load-bearing rather than
-  // decorative.
+  // The crumb was a bare <select> with a dashed + wedged against it, which read
+  // as two unrelated controls rather than one switcher. It is a labelled group
+  // now: the project, its environment, and one button to add.
   $('crumbs').innerHTML = (S.projects.length
-    ? '<select class="projsel" id="projsel">' + S.projects.map((x) =>
+    ? '<span class="switch">' +
+      '<select class="projsel" id="projsel" aria-label="project">' + S.projects.map((x) =>
         '<option value="' + esc(x.id) + '"' + (x.id === S.projectID ? ' selected' : '') + '>' +
-        esc(x.name) + '</option>').join('') + '</select>'
+        esc(x.name) + '</option>').join('') + '</select>' +
+      (p && e
+        ? '<span class="env-chip' + (e.production ? ' prod' : '') + '">' + esc(e.name) + '</span>'
+        : '') +
+      '</span>'
     : '<span class="tag">no project yet</span>') +
-    '<button class="addproj" data-wizard="1" title="new project">+</button>' +
-    (p ? '<span class="tag">/</span>' +
-      '<span class="crumb" style="color:var(--' + (e && e.production ? 'danger' : 'warn') + ');">' +
-      esc(e ? e.name : '—') + '</span>' : '');
+    '<button class="iconbtn" data-wizard="1" title="new project" aria-label="new project">+</button>';
 
   const a = S.boundAgent;
   const pill = $('agentpill');
   if (a) {
     pill.className = 'agentpill';
-    // Locality is stated, not implied. An agent whose locality is unknown is
-    // shown as off-host, because claiming a prompt stayed on this machine when
-    // nobody said so would be the one lie this pill must never tell.
+    // Locality is stated, not implied. An agent whose locality is unknown shows as
+    // off-host, because claiming a prompt stayed on this machine when nobody said
+    // so is the one lie this pill must never tell.
     const off = a.locality !== 'local';
     pill.innerHTML = '<span class="dot"></span><span class="nm">' + esc(a.name) + '</span>' +
       '<span class="ch">' + esc(a.model_hint || 'model unstated') +
@@ -333,34 +337,47 @@ function renderHeader() {
   const badge = $('tracebadge');
   if (S.health && S.health.status === 'ok') {
     badge.className = 'badge ok';
-    badge.textContent = 'daemon ok · ' + (S.health.version || 'dev');
+    badge.textContent = 'daemon ok';
   } else {
     badge.className = 'badge danger';
     badge.textContent = 'daemon unreachable';
   }
 }
 
-// esec renders one explorer section header: a label, a live count, and a + that
-// adds one of whatever the section holds. The + is the whole point — adding a
-// connection belongs where the connections are, not behind a screen you have to
-// know exists.
-function esec(title, count, addAction, moreTab) {
-  return '<div class="esec"><span>' + esc(title) + '</span>' +
-    (count != null ? '<span class="n">' + esc(String(count)) + '</span>' : '<span class="n"></span>') +
-    (moreTab ? '<span class="more" data-open="' + esc(moreTab) + '">all →</span>' : '') +
-    (addAction ? '<button class="add" data-add="' + esc(addAction) +
-      '" title="add">+</button>' : '') +
-    '</div>';
+// esec renders one collapsible section header.
+//
+// A <button> with aria-expanded, not a clickable div. The skill's guidance calls
+// that one Critical, and it is right for a reason beyond conformance: a div with
+// a click handler is invisible to the keyboard, so the whole sidebar became
+// unreachable without a mouse.
+function esec(id, title, count, addAction, moreTab) {
+  const open = !S.shut[id];
+  return '<button class="esec" data-toggle="' + esc(id) + '" aria-expanded="' + open + '">' +
+    '<span class="cv">' + (open ? '▾' : '▸') + '</span>' +
+    '<span class="t">' + esc(title) + '</span>' +
+    (count != null && count !== '' ? '<span class="n">' + esc(String(count)) + '</span>' : '') +
+    '</button>' +
+    (open && (addAction || moreTab)
+      ? '<div class="secactions">' +
+        (moreTab ? '<button class="sm" data-open="' + esc(moreTab) + '">open</button>' : '') +
+        (addAction ? '<button class="sm primary" data-add="' + esc(addAction) + '">+ add</button>' : '') +
+        '</div>'
+      : '');
 }
 
 const noneRow = (what) => '<div class="row none"><span class="nm">' + esc(what) + '</span></div>';
+
+// body renders a section's contents only when it is open. Collapsed sections cost
+// nothing to draw, which is what makes collapse-by-default cheap on a project
+// with a large workspace.
+const body = (id, html) => (S.shut[id] ? '' : html);
 
 function renderSide() {
   const p = project();
   if (!p) {
     $('side').innerHTML = '<div class="empty"><h3>No project yet</h3>' +
-      'A project is the unit everything else hangs off — environments, tools, ' +
-      'connections, policy and changes.' +
+      'A project is the unit everything else hangs off — its workspace, the rules ' +
+      'the agent follows, the credentials it can reach.' +
       '<div style="margin-top:14px;"><button class="primary lg" data-wizard="1">' +
       'Create a project</button></div>' +
       '<div class="cli">opslify project create &lt;name&gt;</div></div>';
@@ -368,139 +385,107 @@ function renderSide() {
   }
 
   const envs = p.environments || [];
-  const live = S.sessions.filter(inScope);
   const conns = S.connections.filter(inScope);
-  const pending = S.changes.filter((c) => inScope(c) && c.status === 'awaiting_approval');
   const caps = p.capabilities || {};
   const roles = Object.keys(caps).sort();
+  const tree = S.tree;
+  const treeEntries = (tree && tree.entries) || [];
 
   let html = '';
 
-  // --- environments -----------------------------------------------------------
-  html += esec('Environments', envs.length, 'env');
+  // --- environment: the scope. Always open — it is the selector, not a list.
+  html += '<div class="esec static"><span class="t">Environment</span></div>';
   html += '<div class="envrow">' + envs.map((e) =>
-    '<div class="env' + (e.id === S.envID ? ' on' : '') + (e.production ? ' prod' : '') +
-    '" data-env="' + esc(e.id) + '" title="' + (e.production ? 'production' : 'non-production') +
-    '">' + esc(e.name) + '</div>').join('') + '</div>';
+    '<button class="env' + (e.id === S.envID ? ' on' : '') + (e.production ? ' prod' : '') +
+    '" data-env="' + esc(e.id) + '"' + (e.id === S.envID ? ' aria-current="true"' : '') +
+    ' title="' + (e.production ? 'production' : 'non-production') + '">' +
+    esc(e.name) + '</button>').join('') +
+    '<button class="env add" data-add="env" title="add an environment">+</button></div>';
 
-  // --- tools ------------------------------------------------------------------
-  // Tools are the project's role → tool map. Until F8.8 there was no way to edit
-  // one after `project create`, from any surface.
-  html += esec('Tools', roles.length, 'tool', 'tools');
-  html += roles.length ? roles.map((r) =>
-    '<div class="row" data-open="tools"><span class="kd">' + esc(r) + '</span>' +
-    '<span class="nm">' + esc(caps[r]) + '</span>' +
-    '<span class="x" data-rmtool="' + esc(r) + '" title="remove">✕</span></div>').join('')
-    : noneRow('no tools recorded');
+  // --- workspace
+  html += esec('ws', 'Workspace', treeEntries.length, null, 'workspace');
+  html += body('ws', tree && tree.exists
+    ? treeEntries.slice(0, 20).map((e) => {
+        const parts = e.rel.split('/');
+        const depth = parts.length - 1;
+        return '<button class="row" data-open="workspace" title="' + esc(e.rel) + '"' +
+          ' style="padding-left:' + (12 + depth * 11) + 'px;">' +
+          '<span class="ind">' + (e.dir ? '▾' : '·') + '</span>' +
+          '<span class="nm"' + (e.excluded ? ' style="color:var(--muted);"' : '') + '>' +
+          esc(parts[parts.length - 1]) + (e.dir ? '/' : '') + '</span>' +
+          '<span class="rt">' + (e.excluded ? 'withheld' : (e.dir ? '' : fmtBytes(e.bytes))) +
+          '</span></button>';
+      }).join('') +
+      (treeEntries.length > 20
+        ? '<div class="row none"><span class="nm">' + (treeEntries.length - 20) +
+          ' more</span></div>' : '')
+    : noneRow('not created yet'));
 
-  // --- sandboxes --------------------------------------------------------------
-  html += esec('Sandboxes', live.length ? live.length + ' live' : 0, 'session', 'sandboxes');
-  html += live.length ? live.map((sx) =>
-    '<div class="row" data-open="sandboxes">' +
-    '<span class="dot' + (sx.state === 'running' ? '' : ' off') + '"></span>' +
-    '<span class="nm">' + esc(short(sx.id, 8)) + '</span>' +
-    '<span class="rt" style="color:var(--db);">' + esc(sx.tier || '—') + '</span></div>').join('')
-    : noneRow('none running');
+  // --- skills: rules INJECTED into every session
+  html += esec('skills', 'Skills', S.skills.length, 'skilldoc', 'skills');
+  html += body('skills', S.skills.length
+    ? S.skills.map((d) =>
+        '<button class="row" data-editdoc="skill:' + esc(d.path) + '" title="' + esc(d.path) + '">' +
+        '<span class="kd">rule</span>' +
+        '<span class="nm">' + esc(d.path.replace(/\.md$/, '')) + '</span>' +
+        '<span class="rt">' + esc(fmtBytes(d.bytes)) + '</span></button>').join('')
+    : noneRow('no rules yet'));
 
-  // --- connections ------------------------------------------------------------
-  html += esec('Connections', conns.length, 'conn', 'connections');
-  html += conns.length ? conns.map((c) =>
-    '<div class="row" data-open="connections"><span class="kd ' + esc(c.kind) + '">' +
-    esc(c.kind) + '</span><span class="nm" title="' + esc(c.name) + '">' + esc(c.name) + '</span>' +
-    '<span class="x" data-rmconn="' + esc(c.name) + '" title="remove">✕</span></div>').join('')
-    : noneRow('none bound');
+  // --- memory: documents RETRIEVED on demand
+  html += esec('mem', 'Memory', S.memory.length, 'memorydoc', 'memory');
+  html += body('mem', S.memory.length
+    ? S.memory.slice(0, 20).map((d) =>
+        '<button class="row" data-editdoc="memory:' + esc(d.rel) + '" title="' + esc(d.rel) + '">' +
+        '<span class="kd">doc</span>' +
+        '<span class="nm">' + esc(d.title || d.rel) + '</span>' +
+        '<span class="rt"' + (d.enabled ? '' : ' style="color:var(--danger)"') + '>' +
+        (d.enabled ? d.chunks + ' ch' : 'off') + '</span></button>').join('')
+    : noneRow('no documents yet'));
 
-  // --- secrets ----------------------------------------------------------------
-  html += esec('Secrets', S.secrets.length, 'secret', 'secrets');
-  html += S.secrets.length ? S.secrets.map((x) =>
-    '<div class="row" data-open="secrets"><span class="kd">ref</span>' +
-    '<span class="nm">' + esc(x.ref) + '</span>' +
-    '<span class="rt">' + esc(x.provider || '') + '</span></div>').join('')
-    : noneRow('none stored');
+  // --- secrets
+  html += esec('sec', 'Secrets', S.secrets.length, 'secret', 'secrets');
+  html += body('sec', S.secrets.length
+    ? S.secrets.map((x) =>
+        '<button class="row" data-open="secrets"><span class="kd">ref</span>' +
+        '<span class="nm">' + esc(x.ref) + '</span>' +
+        '<span class="rt">' + esc(x.provider || '') + '</span></button>').join('')
+    : noneRow('none stored'));
 
-  // --- skills -----------------------------------------------------------------
-  // Skills had no section at all: they are read from the workspace by F8.4 and
-  // were visible nowhere, so the only way to know what rules an agent was running
-  // under was to look in the directory.
-  html += esec('Skills', S.skills.length, 'skilldoc', 'skills');
-  html += S.skills.length ? S.skills.map((d) =>
-    '<div class="row" data-editdoc="skill:' + esc(d.path) + '">' +
-    '<span class="kd">md</span><span class="nm" title="' + esc(d.path) + '">' +
-    esc(d.path.replace(/\.md$/, '')) + '</span>' +
-    '<span class="rt">' + esc(fmtBytes(d.bytes)) + '</span></div>').join('')
-    : noneRow('no skills yet');
+  // --- connections: not in the order you gave, but it belongs beside secrets —
+  //     a connection is what makes a secret reachable, and splitting them puts
+  //     half of one decision at each end of the sidebar.
+  html += esec('conn', 'Connections', conns.length, 'conn', 'connections');
+  html += body('conn', conns.length
+    ? conns.map((c) =>
+        '<button class="row" data-open="connections" title="' + esc(c.name) + '">' +
+        '<span class="kd ' + esc(c.kind) + '">' + esc(c.kind) + '</span>' +
+        '<span class="nm">' + esc(c.name) + '</span>' +
+        '<span class="se">blind</span></button>').join('')
+    : noneRow('none bound'));
 
-  // --- memory -----------------------------------------------------------------
-  // No + that uploads. Memory is a folder of reviewed files in the project's
-  // workspace; a button that wrote one would be a second, unreviewed path into
-  // what the agent reads.
-  html += esec('Memory', S.memory.length, 'memorydoc', 'memory');
-  html += S.memory.length ? S.memory.slice(0, 8).map((d) =>
-    '<div class="row" data-editdoc="memory:' + esc(d.rel) + '"><span class="kd">md</span>' +
-    '<span class="nm" title="' + esc(d.rel) + '">' + esc(d.title || d.rel) + '</span>' +
-    '<span class="rt" style="color:var(--' + (d.enabled ? 'muted' : 'danger') + ');">' +
-    (d.enabled ? d.chunks + ' ch' : 'off') + '</span></div>').join('')
-    : noneRow('no documents');
+  // --- policy
+  html += esec('pol', 'Policy', S.policy ? short(S.policy.hash, 8) : '', 'policy', 'policy');
+  html += body('pol', S.policy
+    ? (S.policy.layers || []).map((l) =>
+        '<button class="row" data-open="policy">' +
+        '<span class="ind">' + (l.editable ? '✎' : '🔒') + '</span>' +
+        '<span class="nm" style="color:' + (l.editable ? 'var(--accent)' : 'var(--muted)') + '">' +
+        esc(l.layer) + '</span><span class="rt">' + (l.editable ? 'editable' : 'locked') +
+        '</span></button>').join('')
+    : noneRow('unavailable'));
 
-  // --- policy -----------------------------------------------------------------
-  html += esec('Policy', S.policy ? short(S.policy.hash, 8) : null, 'policy', 'policy');
-  html += S.policy ? (S.policy.layers || []).map((l) =>
-    '<div class="row" data-open="policy"><span class="ind">' + (l.editable ? '✎' : '🔒') + '</span>' +
-    '<span class="nm" style="color:' + (l.editable ? 'var(--accent)' : 'var(--muted)') + '">' +
-    esc(l.layer) + '</span><span class="rt">' + (l.editable ? 'editable' : 'locked') +
-    '</span></div>').join('') : noneRow('unavailable');
-
-  // --- changes ----------------------------------------------------------------
-  html += esec('Changes', pending.length ? pending.length + ' open' : 0, null, 'changes');
-  html += pending.length ? pending.map((c) =>
-    '<div class="row" data-open="change:' + esc(c.id) + '">' +
-    '<span class="dot warn"></span><span class="nm">' + esc(short(c.id, 18)) + '</span>' +
-    '<span class="rt" style="color:var(--warn);">approve</span></div>').join('')
-    : noneRow('nothing awaiting you');
-
-  // --- workspace --------------------------------------------------------------
-  // The project's directory on the host, mounted at /workspace in every sandbox.
-  // This is a LISTING: names and sizes, never contents. F3.6's refusal to serve
-  // raw workspace bytes to a browser stays closed.
-  const tree = S.tree;
-  const treeEntries = (tree && tree.entries) || [];
-  html += esec('Workspace', treeEntries.length, null, 'workspace');
-  if (tree && tree.exists) {
-    // Indented by path depth, which is why the API returns plain path order:
-    // sorting directories first would separate one from its own contents.
-    html += treeEntries.slice(0, 24).map((e) => {
-      const parts = e.rel.split('/');
-      const depth = parts.length - 1;
-      const leaf = parts[parts.length - 1];
-      return '<div class="row" data-open="workspace" title="' + esc(e.rel) + '"' +
-        ' style="padding-left:' + (12 + depth * 11) + 'px;">' +
-        '<span class="ind">' + (e.dir ? '▾' : '·') + '</span>' +
-        '<span class="nm"' + (e.excluded ? ' style="color:var(--muted);"' : '') + '>' +
-        esc(leaf) + (e.dir ? '/' : '') + '</span>' +
-        '<span class="rt">' + (e.excluded ? 'withheld' : (e.dir ? '' : fmtBytes(e.bytes))) +
-        '</span></div>';
-    }).join('');
-    if (treeEntries.length > 24) {
-      html += '<div class="row none"><span class="nm">' +
-        (treeEntries.length - 24) + ' more — open Workspace</span></div>';
-    }
-  } else {
-    html += noneRow('not created yet');
-  }
-
-  // --- agents -----------------------------------------------------------------
-  // No + here: registering an agent runs its command on the host, so it is the
-  // one thing on this sidebar the cockpit deliberately cannot do.
-  // A + here is safe ONLY because it opens the catalogue: the browser picks an
-  // entry and the daemon owns the command. POST /v1/agents, which takes a
-  // caller-supplied path, is still refused by the allowlist.
-  html += esec('Agents', S.agents.length, 'agent', 'agents');
-  html += S.agents.length ? S.agents.map((a) =>
-    '<div class="row' + (S.boundAgent && S.boundAgent.name === a.name ? ' on' : '') +
-    '" data-open="agents"><span class="dot' + (a.locality === 'local' ? '' : ' warn') + '"></span>' +
-    '<span class="nm">' + esc(a.name) + '</span>' +
-    '<span class="rt">' + esc(a.locality || 'unknown') + '</span></div>').join('')
-    : noneRow('none — click + to connect one');
+  // --- tools
+  const tc = p.toolchain || {};
+  html += esec('tools', 'Tools', roles.length, 'tool', 'tools');
+  html += body('tools',
+    (roles.length
+      ? roles.map((r) =>
+          '<button class="row" data-open="tools"><span class="kd">' + esc(r) + '</span>' +
+          '<span class="nm">' + esc(caps[r]) + '</span></button>').join('')
+      : noneRow('none recorded')) +
+    (tc.status
+      ? '<div class="row none"><span class="nm">toolchain: ' + esc(tc.status) + '</span></div>'
+      : ''));
 
   $('side').innerHTML = html;
 }
@@ -514,6 +499,9 @@ function renderTabs() {
 }
 
 function openTabsDefault() {
+  // Sandboxes is the landing tab, with Shell and Trace in the drawer beneath it.
+  // It used to be a sidebar section as well, which put the live state of a
+  // sandbox in one place and the way to use it in another.
   S.tabs = [{ id: 'sandboxes', kind: 'sandboxes', label: 'sandboxes' }];
   S.activeTab = 'sandboxes';
 }
@@ -1065,6 +1053,9 @@ SCREENS.sandboxes = () => {
   const rows = S.sessions.filter(inScope);
   return screenHead('sandboxes', [rows.length + ' in scope'],
     '<button class="primary" data-add="session">New sandbox</button>') +
+    '<div class="capbar">every sandbox is gVisor or runc with <b>dropped capabilities</b>, ' +
+    'a <b>read-only rootfs</b> and <b>default-deny egress</b> · the Shell and Trace tabs ' +
+    'below act on the one you pick here</div>' +
     '<div class="scroll">' + (rows.length
       ? '<table><thead><tr><th>id</th><th>state</th><th>tier</th><th>mode</th>' +
         '<th>scope</th><th>ttl</th><th></th></tr></thead><tbody>' +
@@ -2508,13 +2499,19 @@ document.addEventListener('click', async (ev) => {
     '[data-buildtc],[data-editdoc],[data-rmdoc],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
-    '[data-gate],[data-egress],[data-docnew],[data-docup],' +
+    '[data-gate],[data-egress],[data-docnew],[data-docup],[data-toggle],' +
     '[data-modalok],[data-modalcancel]');
   if (!t) return;
   const a = (k) => t.getAttribute(k);
   ev.preventDefault();
 
   if (a('data-env')) { S.envID = a('data-env'); render(); return; }
+  if (a('data-toggle')) {
+    const g = a('data-toggle');
+    S.shut[g] = !S.shut[g];
+    renderSide();
+    return;
+  }
   if (a('data-drawer')) { S.drawerShut = !S.drawerShut; renderDrawer(); return; }
   if (a('data-dtab')) {
     S.drawerTab = a('data-dtab');

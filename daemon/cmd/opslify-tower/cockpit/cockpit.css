@@ -57,6 +57,12 @@ button {
   cursor: pointer;
 }
 button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+/* A visible focus ring on every control. The cockpit had none, so the whole
+ * interface was unusable from the keyboard — you could tab, and never see where
+ * you were. */
+button:focus-visible, input:focus-visible, select:focus-visible,
+textarea:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.sm { padding: 2px 7px; font-size: 10px; }
 button.lg { padding: 7px 15px; font-size: 12.5px; }
@@ -131,61 +137,83 @@ label.fld .hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-
 /* The project switcher lives in the header crumb now that OptionC2 has no rail.
  * A select rather than a list: the number of projects is small, and spending a
  * 50px column on it costs more than it returns. */
-.projsel { background: transparent; border: 1px solid transparent; color: var(--fg);
-  font-family: var(--mono); font-size: 11.5px; padding: 1px 4px; width: auto;
-  cursor: pointer; }
-.projsel:hover { border-color: var(--border); background: var(--panel2); }
-.projsel:focus { border-color: var(--accent); background: var(--panel2); }
-.hdr .addproj { width: 17px; height: 17px; padding: 0; font-size: 13px; line-height: 1;
-  display: flex; align-items: center; justify-content: center; border-style: dashed; }
+/* The project switcher reads as ONE control: the project, the environment it is
+ * scoped to, and a button to add. It was a bare select with a dashed + wedged
+ * against it, which looked like two unrelated things that happened to be
+ * adjacent. */
+.switch { display: inline-flex; align-items: center; gap: 0;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--panel2);
+  overflow: hidden; }
+.switch:focus-within { border-color: var(--accent); }
+.projsel { background: transparent; border: none; color: var(--fg);
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  padding: 4px 6px 4px 9px; width: auto; cursor: pointer; }
+.projsel:focus { outline: none; }
+.env-chip { font-family: var(--mono); font-size: 10.5px; color: var(--warn);
+  background: #241f0d; border-left: 1px solid var(--border);
+  padding: 5px 9px; align-self: stretch; display: flex; align-items: center; }
+.env-chip.prod { color: var(--danger); background: #241616; }
+.iconbtn { width: 24px; height: 24px; padding: 0; font-size: 15px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px; flex: none; }
 
 /* -------------------------------------------------------------- sidebar --- */
 /*
- * OptionC2's explorer: a flat, dense list with section headers rather than
- * accordions. Every section header carries a live count and a + that adds one of
- * whatever the section holds, so adding a thing is where the things already are.
+ * Sections are <button>s, not clickable divs, and rows are <button>s too.
+ * The design guidance calls a clickable div Critical, and it is right for a
+ * reason beyond conformance: a div with a click handler is invisible to the
+ * keyboard, which made the whole sidebar unreachable without a mouse.
+ *
+ * Sections are collapsed by default. A sidebar that opens showing everything
+ * shows nothing.
  */
 
 .side { border-right: 1px solid var(--border); background: var(--panel);
-  display: flex; flex-direction: column; overflow-y: auto; padding: 6px 0; }
+  display: flex; flex-direction: column; overflow-y: auto; padding: 4px 0 16px; }
 
-/* Each section is separated by a rule and a gap. The explorer is dense by design,
- * and without a divider nine sections read as one long list where the headers are
- * just slightly dimmer rows. */
-.esec { padding: 12px 12px 5px; font-size: 9.5px; color: var(--muted);
-  text-transform: uppercase; letter-spacing: .07em; font-weight: 600;
-  display: flex; align-items: center; gap: 6px;
-  border-top: 1px solid var(--border); margin-top: 10px; }
-/* The first one needs neither: there is nothing above it to separate from. */
-.side > .esec:first-child { border-top: none; margin-top: 0; padding-top: 6px; }
-/* A little air after a section's last row, before the next divider. */
-.esec + .row, .esec + .envrow { margin-top: 2px; }
-.esec .n { margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0; }
-.esec .add { border: 1px solid var(--border); background: var(--panel2); color: var(--muted);
-  width: 15px; height: 15px; border-radius: 3px; font-size: 12px; line-height: 1;
-  display: flex; align-items: center; justify-content: center; cursor: pointer;
-  padding: 0; flex: none; }
-.esec .add:hover { border-color: var(--accent); color: var(--accent); background: #223052; }
-.esec .more { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0;
-  color: var(--muted); cursor: pointer; }
-.esec .more:hover { color: var(--accent); }
+.esec { display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 12px; background: none; border: none; border-radius: 0;
+  border-top: 1px solid var(--border); margin-top: 6px;
+  font-size: 10px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .07em; font-weight: 600; text-align: left; cursor: pointer; }
+.esec:hover { color: var(--fg); background: #1b2029; border-color: var(--border); }
+.esec:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; color: var(--fg); }
+.esec .cv { width: 9px; font-size: 8px; color: var(--muted); flex: none; }
+.esec .t { flex: 1; }
+.esec .n { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0;
+  color: var(--muted); background: var(--panel2); border-radius: 9px;
+  padding: 1px 6px; min-width: 18px; text-align: center; }
+.esec[aria-expanded="true"] { color: var(--fg); }
+.esec[aria-expanded="true"] .n { color: var(--accent); }
+/* The first section has nothing above it to separate from. */
+.side > .esec:first-child, .side > .esec.static:first-child { border-top: none; margin-top: 0; }
+/* Environment is a label, not a control: it never collapses. */
+.esec.static { cursor: default; padding-bottom: 5px; }
+.esec.static:hover { background: none; color: var(--muted); }
 
-.row { display: flex; align-items: center; gap: 7px; padding: 3.5px 12px;
-  font-size: 12px; color: var(--muted); cursor: pointer; }
+/* The section's own actions, shown when it is open rather than revealed on hover
+ * — hiding the only way to add something behind a hover is the other half of
+ * what the guidance calls Critical. */
+.secactions { display: flex; gap: 6px; padding: 2px 12px 8px; }
+.secactions button { font-size: 10px; padding: 3px 9px; }
+
+.row { display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 4px 12px; background: none; border: none; border-radius: 0;
+  font-size: 12px; color: var(--muted); cursor: pointer; text-align: left; }
 .row:hover { background: #1b2029; color: var(--fg); }
+.row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; color: var(--fg); }
 .row.on { background: #223052; color: var(--fg); }
 .row .ind { width: 11px; font-size: 9px; flex: none; }
 .row .nm { font-family: var(--mono); font-size: 11.5px; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-.row .rt { margin-left: auto; font-family: var(--mono); font-size: 9.5px; flex: none; }
-.row .x { margin-left: auto; font-size: 10px; color: var(--muted); visibility: hidden; }
-.row:hover .x { visibility: visible; }
-.row .x:hover { color: var(--danger); }
-.row.none { color: var(--muted); font-style: italic; cursor: default; font-size: 11px; }
+  text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.row .rt { font-family: var(--mono); font-size: 9.5px; flex: none; color: var(--muted); }
+.row .se { font-size: 9.5px; color: var(--ok); flex: none; }
+.row.none { color: var(--muted); font-style: italic; cursor: default;
+  font-size: 11px; padding: 3px 12px 3px 24px; }
 .row.none:hover { background: none; color: var(--muted); }
 
-.kd { font-family: var(--mono); font-size: 9px; padding: 0 4px;
-  border: 1px solid var(--border); border-radius: 2px; flex: none;
+.kd { font-family: var(--mono); font-size: 9px; padding: 1px 4px;
+  border: 1px solid var(--border); border-radius: 3px; flex: none;
   color: var(--muted); min-width: 34px; text-align: center; }
 .kd.k8s, .kd.kubernetes { color: var(--k8s); border-color: #25455a; }
 .kd.ssh { color: var(--ssh); border-color: #3d2f5a; }
@@ -193,13 +221,15 @@ label.fld .hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-
 .kd.http { color: #7fb2ff; border-color: #2a3a5a; }
 .kd.db, .kd.postgres { color: var(--db); border-color: #25503a; }
 
-.envrow { display: flex; gap: 5px; flex-wrap: wrap; padding: 2px 12px 6px; }
-.env { flex: 1 1 auto; min-width: 56px; padding: 4px 6px; text-align: center;
+.envrow { display: flex; gap: 5px; flex-wrap: wrap; padding: 2px 12px 8px; }
+.env { flex: 1 1 auto; min-width: 58px; padding: 5px 8px; text-align: center;
   border: 1px solid var(--border); border-radius: 5px; background: var(--panel2);
-  color: var(--muted); font-size: 11px; cursor: pointer; }
+  color: var(--muted); font-size: 11px; font-family: var(--mono); cursor: pointer; }
 .env:hover { border-color: var(--accent); color: var(--accent); }
-.env.on { border-color: var(--warn); color: var(--warn); }
-.env.prod.on { border-color: var(--danger); color: var(--danger); }
+.env:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.env.on { border-color: var(--warn); color: var(--warn); background: #241f0d; }
+.env.prod.on { border-color: var(--danger); color: var(--danger); background: #241616; }
+.env.add { flex: 0 0 auto; min-width: 28px; border-style: dashed; }
 
 .tree { font-family: var(--mono); font-size: 10.5px; color: var(--muted);
   line-height: 1.7; padding: 0 12px; }
