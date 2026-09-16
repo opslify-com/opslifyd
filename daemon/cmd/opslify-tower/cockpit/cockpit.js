@@ -1537,7 +1537,12 @@ const NIXPKG = {
   aws: 'awscli2', azure: 'azure-cli', gcp: 'google-cloud-sdk',
   docker: 'docker-client', argocd: 'argocd', terraform: 'terraform',
 };
-const BASELINE_PKGS = ['curl', 'git', 'jq', 'openssh'];
+// Mirrors project.BaselinePackages. These are in every project's toolchain
+// whatever it declares — the commands a runbook assumes exist.
+const BASELINE_PKGS = [
+  'bash', 'cacert', 'coreutils', 'curl', 'findutils', 'gawk', 'git',
+  'gnugrep', 'gnused', 'gnutar', 'gzip', 'jq', 'less', 'openssh', 'unzip', 'which',
+];
 
 const packagesForProject = (p) => {
   const set = new Set(BASELINE_PKGS);
@@ -2331,6 +2336,88 @@ const DOC_KINDS = {
   },
 };
 
+// docUpload takes files or a whole folder from the operator's machine.
+//
+// The + on Skills and Memory used to only offer a blank editor, which is the
+// wrong first move when you already have a directory of runbooks: nobody retypes
+// forty markdown files into a browser.
+//
+// Folder uploads keep their relative paths, so memory/incidents/2026-03.md stays
+// where it was. Everything goes through the same PUT /v1/docs as the editor, so
+// the same refusals apply — .md only, no traversal, no credential-shaped names —
+// and anything skipped is NAMED rather than silently dropped.
+// docAddChooser asks which way you are adding: write one, or bring a directory
+// you already have. Both are first-class — an estate that has been running for a
+// year has its runbooks somewhere already.
+function docAddChooser(kind) {
+  const k = DOC_KINDS[kind] || DOC_KINDS.memory;
+  modal('Add ' + k.title,
+    '<p class="hint">' + k.blurb + '</p>' +
+    '<div class="grid3">' +
+    '<div class="tool" data-docnew="' + kind + '">' +
+    '<div class="top"><span class="nm">Write one</span></div>' +
+    '<div class="ds">Start from a template in the editor.</div></div>' +
+    '<div class="tool" data-docup="' + kind + '">' +
+    '<div class="top"><span class="nm">Upload files</span></div>' +
+    '<div class="ds">Bring .md files or a whole folder from this machine. ' +
+    'Subdirectories are kept.</div></div>' +
+    '</div>' +
+    '<p class="hint" style="margin-top:12px;">Either way they land in the project ' +
+    'workspace, so they version and review like code.</p>',
+    'Close', async () => {});
+}
+
+function docUpload(kind) {
+  const k = DOC_KINDS[kind] || DOC_KINDS.memory;
+  modal('Upload ' + k.title + 's',
+    '<p class="hint">' + k.blurb + '</p>' +
+    '<label class="fld"><span class="lb">files</span>' +
+    '<input type="file" id="m-ufiles" multiple accept=".md,.markdown,text/markdown">' +
+    '<span class="hint">Pick one or many .md files.</span></label>' +
+    '<label class="fld"><span class="lb">or a whole folder</span>' +
+    '<input type="file" id="m-udir" webkitdirectory directory multiple>' +
+    '<span class="hint">Subdirectories are kept, so runbooks/deploy.md stays there. ' +
+    'Anything that is not markdown is skipped and listed.</span></label>' +
+    '<div id="m-ustatus" class="hint"></div>',
+    'Upload', async () => {
+      const picked = []
+        .concat(Array.from(($('m-ufiles') || {}).files || []))
+        .concat(Array.from(($('m-udir') || {}).files || []));
+      if (!picked.length) throw new Error('pick at least one file');
+
+      const done = []; const skipped = []; const failed = [];
+      for (const f of picked) {
+        // webkitRelativePath includes the chosen folder's own name; drop it so
+        // uploading "runbooks/" does not produce runbooks/runbooks/deploy.md.
+        let rel = f.webkitRelativePath || f.name;
+        if (f.webkitRelativePath) {
+          const parts = rel.split('/');
+          if (parts.length > 1) parts.shift();
+          rel = parts.join('/');
+        }
+        if (!/\.(md|markdown)$/i.test(rel)) { skipped.push(rel); continue; }
+        if (f.size > 512 * 1024) { skipped.push(rel + ' (too large)'); continue; }
+        try {
+          const text = await f.text();
+          await send('PUT', '/v1/docs', {
+            project: S.projectID || undefined, kind, path: rel, content: text,
+          });
+          done.push(rel);
+        } catch (e) {
+          // The daemon's refusal message is the useful part — it names WHY.
+          failed.push(rel + ': ' + e.message);
+        }
+      }
+      if (done.length) toast('uploaded ' + done.length + ' file(s)', 'ok');
+      if (skipped.length) {
+        toast('skipped ' + skipped.length + ' non-markdown file(s): ' +
+          skipped.slice(0, 5).join(', ') + (skipped.length > 5 ? ', …' : ''), null);
+      }
+      if (failed.length) toast('refused: ' + failed.slice(0, 3).join('; '), 'bad');
+      if (!done.length && !skipped.length) throw new Error('nothing was uploaded');
+    });
+}
+
 function docEditor(kind, path) {
   const k = DOC_KINDS[kind] || DOC_KINDS.memory;
   const editing = !!path;
@@ -2421,7 +2508,8 @@ document.addEventListener('click', async (ev) => {
     '[data-buildtc],[data-editdoc],[data-rmdoc],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
-    '[data-gate],[data-egress],[data-modalok],[data-modalcancel]');
+    '[data-gate],[data-egress],[data-docnew],[data-docup],' +
+    '[data-modalok],[data-modalcancel]');
   if (!t) return;
   const a = (k) => t.getAttribute(k);
   ev.preventDefault();
@@ -2473,6 +2561,8 @@ document.addEventListener('click', async (ev) => {
   }
   if (a('data-memclear')) { S.memHits = null; S.memQuery = ''; render(); return; }
   if (a('data-toolcred')) { toolCredModal(a('data-toolcred')); return; }
+  if (a('data-docnew')) { docEditor(a('data-docnew')); return; }
+  if (a('data-docup')) { docUpload(a('data-docup')); return; }
   if (a('data-editdoc')) {
     const [kind, ...rest] = a('data-editdoc').split(':');
     docEditor(kind, rest.join(':'));
@@ -2528,8 +2618,8 @@ document.addEventListener('click', async (ev) => {
       secret: addSecretModal, session: newSessionModal,
       policy: () => openTab('policy', null, 'policy'),
       agent: addAgentModal,
-      skilldoc: () => docEditor('skill'),
-      memorydoc: () => docEditor('memory'),
+      skilldoc: () => docAddChooser('skill'),
+      memorydoc: () => docAddChooser('memory'),
     }[a('data-add')] || (() => toast('nothing to add there', 'bad')))();
     return;
   }

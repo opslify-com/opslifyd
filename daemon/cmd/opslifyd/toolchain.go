@@ -153,8 +153,15 @@ func (b *toolchainBuilder) run(projectID string, tools []string) {
 // still runs sandboxes, using the toolchain baked at install time. What it cannot
 // do is compose a different one per project, and saying so plainly beats a
 // startup error nobody can act on.
-func tryEnvBuilder(log *slog.Logger) (env.EnvBuilder, string) {
-	b, err := env.NewDefault("", "", "")
+func tryEnvBuilder(baseDir string, log *slog.Logger) (env.EnvBuilder, string) {
+	// The daemon's OWN state directory, not the compiled-in default.
+	//
+	// NewDefault("") falls back to /var/lib/opslify, which a rootless daemon
+	// cannot write — so a build that had passed every check failed at
+	// "mkdir /var/lib/opslify/work: permission denied", minutes in, after
+	// reporting itself as building. Where a daemon keeps its state is already
+	// decided by its config; the builder should use the same answer.
+	b, err := env.NewDefault(baseDir, "", "")
 	if err != nil {
 		log.Info("per-project toolchains unavailable on this host",
 			"reason", err, "effect", "projects use the daemon-wide toolchain")

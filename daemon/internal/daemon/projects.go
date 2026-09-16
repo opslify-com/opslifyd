@@ -182,6 +182,25 @@ func (d *Daemon) handleProjectCreate(w http.ResponseWriter, r *http.Request) {
 			d.log.Warn("workspace scaffold failed", "project", p.ID, "error", err)
 		}
 	}
+	// Declare the toolchain at creation and start building it.
+	//
+	// A project whose sandboxes have no git is a project where the first real task
+	// fails on "git: not found" — a failure with nothing to do with the task, and
+	// one the operator has no reason to anticipate. Declaring it here means the
+	// Tools screen shows what a sandbox will have from the first minute, and a
+	// host that can build one starts immediately.
+	//
+	// Not fatal if it cannot: an unbuildable toolchain is recorded as
+	// "unavailable" and the project uses the daemon-wide layer.
+	if d.toolchains != nil {
+		if _, terr := d.toolchains.Build(p.ID, project.ToolchainFor(p.Capabilities)); terr != nil {
+			d.log.Warn("toolchain build not started", "project", p.ID, "error", terr)
+		}
+		// Re-read so the response carries the status the build just set.
+		if fresh, freshEnvs, rerr := d.projects.Project(p.ID); rerr == nil {
+			p, envs = fresh, freshEnvs
+		}
+	}
 	resp := d.projectView(p, envs)
 	// A bind mount has NO deny-list — unlike F7.3's copy-in path, which filters
 	// credential-shaped files on the way through. Everything in the chosen

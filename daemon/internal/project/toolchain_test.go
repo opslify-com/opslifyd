@@ -87,3 +87,49 @@ func TestAFailedBuildKeepsTheWorkingToolchain(t *testing.T) {
 		t.Log("note: InUse is false while status is failed — sandboxes fall back to the daemon layer")
 	}
 }
+
+// TestBaselinePackagesAreRealNixpkgsAttributes.
+//
+// A package name goes into a generated flake and is resolved by devbox. Get one
+// wrong and the build fails MINUTES in, after reporting itself as building, with
+// "ca-certificates@latest: package not found" — which is exactly what happened:
+// the nixpkgs attribute is `cacert`, and "ca-certificates" is what the rest of
+// the world calls it.
+//
+// The list cannot be checked against nixpkgs from a unit test without a network
+// and a nix installation, so this pins the names verified by hand and guards the
+// mistakes that are easy to repeat.
+//
+// Verified with an EXACT-match check on `devbox search`, not merely that the
+// search returned something: searching "tar" finds tar2ext4, taradino and
+// tarantool, so "it found results" was the unsound check that let the second
+// failure through after the first.
+func TestBaselinePackagesAreRealNixpkgsAttributes(t *testing.T) {
+	// Names that look right and are not.
+	wrong := map[string]string{
+		"ca-certificates": "cacert",
+		"tar":             "gnutar",
+		"ssh":             "openssh",
+		"grep":            "gnugrep",
+		"sed":             "gnused",
+		"awk":             "gawk",
+		"helm":            "kubernetes-helm",
+		"aws":             "awscli2",
+		"az":              "azure-cli",
+	}
+	for _, p := range BaselinePackages {
+		if right, bad := wrong[p]; bad {
+			t.Errorf("baseline package %q is not a nixpkgs attribute; it is %q", p, right)
+		}
+	}
+	// And the mapping must not emit one either.
+	for tool := range map[string]bool{
+		"kubernetes": true, "helm": true, "aws": true, "azure": true, "gitlab": true,
+	} {
+		pkg := NixPackageFor(tool)
+		if right, bad := wrong[pkg]; bad {
+			t.Errorf("NixPackageFor(%q) = %q, which is not a nixpkgs attribute; it is %q",
+				tool, pkg, right)
+		}
+	}
+}

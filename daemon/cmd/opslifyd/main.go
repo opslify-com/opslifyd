@@ -853,7 +853,7 @@ func buildDaemonOptions(
 	// that is reported as "unavailable" rather than as a failure: nothing is wrong
 	// with the request, the machine simply cannot serve it, and telling an
 	// operator to retry would be a lie.
-	envBuilder, envWhy := tryEnvBuilder(log)
+	envBuilder, envWhy := tryEnvBuilder(filepath.Dir(cfg.WorkspaceDir), log)
 	tcBuilder := newToolchainBuilder(projects, envBuilder, envWhy, cfg.Image, log)
 	var toolchains daemon.ToolchainBuilder = tcBuilder
 	// A typed nil would make daemon.Options.AgentDriver non-nil and register the

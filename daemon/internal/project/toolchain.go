@@ -175,12 +175,21 @@ func NixPackageFor(tool string) string {
 	return tool
 }
 
-// BaselinePackages are added to every project toolchain.
+// BaselinePackages are in every project toolchain, whatever tools it declares.
 //
-// git because every estate clones something, and curl/jq/openssh because a
-// runbook that says "check the endpoint" is unrunnable without them. Small, and
-// the alternative is every operator discovering the same four omissions.
-var BaselinePackages = []string{"git", "curl", "jq", "openssh"}
+// These are the commands a runbook assumes exist. git because every estate clones
+// something; curl and jq because "check the endpoint and read the status field"
+// is unrunnable without them; openssh because half of operations is reaching
+// another host; and the rest because a shell without them is a shell that fails
+// on its second command.
+//
+// The alternative is every operator discovering the same omissions one at a time,
+// each as a task that failed for a reason that had nothing to do with the task.
+var BaselinePackages = []string{
+	"git", "curl", "jq", "openssh",
+	"bash", "coreutils", "findutils", "gnugrep", "gnused", "gawk",
+	"less", "unzip", "gzip", "gnutar", "cacert", "which",
+}
 
 // ToolchainFor turns a project's capability map into a package list.
 func ToolchainFor(caps map[string]string) []string {
