@@ -885,3 +885,31 @@ func TestTheTraceSummaryReadsPayloadsCorrectly(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentBindSendsTheScopeAsQueryParameters.
+//
+// handleAgentBind reads ?project= and ?env=. All three cockpit call sites sent a
+// JSON body with project_id/environment_id instead, so every bind made from the
+// UI was GLOBAL: the picker said tripon.staging and the daemon recorded
+// _fallback. Nothing failed — the request returned 204 and bound the wrong scope.
+func TestAgentBindSendsTheScopeAsQueryParameters(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+	if !strings.Contains(js, "'project=' + encodeURIComponent(S.projectID)") {
+		t.Error("the bind helper does not send ?project=")
+	}
+	if !strings.Contains(js, "'env=' + encodeURIComponent(e.id)") {
+		t.Error("the bind helper does not send ?env=")
+	}
+	// One helper, not three call sites: they drifted once already.
+	if n := strings.Count(js, "/bind'"); n > 1 {
+		t.Errorf("%d call sites build a /bind URL; there should be one helper", n)
+	}
+	// And the scope must never go in a body, where the daemon does not look.
+	if regexp.MustCompile(`/bind['"],\s*\{`).MatchString(js) {
+		t.Error("a bind call passes a body; the daemon reads the scope from the query")
+	}
+}

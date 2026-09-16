@@ -234,6 +234,37 @@ label.fld .hint { font-size: 10.5px; color: var(--muted); margin-top: 4px; line-
 .tree { font-family: var(--mono); font-size: 10.5px; color: var(--muted);
   line-height: 1.7; padding: 0 12px; }
 
+/* Running sandboxes, docked to the bottom.
+ *
+ * Not collapsible and not in the scroll: this is live state, and the one thing
+ * you should never have to open something to see. `margin-top: auto` pushes it
+ * down however short the sections above are. */
+.sbdock { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border);
+  background: var(--panel); position: sticky; bottom: 0; }
+
+.sb { border: 1px solid var(--border); border-radius: 6px; background: var(--panel2);
+  padding: 8px 9px; margin: 0 10px 8px; }
+/* Green and boxed while it is up. The border carries the state, not a word:
+ * whether a sandbox is running is the thing you read first from across a desk. */
+.sb.live { border-color: #2a4a37; background: #14201a; }
+.sb .top { display: flex; align-items: center; gap: 7px; }
+.sb .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+  flex: none; box-shadow: 0 0 0 3px rgba(75, 208, 127, .15); }
+.sb .pulse.off { background: var(--muted); box-shadow: none; }
+.sb .sid { font-family: var(--mono); font-size: 11.5px; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb.live .sid { color: var(--ok); }
+.sb .age { font-family: var(--mono); font-size: 10px; color: var(--muted); flex: none; }
+.sb .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 8px; margin-top: 7px; }
+.sb .mrow { font-size: 10px; color: var(--muted); }
+.sb .mrow b { color: var(--fg); font-family: var(--mono); font-weight: 500; }
+.sb .acts { display: flex; gap: 5px; margin-top: 8px; }
+.sb .acts button { flex: 1; }
+
+.sbnone { padding: 6px 12px 12px; font-size: 11px; color: var(--muted);
+  line-height: 1.6; }
+.sbnone button { margin-top: 7px; }
+
 /* --------------------------------------------------------------- centre --- */
 
 .center { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
@@ -361,6 +392,18 @@ td.mono { font-family: var(--mono); font-size: 11.5px; }
 .m .a.ag { color: var(--accent); border-color: #2a3a5a; }
 .m .b { flex: 1; min-width: 0; font-size: 11.5px; line-height: 1.5; }
 .m .w2 { font-size: 9.5px; color: var(--muted); margin-bottom: 2px; }
+
+/* The connect prompt: what this host has, one button each. */
+.connect { border: 1px dashed var(--border); border-radius: 6px; padding: 11px;
+  margin-bottom: 11px; }
+.connect .w2 { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.connect .ds { font-size: 11px; color: var(--muted); line-height: 1.5; margin-bottom: 9px; }
+.connectbtn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  width: 100%; text-align: left; padding: 8px 10px; margin-bottom: 6px;
+  border-color: #2a3a5a; background: #1a2130; }
+.connectbtn:hover:not(:disabled) { background: #223052; border-color: var(--accent); }
+.connectbtn .nm { font-size: 12px; color: var(--accent); font-weight: 500; }
+.connectbtn .ds { font-size: 10px; color: var(--muted); margin: 0; }
 
 .gate { margin-top: 6px; border: 1px solid var(--warn); border-radius: 5px;
   background: #1d1c14; padding: 8px; }

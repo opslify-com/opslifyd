@@ -94,7 +94,10 @@ type createRequest struct {
 // createResponse is the POST /v1/sessions reply.
 type createResponse struct {
 	SessionID string `json:"session_id"`
-	State     string `json:"state"`
+	// Label is the human-facing name the daemon generated. Returned so the
+	// caller can say what it made without a second request.
+	Label string `json:"label,omitempty"`
+	State string `json:"state"`
 	// Instructions is the F8.4 assembled instruction set for this session's scope,
 	// rendered with per-layer provenance. Returned HERE rather than fetched later
 	// because an agent that has to know to ask will not ask: the house rules are
@@ -313,7 +316,7 @@ func (d *Daemon) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	instructions, hash := s.Instructions()
 	writeJSON(w, http.StatusCreated, createResponse{
-		SessionID: s.ID, State: string(s.State),
+		SessionID: s.ID, Label: s.Label, State: string(s.State),
 		Instructions: instructions, InstructionsHash: hash,
 	})
 }

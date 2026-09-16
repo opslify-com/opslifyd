@@ -17,7 +17,8 @@ import (
 type record struct {
 	ID           string                  `json:"id"`
 	Mode         Mode                    `json:"mode"`
-	Name         string                  `json:"name,omitempty"` // workspace name (workspace mode only)
+	Name         string                  `json:"name,omitempty"`  // workspace name (workspace mode only)
+	Label        string                  `json:"label,omitempty"` // human-facing name; see Session.Label
 	Tier         runtime.Tier            `json:"tier"`
 	Location     runtime.Location        `json:"location"`
 	Handle       runtime.ContainerHandle `json:"handle"`

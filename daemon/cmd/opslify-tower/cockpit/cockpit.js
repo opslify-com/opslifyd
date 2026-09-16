@@ -31,6 +31,21 @@ async function api(path, opts) {
   return text ? JSON.parse(text) : null;
 }
 
+// bindAgent scopes an agent to the current project/environment.
+//
+// The daemon reads the scope from QUERY PARAMETERS — ?project=&env= — not from a
+// body. All three call sites sent JSON, so every bind made from the cockpit was
+// global: the picker said tripon.staging and the daemon recorded _fallback. One
+// helper now, so they cannot drift apart again.
+async function bindAgent(name) {
+  const e = environment();
+  const q = [];
+  if (S.projectID) q.push('project=' + encodeURIComponent(S.projectID));
+  if (e) q.push('env=' + encodeURIComponent(e.id));
+  await send('POST', '/v1/agents/' + encodeURIComponent(name) + '/bind' +
+    (q.length ? '?' + q.join('&') : ''));
+}
+
 const send = (method, path, body) => api(path, {
   method,
   headers: { 'Content-Type': 'application/json' },
@@ -487,6 +502,41 @@ function renderSide() {
       ? '<div class="row none"><span class="nm">toolchain: ' + esc(tc.status) + '</span></div>'
       : ''));
 
+  // --- running sandboxes, pinned to the bottom -------------------------------
+  //
+  // Not a collapsible section: this is live state, and the one thing you should
+  // never have to open something to see. It sits below everything and stays put
+  // while the rest of the sidebar scrolls.
+  const live = S.sessions.filter(inScope);
+  html += '<div class="sbdock">' +
+    '<div class="esec static"><span class="t">Sandboxes</span>' +
+    '<span class="n">' + (live.length ? live.length + ' running' : 'none') + '</span></div>' +
+    (live.length
+      ? live.map((sx) => {
+          const running = sx.state === 'running' || sx.state === 'ready';
+          return '<div class="sb' + (running ? ' live' : '') + '">' +
+            '<div class="top">' +
+            '<span class="pulse' + (running ? '' : ' off') + '"></span>' +
+            '<span class="sid">' + esc(sx.label || short(sx.id, 10)) + '</span>' +
+            '<span class="spacer"></span>' +
+            '<span class="age" title="how long it has been up">' + esc(sx.age || '—') + '</span>' +
+            '</div>' +
+            '<div class="meta">' +
+            '<span class="mrow">tier <b>' + esc(sx.tier || '—') + '</b></span>' +
+            '<span class="mrow">mode <b>' + esc(sx.mode || '—') + '</b></span>' +
+            '<span class="mrow">ttl <b>' + esc(sx.ttl || '—') + '</b></span>' +
+            '<span class="mrow">state <b>' + esc(sx.state || '—') + '</b></span>' +
+            '</div>' +
+            '<div class="acts">' +
+            '<button class="sm" data-usesandbox="' + esc(sx.id) + '">Shell</button>' +
+            '<button class="sm" data-tracesandbox="' + esc(sx.id) + '">Trace</button>' +
+            '<button class="sm danger" data-killsession="' + esc(sx.id) + '">Kill</button>' +
+            '</div></div>';
+        }).join('')
+      : '<div class="sbnone">No sandbox running.<br>' +
+        '<button class="sm primary" data-add="session">Start one</button></div>') +
+    '</div>';
+
   $('side').innerHTML = html;
 }
 
@@ -904,10 +954,42 @@ function renderChat() {
   // Why the composer is unusable, when it is. A disabled box with no reason is a
   // bug report waiting to happen.
   let blocked = null;
-  if (!a) blocked = 'No agent is bound to this scope. Bind one from the Agents screen.';
+  if (!a) blocked = 'Connect an agent to start working.';
   else if (!drivable) {
     blocked = a.name + ' was registered without a flavour, so the daemon has no recipe ' +
       'for taking away its host tools. Re-add it with --flavour claude|qwen|codex.';
+  }
+
+  // Nothing bound: offer the agents this host actually has, one click each.
+  //
+  // The dropdown's only entry used to be "connect an agent…", which opened a
+  // dialog with a catalogue, a name, a model and an endpoint — four decisions to
+  // answer a question that has an obvious default. The defaults ARE the
+  // catalogue entry, so the button can just use them.
+  let connectPrompt = '';
+  if (!a) {
+    const found = S.catalogue.filter((e) => e.found);
+    const registered = S.agents.map((x) => x.name);
+    connectPrompt = '<div class="connect">' +
+      '<div class="w2">No agent connected</div>' +
+      (S.agents.length
+        ? '<div class="ds">' + S.agents.length + ' registered — pick one below to bind it ' +
+          'to this scope.</div>'
+        : found.length
+          ? '<div class="ds">Found on this machine. One click connects it; your ' +
+            'subscription or key stays inside that CLI.</div>' +
+            found.map((e) =>
+              '<button class="connectbtn" data-quickagent="' + esc(e.id) + '">' +
+              '<span class="nm">' + esc(e.title) + '</span>' +
+              '<span class="ds">' + (e.default_model ? esc(e.default_model) + ' · ' : '') +
+              (e.locality === 'local' ? 'stays on this host' : 'output goes off-host') +
+              '</span></button>').join('')
+          : '<div class="ds">No supported agent found on this machine. Install Claude ' +
+            'Code, Qwen Code or Codex, or register one by path with ' +
+            '<span class="mono">opslify agent add</span>.</div>') +
+      (found.length || S.agents.length
+        ? '<button class="sm" data-add="agent">More options…</button>' : '') +
+      '</div>';
   }
 
   $('chat').innerHTML =
@@ -920,6 +1002,7 @@ function renderChat() {
     (S.chat.turns.length ? '<button class="sm" data-chatclear="1">Clear</button>' : '') +
     '<button class="sm" data-open="agents">' + (a ? 'Switch' : 'Bind') + '</button></div>' +
     '<div class="thr" id="thread">' +
+    connectPrompt +
     (turns || gates || '<div class="m"><div class="a">·</div><div class="b">' +
       '<div class="w2">Nothing yet</div>' +
       'Ask the agent to do something. It works only through opslify\'s tools — ' +
@@ -2480,7 +2563,7 @@ function newSessionModal() {
       // Attach the Shell to what was just created; that is why it was created.
       const id = out && (out.session_id || out.id);
       if (id) { S.shell.sessionID = id; S.shell.lines = []; S.drawerTab = 'shell'; }
-      toast('sandbox ' + (id ? short(id, 8) : '') + ' created', 'ok');
+      toast('sandbox ' + ((out && out.label) || short(id || '', 8)) + ' created', 'ok');
     });
 }
 
@@ -2500,12 +2583,46 @@ document.addEventListener('click', async (ev) => {
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
     '[data-gate],[data-egress],[data-docnew],[data-docup],[data-toggle],' +
+    '[data-usesandbox],[data-tracesandbox],[data-quickagent],' +
     '[data-modalok],[data-modalcancel]');
   if (!t) return;
   const a = (k) => t.getAttribute(k);
   ev.preventDefault();
 
   if (a('data-env')) { S.envID = a('data-env'); render(); return; }
+  // One click: install from the catalogue with its defaults, then bind it to the
+  // current scope. Both steps, because connecting an agent you cannot use is not
+  // connecting it.
+  if (a('data-quickagent')) {
+    const entry = a('data-quickagent');
+    const e = environment();
+    await guard(async () => {
+      toast('connecting ' + entry + ' — running a handshake, this takes a few seconds', null);
+      const out = await send('POST', '/v1/agents/install', { entry });
+      const name = (out && out.name) || entry;
+      await bindAgent(name);
+      toast(name + ' connected — ' + ((out && out.disclosure) || ''), 'ok');
+      await refresh();
+    });
+    return;
+  }
+  if (a('data-usesandbox')) {
+    S.shell.sessionID = a('data-usesandbox');
+    S.shell.lines = [];
+    S.drawerTab = 'shell';
+    S.drawerShut = false;
+    renderDrawer();
+    return;
+  }
+  if (a('data-tracesandbox')) {
+    S.traceSession = a('data-tracesandbox');
+    S.drawerTab = 'trace';
+    S.drawerShut = false;
+    renderDrawer();
+    await loadTrace(S.traceSession);
+    renderDrawer();
+    return;
+  }
   if (a('data-toggle')) {
     const g = a('data-toggle');
     S.shut[g] = !S.shut[g];
@@ -2708,10 +2825,7 @@ document.addEventListener('click', async (ev) => {
   if (a('data-bind')) {
     const name = a('data-bind');
     await guard(async () => {
-      await send('POST', '/v1/agents/' + encodeURIComponent(name) + '/bind', {
-        project_id: S.projectID || undefined,
-        environment_id: environment() ? environment().id : undefined,
-      });
+      await bindAgent(name);
       toast('bound ' + name, 'ok');
       await refresh();
     });
@@ -2813,10 +2927,7 @@ document.addEventListener('change', async (ev) => {
     if (v === '__add') { addAgentModal(); return; }
     const e = environment();
     await guard(async () => {
-      await send('POST', '/v1/agents/' + encodeURIComponent(v) + '/bind', {
-        project_id: S.projectID || undefined,
-        environment_id: e ? e.id : undefined,
-      });
+      await bindAgent(v);
       toast(v + ' now runs work in this scope', 'ok');
       await refresh();
     });

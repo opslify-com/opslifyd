@@ -61,7 +61,11 @@ type Session struct {
 	Mode Mode
 	// Name is the workspace name (workspace mode only; empty for scratch). It
 	// keys the snapshot committed on end and resumed on the next create.
-	Name     string
+	Name string
+	// Label is the human-facing name: project-environment-word. Cosmetic —
+	// everything that matters is keyed on ID — but "did tripon-prod-maple finish"
+	// is a question somebody can actually ask.
+	Label    string
 	Tier     runtime.Tier
 	Location runtime.Location
 	State    State
@@ -182,7 +186,9 @@ func (s *Session) expired(now time.Time) bool {
 // carries derived age/ttl_remaining (seconds) rather than raw timestamps so the
 // wire contract is stable and clock-relative.
 type View struct {
-	ID           string `json:"session_id"`
+	ID string `json:"session_id"`
+	// Label is the human-facing name. See Session.Label.
+	Label        string `json:"label,omitempty"`
 	Mode         Mode   `json:"mode"`
 	Tier         string `json:"tier"`
 	State        State  `json:"state"`
@@ -206,6 +212,7 @@ func (s *Session) view(now time.Time) View {
 	}
 	return View{
 		ID:            s.ID,
+		Label:         s.Label,
 		Mode:          s.Mode,
 		Tier:          string(s.Tier),
 		State:         s.State,

@@ -858,9 +858,11 @@ func (m *Manager) realize(ctx context.Context, tier runtime.Tier, loc runtime.Lo
 	}
 
 	s := &Session{
-		ID:            id,
-		Mode:          mode,
-		Name:          name,
+		ID:   id,
+		Mode: mode,
+		Name: name,
+		// A 32-character hash is correct for a chain and useless in a sentence.
+		Label:         MakeLabel(scope.projectID, scope.envID),
 		Tier:          tier,
 		Location:      loc,
 		State:         st,
@@ -2133,6 +2135,7 @@ func newID() (string, error) {
 func recordOf(s *Session) record {
 	return record{
 		ID:            s.ID,
+		Label:         s.Label,
 		Mode:          s.Mode,
 		Tier:          s.Tier,
 		Location:      s.Location,
@@ -2148,6 +2151,7 @@ func recordOf(s *Session) record {
 func sessionOf(r record) *Session {
 	return &Session{
 		ID:            r.ID,
+		Label:         r.Label,
 		Mode:          r.Mode,
 		Tier:          r.Tier,
 		Location:      r.Location,
