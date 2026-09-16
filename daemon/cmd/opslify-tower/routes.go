@@ -37,7 +37,11 @@ type towerRoute struct {
 //   - GET /v1/secrets/{ref} — there is no such route, and if one is ever added it
 //     must not be reachable here. The browser sees refs and metadata, never values.
 //   - Any /v1/sessions/{id}/files route — raw workspace bytes stay out of the
-//     browser (the F3.6 refusal stays closed).
+//     browser (the F3.6 refusal stays closed). The TRACE is a different thing and
+//     is admitted: F3.3's redactor runs in the emit path BEFORE the event is
+//     hashed, so what is stored is already scrubbed, and the chain commits to the
+//     redacted bytes. Refusing it meant the product's tamper-evident audit trail
+//     had no surface at all, which is a strange thing for an audit tool.
 //   - POST /v1/changes/{id}/decision with ?force — forcing is CLI-only, where the
 //     operator is shown what they are breaking first.
 //   - DELETE /v1/secrets and DELETE /v1/secrets/{ref} — removing a credential can
@@ -105,6 +109,12 @@ var towerRoutes = []towerRoute{
 	// --- reads that the cockpit's own screens need --------------------------
 	{http.MethodGet, "/v1/health", "opslify status", entitle.FeatureCockpit},
 	{http.MethodGet, "/v1/sessions/history", "opslify session history", entitle.FeatureCockpit},
+
+	// The trace and its verdict. Read-only, redacted at emit, and the whole point
+	// of the product: "what did the agent actually do, and can I prove it was not
+	// edited afterwards".
+	{http.MethodGet, "/v1/sessions/*/trace", "opslify session trace <id>", entitle.FeatureCockpit},
+	{http.MethodGet, "/v1/sessions/*/verify", "opslify verify <id>", entitle.FeatureCockpit},
 
 	// --- mutations, each routed through the SAME daemon path as the CLI -----
 	{http.MethodPost, "/v1/sessions", "opslify session create", entitle.FeatureCockpit},

@@ -66,7 +66,7 @@ func TestOnlyAllowlistedRoutesAreAdmitted(t *testing.T) {
 		{http.MethodPut, "/v1/secrets/gitlab-token"},    // rotation breaks live holders
 		{http.MethodGet, "/v1/sessions/s1/files"},       // raw workspace bytes
 		{http.MethodPut, "/v1/sessions/s1/files"},
-		{http.MethodGet, "/v1/sessions/s1/trace"}, // the trace drawer reads it via SSE, not here
+
 		{http.MethodDelete, "/v1/workspaces/ws1"}, // host-linked dirs are not the browser's
 		// Registering an agent runs the submitted command on the host. Binding one
 		// does not, which is why bind is admitted and this is not.
@@ -115,6 +115,10 @@ func TestAllowlistedRoutesAreAdmitted(t *testing.T) {
 		// back out, which is the invariant that actually matters.
 		{http.MethodPost, "/v1/secrets"},
 		{http.MethodGet, "/v1/memory"},
+		// The trace is admitted: it is redacted at emit, and an audit tool whose
+		// audit trail has no surface is not much of one.
+		{http.MethodGet, "/v1/sessions/s1/trace"},
+		{http.MethodGet, "/v1/sessions/s1/verify"},
 		{http.MethodGet, "/v1/docs"},
 		{http.MethodGet, "/v1/docs/read"},
 		{http.MethodPut, "/v1/docs"},
@@ -822,6 +826,62 @@ func TestTheCockpitOffersNoHostShell(t *testing.T) {
 	for _, rt := range towerRoutes {
 		if strings.Contains(rt.Path, "exec") && !strings.Contains(rt.Path, "/v1/sessions/") {
 			t.Errorf("allowlisted exec route %s is not session-scoped", rt.Path)
+		}
+	}
+}
+
+// TestTheTraceSummaryReadsPayloadsCorrectly.
+//
+// The drawer renders one line per event, and the first version got two of them
+// wrong in ways that only a real trace revealed: `layers` is the ARRAY of layer
+// records (it printed the whole JSON blob into a timeline row) and `chunk` is the
+// output CONTENT, not a byte count ("stdout +hello\n bytes"). Both are pinned
+// here against the field names the daemon actually emits.
+func TestTheTraceSummaryReadsPayloadsCorrectly(t *testing.T) {
+	b, err := cockpitFS.ReadFile("cockpit/cockpit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(b)
+	// Asserted as the ABSENCE of the buggy shape, not the presence of the fix:
+	// checking for "Array.isArray(p.layers)" passed against a regression, because
+	// that string also appears where the layer NAMES are joined.
+	for _, bug := range []string{
+		"p.layers + ' layer",  // the array rendered as a count
+		"p.layers +' layer",   //
+		"+ p.chunk + ' bytes", // the content rendered as a length
+		"+p.chunk+' bytes",    //
+		"(p.chunk || 0) + ' bytes",
+	} {
+		if strings.Contains(js, bug) {
+			t.Errorf("the trace summary contains %q — that field is not what it is "+
+				"being treated as, and a real trace is what revealed it", bug)
+		}
+	}
+	if !strings.Contains(js, "Array.isArray(p.layers)") {
+		t.Error("context.assemble does not check that p.layers is an array")
+	}
+	if !strings.Contains(js, "typeof p.chunk === 'string'") {
+		t.Error("exec.output does not check the type of p.chunk")
+	}
+	// Every event type the daemon emits should have a summary, or the drawer
+	// falls back to a key dump for something it was meant to explain.
+	for _, typ := range []string{
+		"session.start", "context.assemble", "policy.decision",
+		"exec.start", "exec.output", "exec.end",
+	} {
+		if !strings.Contains(js, "'"+typ+"'") {
+			t.Errorf("no trace summary for %s", typ)
+		}
+	}
+	// And the verdict must come from the daemon, never be computed here.
+	if !strings.Contains(js, "/verify") {
+		t.Error("the drawer does not fetch the server-side verdict")
+	}
+	for _, forbidden := range []string{"sha256(", "computeHash", "crypto.subtle"} {
+		if strings.Contains(js, forbidden) {
+			t.Errorf("the cockpit contains %q — a chain verdict this page computed "+
+				"for itself would be worth nothing", forbidden)
 		}
 	}
 }

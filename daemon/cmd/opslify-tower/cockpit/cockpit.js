@@ -143,6 +143,8 @@ const S = {
   // The drawer's Shell. sessionID is which sandbox it is attached to; lines is
   // the scrollback; pending is a gate waiting on a human.
   drawerTab: 'shell',
+  trace: {},
+  traceSession: null,
   shell: { sessionID: null, lines: [], busy: false, pending: null, history: [], hpos: -1 },
   // The agent thread: what you asked, and what it said back. Kept in memory only
   // — the daemon owns the durable record of what an agent actually DID (the
@@ -535,10 +537,32 @@ function renderDrawer() {
     ['changes', 'Changes'],
     ['policy', 'Policy'],
   ];
+  const live = S.sessions.filter(inScope);
+  const traced = S.traceSession && live.some((x) => x.id === S.traceSession)
+    ? live.find((x) => x.id === S.traceSession) : live[0];
+  const v = traced && S.trace[traced.id] ? S.trace[traced.id].verify : null;
+
   $('dtabs').innerHTML = tabs.map(([id, label]) =>
     '<span class="t' + (S.drawerTab === id ? ' on' : '') + '" data-dtab="' + id + '">' +
     esc(label) + '</span>').join('') +
     '<span class="sp spacer"></span>' +
+    // The verdict is the DAEMON's, computed against its own identity key. A badge
+    // this page decided on its own would be worth nothing.
+    (S.drawerTab === 'trace' && traced
+      ? (live.length > 1
+          ? '<select id="tracesess" class="projsel">' + live.map((x) =>
+              '<option value="' + esc(x.id) + '"' +
+              (x.id === traced.id ? ' selected' : '') + '>' + esc(short(x.id, 10)) +
+              '</option>').join('') + '</select>'
+          : '<span class="t" style="color:var(--muted);">' + esc(short(traced.id, 10)) + '</span>') +
+        (v
+          ? (v.verified
+              ? '<span class="badge ok" title="the daemon re-hashed the chain against its own identity key">' +
+                'chain verified · ' + esc(String(v.events)) + ' events</span>'
+              : '<span class="badge danger" title="the hash chain does not hold">BROKEN' +
+                (v.broken_seq != null ? ' at seq ' + esc(String(v.broken_seq)) : '') + '</span>')
+          : '<span class="badge">unverified</span>')
+      : '') +
     (S.drawerTab === 'shell'
       ? '<span class="t" data-shellpop="1" title="open in a full tab">⤢</span>'
       : '') +
@@ -553,26 +577,132 @@ function renderDrawer() {
   body.innerHTML = drawerTrace();
 }
 
-function drawerTrace() {
-  // The drawer shows what the daemon can actually attest to. A per-session trace
-  // needs a session; with none running there is nothing signed to display, and
-  // inventing a plausible timeline here would undermine the one surface whose
-  // whole value is that it is not invented.
-  const live = S.sessions.filter(inScope);
-  if (!live.length) {
-    return '<div class="empty" style="padding:14px;">' +
-      'No sandbox running in this scope, so there is no trace segment to show.<br>' +
-      '<span class="tag">A trace is per-session and hash-chained from its ' +
-      'session.start; it appears here once a sandbox starts.</span></div>';
+// The trace is the product's central claim made visible: what the agent actually
+// did, in order, hash-chained so an edit after the fact breaks the chain.
+//
+// It had no surface at all until now — the routes were not on the tower's
+// allowlist and the drawer said "no trace segment to show" whatever was running.
+// An audit tool whose audit trail cannot be looked at is a strange thing.
+//
+// Safe to show because F3.3's redactor runs in the EMIT path, before the event is
+// hashed: what is stored is already scrubbed, and the chain commits to the
+// redacted bytes.
+const TRACE_COLOR = {
+  'session.start': 'var(--ok)',
+  'session.end': 'var(--muted)',
+  'exec.start': 'var(--accent)',
+  'exec.output': 'var(--muted)',
+  'exec.end': 'var(--fg)',
+  'policy.decision': 'var(--warn)',
+  'context.assemble': 'var(--skill)',
+  'egress.deny': 'var(--danger)',
+  'cred.inject': 'var(--ssh)',
+  'memory.read': 'var(--db)',
+};
+
+// traceSummary turns one event's payload into the line an operator reads.
+//
+// Per type rather than a generic key dump: "exec.start kubectl delete pod web-1"
+// is the sentence that matters, and {"argv":["kubectl",...],"cwd":"/workspace"}
+// is the same information arranged so nobody reads it.
+function traceSummary(e) {
+  const p = e.payload || {};
+  switch (e.type) {
+    case 'session.start':
+      return [p.mode, p.tier, p.agent ? 'agent ' + p.agent : null,
+        p.environment_id || p.project_id].filter(Boolean).join(' · ');
+    case 'context.assemble': {
+      // `layers` is the array of layer records, not a count. Printing it raw
+      // dumped a JSON blob into a timeline row.
+      const n = Array.isArray(p.layers) ? p.layers.length : (p.layers || 0);
+      const names = Array.isArray(p.layers)
+        ? p.layers.map((l) => l.name || l.kind).filter(Boolean).join(', ') : '';
+      return n + ' layer(s)' + (names ? ' [' + names + ']' : '') +
+        (p.tokens ? ' · ~' + p.tokens + ' tokens' : '') +
+        (p.overrun ? ' · OVER BUDGET' : '') +
+        (p.hash ? ' · ' + short(p.hash, 12) : '');
+    }
+    case 'policy.decision':
+      return (p.decision || '?') + (p.rule ? ' [' + p.rule + ']' : '') +
+        (p.argv_summary ? ' — ' + p.argv_summary : '');
+    case 'exec.start':
+      return (Array.isArray(p.argv) ? p.argv.join(' ') : (p.argv_summary || '')) +
+        (p.cwd ? '  (' + p.cwd + ')' : '');
+    case 'exec.output': {
+      // `chunk` is the CONTENT, not a length — "+hello\n bytes" was the first
+      // attempt. The bytes are deliberately not rendered here: the drawer is a
+      // timeline and the same output already streamed into the Shell, so this
+      // says how much moved and when.
+      const n = typeof p.chunk === 'string' ? p.chunk.length : (p.bytes || 0);
+      return (p.stream || 'stdout') + ' · ' + n + ' bytes' +
+        (p.offset !== undefined ? ' at offset ' + p.offset : '');
+    }
+    case 'exec.end':
+      return 'exit ' + (p.exit_code === undefined ? '?' : p.exit_code) +
+        (p.duration_ms !== undefined ? ' · ' + p.duration_ms + 'ms' : '');
+    case 'session.end':
+      return p.reason || 'destroyed';
+    default: {
+      // An unknown type is rendered, not hidden: a trace that silently drops
+      // events it does not recognise is the one thing a trace must never do.
+      const keys = Object.keys(p).slice(0, 4)
+        .map((k) => k + '=' + String(p[k]).slice(0, 40));
+      return keys.join(' ');
+    }
   }
-  return live.map((sx) =>
-    '<div class="tli"><span class="ts">' + esc(sx.age || '—') + ' ago</span>' +
-    '<span class="ty" style="color:var(--ok);">session.start</span>' +
-    '<span class="de">sandbox ' + esc(short(sx.id, 8)) + ' · tier ' + esc(sx.tier || '—') +
-    ' · mode ' + esc(sx.mode || '—') + '</span></div>').join('') +
-    '<div class="tli"><span class="ts"></span><span class="ty" style="color:var(--muted);">' +
-    'verify</span><span class="de">opslify verify ' + esc(short(live[0].id, 8)) +
-    ' — the chain is checked by the CLI, not asserted here</span></div>';
+}
+
+const traceTime = (ts) => {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return isNaN(d) ? '' : d.toTimeString().slice(0, 8);
+};
+
+function drawerTrace() {
+  const live = S.sessions.filter(inScope);
+  const sx = S.traceSession && live.some((x) => x.id === S.traceSession)
+    ? live.find((x) => x.id === S.traceSession) : live[0];
+
+  if (!sx) {
+    return '<div class="empty" style="padding:14px;">' +
+      'No sandbox in this scope, so there is no trace segment yet.<br>' +
+      '<span class="tag">A trace is per-session and hash-chained from its ' +
+      'session.start. It appears here the moment a sandbox starts.</span></div>';
+  }
+  const t = S.trace[sx.id];
+  if (!t) return '<div class="empty" style="padding:14px;">reading the trace…</div>';
+  if (t.error) {
+    return '<div class="empty" style="padding:14px;color:var(--danger);">' +
+      esc(t.error) + '</div>';
+  }
+  if (!t.events || !t.events.length) {
+    return '<div class="empty" style="padding:14px;">No events recorded yet.</div>';
+  }
+  return t.events.map((e) =>
+    '<div class="tli" title="seq ' + e.seq + ' · ' + esc(e.hash || '') + '">' +
+    '<span class="ts">' + esc(traceTime(e.ts)) + '</span>' +
+    '<span class="ty" style="color:' + (TRACE_COLOR[e.type] || 'var(--muted)') + ';">' +
+    esc(e.type) + '</span>' +
+    '<span class="de">' + esc(traceSummary(e)) + '</span></div>').join('');
+}
+
+// loadTrace fetches a session's trace and its SERVER-SIDE verdict.
+//
+// The verdict is the daemon's, computed against its own identity key — not
+// something this page could compute and not something it should be trusted to.
+// A badge that said "verified" because a browser decided so would be worth
+// nothing.
+async function loadTrace(sessionID) {
+  if (!sessionID) return;
+  try {
+    const [tr, vr] = await Promise.all([
+      api('/v1/sessions/' + encodeURIComponent(sessionID) + '/trace'),
+      api('/v1/sessions/' + encodeURIComponent(sessionID) + '/verify').catch(() => null),
+    ]);
+    S.trace[sessionID] = { events: (tr && tr.events) || [], seal: tr && tr.seal, verify: vr };
+  } catch (e) {
+    S.trace[sessionID] = { error: e.message };
+  }
 }
 
 function drawerChanges() {
@@ -2202,7 +2332,18 @@ document.addEventListener('click', async (ev) => {
 
   if (a('data-env')) { S.envID = a('data-env'); render(); return; }
   if (a('data-drawer')) { S.drawerShut = !S.drawerShut; renderDrawer(); return; }
-  if (a('data-dtab')) { S.drawerTab = a('data-dtab'); S.drawerShut = false; renderDrawer(); return; }
+  if (a('data-dtab')) {
+    S.drawerTab = a('data-dtab');
+    S.drawerShut = false;
+    renderDrawer();
+    if (S.drawerTab === 'trace') {
+      const live = S.sessions.filter(inScope);
+      const sx = S.traceSession && live.some((x) => x.id === S.traceSession)
+        ? S.traceSession : (live[0] && live[0].id);
+      if (sx) { await loadTrace(sx); renderDrawer(); }
+    }
+    return;
+  }
   if (a('data-shellpop')) { openTab('shell', null, 'shell'); return; }
   if (a('data-shellrun')) {
     const inp = $('shellcmd');
@@ -2484,6 +2625,12 @@ document.addEventListener('change', async (ev) => {
     });
     return;
   }
+  if (ev.target && ev.target.id === 'tracesess') {
+    S.traceSession = ev.target.value;
+    await loadTrace(S.traceSession);
+    renderDrawer();
+    return;
+  }
   if (ev.target && ev.target.id === 'shellsess') {
     S.shell.sessionID = ev.target.value;
     S.shell.lines = [];
@@ -2572,6 +2719,13 @@ document.addEventListener('keydown', async (ev) => {
   // and a dropped websocket that silently stops updating is a worse failure than
   // a refresh that visibly lags.
   setInterval(() => {
+    // A trace that only updates when clicked is a log file with extra steps.
+    if (S.drawerTab === 'trace' && !S.drawerShut) {
+      const live = S.sessions.filter(inScope);
+      const sx = S.traceSession && live.some((x) => x.id === S.traceSession)
+        ? S.traceSession : (live[0] && live[0].id);
+      if (sx) loadTrace(sx).then(renderDrawer).catch(() => {});
+    }
     loadAll().then(render).catch((e) => {
       // A failed poll is usually the daemon restarting and is not worth shouting
       // about; a failed RENDER is a bug that would otherwise freeze the page
