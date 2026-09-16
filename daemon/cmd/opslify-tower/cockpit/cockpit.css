@@ -425,6 +425,17 @@ td.mono { font-family: var(--mono); font-size: 11.5px; }
   color: var(--muted); cursor: pointer; user-select: none; }
 .check input { width: auto; }
 
+/* One guardrail row: a tick, the rule, and what it stops. The reason is not
+ * decoration — "^rm -rf" is not self-explanatory to whoever reads this at 3am. */
+.gaterow { padding: 4px 0; gap: 9px; }
+.gaterow:hover { color: var(--fg); }
+.gaterow .gate { color: var(--warn); font-size: 11.5px; }
+.gaterow .why { margin-left: auto; font-size: 10.5px; color: var(--muted);
+  font-family: var(--mono); }
+.gaterow input:checked ~ .gate { color: var(--warn); }
+.gaterow input:not(:checked) ~ .gate,
+.gaterow input:not(:checked) ~ .mono { opacity: .45; }
+
 /* --------------------------------------------------------------- modal --- */
 
 .modalwrap { position: fixed; inset: 0; background: rgba(8, 9, 12, .72);

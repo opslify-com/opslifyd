@@ -1545,12 +1545,34 @@ const packagesForProject = (p) => {
   return Array.from(set).sort();
 };
 
+// COMMON_GATES are guardrails worth offering on every project, whatever tools it
+// uses. Offered rather than applied: a gate nobody chose is a gate nobody
+// maintains, and the first time it fires on a legitimate command it gets deleted
+// along with the ones that mattered.
+//
+// Each says what it stops, because "^rm -rf" is not self-explanatory to everyone
+// who will read this screen at 3am.
+const COMMON_GATES = [
+  { rule: '^rm -rf', why: 'recursive delete', on: true },
+  { rule: '^terraform destroy', why: 'tears down infrastructure', on: true },
+  { rule: '^terraform apply', why: 'changes infrastructure', on: false },
+  { rule: '^kubectl delete', why: 'removes cluster objects', on: true },
+  { rule: '^kubectl scale', why: 'changes capacity', on: false },
+  { rule: '^helm uninstall', why: 'removes a release', on: true },
+  { rule: '^git push --force', why: 'rewrites shared history', on: true },
+  { rule: '^aws .* delete', why: 'deletes cloud resources', on: true },
+  { rule: '^az .* delete', why: 'deletes cloud resources', on: true },
+  { rule: '^systemctl (stop|restart)', why: 'interrupts a service', on: false },
+];
+
 const W = {
   open: false, step: 0,
   name: '', repo: '', wsPath: '',
   envs: [{ name: 'staging', production: false }, { name: 'prod', production: true }],
   tools: {},
   creds: {},   // toolID -> {mode:'existing'|'new', ref, value}
+  gates: null, // rule -> bool; null until the guardrails step is first shown
+  egress: {},  // host -> bool
   busy: false,
 };
 
@@ -1684,15 +1706,57 @@ function wizLeft() {
     }).join('');
 }
 
+// wizGateChoices is the union of what the selected tools imply and the common
+// library, with the operator's ticks applied. Computed fresh each render so
+// picking a tool on the previous step adds its gates here.
+function wizGateChoices() {
+  const out = [];
+  const seen = {};
+  for (const t of wizTools()) {
+    for (const rule of t.gates) {
+      if (seen[rule]) continue;
+      seen[rule] = true;
+      out.push({ rule, why: 'implied by ' + t.name, fromTool: true });
+    }
+  }
+  for (const g of COMMON_GATES) {
+    if (seen[g.rule]) continue;
+    seen[g.rule] = true;
+    out.push({ rule: g.rule, why: g.why, fromTool: false, defaultOn: g.on });
+  }
+  // First visit: a tool's own gates are on, the general library follows its own
+  // default. After that the operator's ticks win.
+  if (W.gates === null) {
+    W.gates = {};
+    for (const g of out) W.gates[g.rule] = g.fromTool ? true : !!g.defaultOn;
+  }
+  return out;
+}
+
+function wizEgressChoices() {
+  const out = [];
+  const seen = {};
+  for (const t of wizTools()) {
+    const c = W.creds[t.id] || {};
+    for (const h of t.hosts.concat(c.host ? [c.host] : [])) {
+      if (!h || seen[h]) continue;
+      seen[h] = true;
+      out.push({ host: h, why: t.name });
+      if (W.egress[h] === undefined) W.egress[h] = true;
+    }
+  }
+  return out;
+}
+
 function wizRight() {
-  const gates = wizGates(); const hosts = wizHosts(); const tools = wizTools();
+  const tools = wizTools();
 
   if (W.step < 2) {
     return '<div class="rhdr"><h3>What gets created</h3>' +
       '<span class="badge auto">preview</span></div>' +
       '<div class="rbody"><div class="gsec">' +
       '<div class="k">project</div>' +
-      '<div class="gitem"><span class="mono">' + esc(W.name || '<name>') + '</span></div>' +
+      '<div class="gitem"><span class="mono">' + esc(W.name || '&lt;name&gt;') + '</span></div>' +
       (W.repo ? '<div class="gitem"><span class="mono muted">' + esc(W.repo) + '</span></div>' : '') +
       (W.wsPath
         ? '<div class="gitem"><span class="mono">' + esc(W.wsPath) + '</span>' +
@@ -1705,38 +1769,43 @@ function wizRight() {
       '</div></div>';
   }
 
+  const gates = wizGateChoices();
+  const hosts = wizEgressChoices();
+  const onGates = gates.filter((g) => W.gates[g.rule]).length;
+  const onHosts = hosts.filter((h) => W.egress[h.host]).length;
+
   return '<div class="rhdr"><h3>Guardrails</h3>' +
-    '<span class="badge auto">generated from ' + tools.length + ' tool' +
-    (tools.length === 1 ? '' : 's') + '</span></div>' +
+    '<span class="badge auto">' + onGates + ' of ' + gates.length + ' selected</span></div>' +
     '<div class="rbody">' +
-    '<div class="gsec"><div class="k">Requires human approval ' +
-    '<span class="badge warn">' + gates.length + ' rules</span></div>' +
-    (gates.length ? gates.map((g) => '<div class="gitem"><span class="gate">' + esc(g) + '</span>' +
-      '<span class="why">' + esc((tools.find((t) => t.gates.includes(g)) || {}).id || '') +
-      '</span></div>').join('')
-      : '<div class="gitem muted">none — no selected tool proposes one</div>') +
-    '<div class="hint" style="margin-top:8px;">Gates NARROW the policy, so they apply the ' +
-    'moment the project is created. No approval needed to tighten.</div>' +
+    '<div class="gsec"><div class="k">Require human approval ' +
+    '<span class="badge warn">' + onGates + ' rules</span></div>' +
+    '<div class="hint" style="margin:0 0 8px;">Tick what should PAUSE for a human. ' +
+    'Gates NARROW the policy, so every one applies the moment the project is created — ' +
+    'no approval is needed to tighten.</div>' +
+    gates.map((g) =>
+      '<label class="check gaterow" data-gate="' + esc(g.rule) + '">' +
+      '<input type="checkbox"' + (W.gates[g.rule] ? ' checked' : '') + '>' +
+      '<span class="gate mono">' + esc(g.rule) + '</span>' +
+      '<span class="why">' + esc(g.why) + '</span></label>').join('') +
     '</div>' +
     '<div class="gsec"><div class="k">Network the sandbox may reach ' +
-    '<span class="badge ' + (hosts.length ? 'warn' : '') + '">' + hosts.length + ' hosts</span></div>' +
-    (hosts.length ? hosts.map((h) => '<div class="gitem"><span class="mono">' + esc(h) + '</span>' +
-      '<span class="why">' + esc((tools.find((t) => t.hosts.includes(h)) || {}).id || '') +
-      '</span></div>').join('')
+    '<span class="badge' + (onHosts ? ' warn' : '') + '">' + onHosts + ' hosts</span></div>' +
+    (hosts.length
+      ? hosts.map((h) =>
+          '<label class="check gaterow" data-egress="' + esc(h.host) + '">' +
+          '<input type="checkbox"' + (W.egress[h.host] ? ' checked' : '') + '>' +
+          '<span class="mono">' + esc(h.host) + '</span>' +
+          '<span class="why">' + esc(h.why) + '</span></label>').join('') +
+        '<div class="hint" style="margin-top:8px;color:var(--warn)">Allowing a host WIDENS ' +
+        'the policy, so each becomes a Change awaiting approval. The project and its gates ' +
+        'are created immediately; egress is not open until you approve them.</div>'
       : '<div class="gitem muted">nothing — egress stays default-deny</div>') +
-    // This is the honest part. Opening egress is a widening edit, and the daemon
-    // will refuse to apply it without approval. Saying so here means the pending
-    // Changes at the end are expected, not a surprise.
-    (hosts.length ? '<div class="hint" style="margin-top:8px;color:var(--warn)">' +
-      'Allowing a host WIDENS the policy, so each of these becomes a Change awaiting ' +
-      'approval. The project and its gates are created immediately; egress is not open ' +
-      'until you approve them.</div>' : '') +
     '</div>' +
     '<div class="gsec"><div class="k">Credentials to bind ' +
     '<span class="badge">step 4</span></div>' +
     (wizSecrets().length ? wizSecrets().map((t) => {
       const ref = (W.creds[t.id] || {}).ref || t.secret.ref;
-      const have = S.secrets.some((s) => s.ref === ref);
+      const have = S.secrets.some((x) => x.ref === ref);
       return '<div class="gitem"><span class="mono">' + esc(ref) + '</span>' +
         '<span class="why" style="color:var(--' + (have ? 'ok' : 'warn') + ')">' +
         (have ? 'reuse existing' : 'needs value') + '</span></div>';
@@ -1796,6 +1865,27 @@ async function wizCreate() {
   W.busy = true; renderWizard();
   const done = []; const failed = [];
 
+  // The overlay is NOT part of render(), deliberately — render() runs on the
+  // five-second poll and would destroy any open modal. That means the wizard has
+  // to close itself, and the first version set W.open = false without doing so:
+  // the "Creating…" dialog stayed on screen after a perfectly successful create,
+  // which reads as a hang.
+  //
+  // In a finally, so nothing between here and the end can leave it up.
+  try {
+    await wizCreateSteps(done, failed);
+  } finally {
+    W.busy = false;
+    W.open = false;
+    closeOverlay();
+  }
+  await refresh();
+  reportWizardOutcome(done, failed);
+}
+
+// wizCreateSteps does the work. Split out so wizCreate's finally is the only
+// place that owns the overlay.
+async function wizCreateSteps(done, failed) {
   try {
     const caps = {};
     wizTools().forEach((t) => { caps[t.role] = t.id; });
@@ -1816,8 +1906,9 @@ async function wizCreate() {
         (warn.length > 4 ? ', …' : '') + '. Move them out or use a directory of only code.', 'bad');
     }
   } catch (e) {
-    W.busy = false; renderWizard();
-    toast('could not create the project: ' + e.message, 'bad');
+    failed.push('project: ' + e.message);
+    // Nothing downstream can work without the project, so stop here rather than
+    // reporting four more failures that all mean the same thing.
     return;
   }
 
@@ -1860,7 +1951,7 @@ async function wizCreate() {
     } catch (e) { failed.push('connection ' + t.id + ': ' + e.message); }
   }
 
-  const gates = wizGates();
+  const gates = Object.keys(W.gates || {}).filter((r) => W.gates[r]).sort();
   if (gates.length) {
     try {
       await send('POST', '/v1/policy/edit', {
@@ -1871,7 +1962,7 @@ async function wizCreate() {
     } catch (e) { failed.push('gates: ' + e.message); }
   }
 
-  const hosts = wizHosts();
+  const hosts = Object.keys(W.egress || {}).filter((h) => W.egress[h]).sort();
   let pending = 0;
   if (hosts.length) {
     try {
@@ -1884,17 +1975,22 @@ async function wizCreate() {
     } catch (e) { failed.push('egress: ' + e.message); }
   }
 
-  W.busy = false; W.open = false;
   S.projectID = W.name; S.envID = null;
-  await refresh();
+  W.skipped = skipped;
+  W.pending = pending;
+}
 
-  toast('created: ' + done.join('; '), 'ok');
-  if (skipped.length) {
-    toast('still to do: ' + skipped.join(', ') +
+// reportWizardOutcome says what happened, after the dialog is gone. Three
+// separate messages because they need three different actions: what was built,
+// what is still to do, and what is awaiting approval.
+function reportWizardOutcome(done, failed) {
+  if (done.length) toast('created: ' + done.join('; '), 'ok');
+  if (W.skipped && W.skipped.length) {
+    toast('still to do: ' + W.skipped.join(', ') +
       ' — add these from the Tools screen when you have them', null);
   }
-  if (pending) {
-    toast(pending + ' egress host(s) need approval before the sandbox can reach them — ' +
+  if (W.pending) {
+    toast(W.pending + ' egress host(s) need approval before a sandbox can reach them — ' +
       'see Changes.', null);
     openTab('changes', null, 'changes');
   }
@@ -1904,7 +2000,7 @@ async function wizCreate() {
 function wizReset() {
   W.step = 0; W.name = ''; W.repo = ''; W.wsPath = '';
   W.envs = [{ name: 'staging', production: false }, { name: 'prod', production: true }];
-  W.tools = {}; W.creds = {}; W.busy = false;
+  W.tools = {}; W.creds = {}; W.busy = false; W.gates = null; W.egress = {};
 }
 
 /* ----------------------------------------------------------------- modals -- */
@@ -2325,7 +2421,7 @@ document.addEventListener('click', async (ev) => {
     '[data-buildtc],[data-editdoc],[data-rmdoc],' +
     '[data-rmtool],[data-picktool],[data-bind],[data-poledit],[data-wiztool],' +
     '[data-wizaddenv],[data-wizrmenv],[data-wiznext],[data-wizback],[data-wizcancel],' +
-    '[data-modalok],[data-modalcancel]');
+    '[data-gate],[data-egress],[data-modalok],[data-modalcancel]');
   if (!t) return;
   const a = (k) => t.getAttribute(k);
   ev.preventDefault();
@@ -2565,6 +2661,20 @@ document.addEventListener('click', async (ev) => {
   }
 
   // --- wizard ---
+  // A guardrail toggle re-renders the wizard so the counts in the header move
+  // with the ticks — a "3 of 10 selected" badge that lags is worse than none.
+  if (a('data-gate')) {
+    const rule = a('data-gate');
+    W.gates[rule] = !W.gates[rule];
+    renderWizard();
+    return;
+  }
+  if (a('data-egress')) {
+    const host = a('data-egress');
+    W.egress[host] = !W.egress[host];
+    renderWizard();
+    return;
+  }
   if (a('data-wiztool')) {
     const id = a('data-wiztool');
     W.tools[id] = !W.tools[id];
