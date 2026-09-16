@@ -1,3 +1,52 @@
+function newSessionModal() {
+  const e = environment();
+  const scope = e ? e.id : (S.projectID || 'default');
+  modal('New sandbox',
+    '<label class="fld"><span class="lb">scope</span>' +
+    '<input class="mono" value="' + esc(scope) + '" disabled></label>' +
+    '<label class="fld"><span class="lb">mode</span><select id="m-mode">' +
+    '<option value="scratch">scratch — an empty /workspace, discarded on end</option>' +
+    '<option value="workspace">workspace — a named directory that persists</option>' +
+    '</select></label>' +
+    // Workspace mode keys its directory on a NAME, and the daemon refuses without
+    // one ("workspace mode requires a name"). The first version of this dialog
+    // offered the mode and never asked, so choosing it failed on Create every
+    // time. Shown only for the mode that needs it.
+    '<label class="fld" id="m-wsname-wrap" style="display:none;">' +
+    '<span class="lb">workspace name</span>' +
+    '<input id="m-wsname" class="mono" value="' + esc(S.projectID || '') + '" ' +
+    'placeholder="' + esc(S.projectID || 'myapp') + '">' +
+    '<span class="hint">Its /workspace is kept under this name and re-mounted next ' +
+    'time, so clones and installed dependencies survive. Lowercase letters, digits, ' +
+    'dashes and underscores.</span></label>' +
+    '<p class="hint">The sandbox starts with this environment\'s resolved policy and ' +
+    'keeps that hash for its whole life, even if the policy is edited underneath it.</p>',
+    'Create', async () => {
+      const mode = $('m-mode').value;
+      const name = mode === 'workspace' ? ($('m-wsname') || {}).value.trim() : '';
+      if (mode === 'workspace' && !name) {
+        throw new Error('a workspace name is required — it is what the directory is kept under');
+      }
+      const out = await send('POST', '/v1/sessions', {
+        project: S.projectID || undefined,
+        environment: e ? e.id : undefined,
+        mode,
+        name: name || undefined,
+      });
+      const id = out && (out.session_id || out.id);
+      if (id) { S.shell.sessionID = id; S.shell.lines = []; S.drawerTab = 'shell'; }
+      toast('sandbox ' + ((out && out.label) || short(id || '', 8)) + ' created', 'ok');
+    });
+  // Reveal the name field only when the mode that needs it is chosen.
+  const sel = $('m-mode');
+  if (sel) {
+    sel.addEventListener('change', () => {
+      const wrap = $('m-wsname-wrap');
+      if (wrap) wrap.style.display = sel.value === 'workspace' ? 'block' : 'none';
+    });
+  }
+}
+
 // The cockpit, built to design/Cockpit.dc.html.
 //
 // Every mutation here is a request to the SAME daemon endpoint the CLI calls, so
@@ -972,23 +1021,38 @@ function renderChat() {
     const registered = S.agents.map((x) => x.name);
     connectPrompt = '<div class="connect">' +
       '<div class="w2">No agent connected</div>' +
+      // Already-registered agents FIRST, because binding one is a click and
+      // installing another is not. The previous version said "1 registered — pick
+      // one below" and rendered nothing below it, which is a dead end dressed as
+      // an instruction.
       (S.agents.length
-        ? '<div class="ds">' + S.agents.length + ' registered — pick one below to bind it ' +
-          'to this scope.</div>'
-        : found.length
-          ? '<div class="ds">Found on this machine. One click connects it; your ' +
-            'subscription or key stays inside that CLI.</div>' +
-            found.map((e) =>
-              '<button class="connectbtn" data-quickagent="' + esc(e.id) + '">' +
-              '<span class="nm">' + esc(e.title) + '</span>' +
-              '<span class="ds">' + (e.default_model ? esc(e.default_model) + ' · ' : '') +
-              (e.locality === 'local' ? 'stays on this host' : 'output goes off-host') +
-              '</span></button>').join('')
-          : '<div class="ds">No supported agent found on this machine. Install Claude ' +
-            'Code, Qwen Code or Codex, or register one by path with ' +
-            '<span class="mono">opslify agent add</span>.</div>') +
-      (found.length || S.agents.length
-        ? '<button class="sm" data-add="agent">More options…</button>' : '') +
+        ? '<div class="ds">Registered on this daemon — bind one to this scope.</div>' +
+          S.agents.map((x) =>
+            '<button class="connectbtn" data-bind="' + esc(x.name) + '">' +
+            '<span class="nm">' + esc(x.name) + '</span>' +
+            '<span class="ds">' + (x.model_hint ? esc(x.model_hint) + ' · ' : '') +
+            (x.locality === 'local' ? 'stays on this host' : 'output goes off-host') +
+            (x.drivable ? '' : ' · cannot be driven (no flavour)') +
+            '</span></button>').join('')
+        : '') +
+      (found.filter((e) => !registered.includes(e.name)).length
+        ? '<div class="ds" style="margin-top:9px;">' +
+          (S.agents.length ? 'Or connect another found on this machine.' :
+            'Found on this machine. One click connects it; your subscription or key ' +
+            'stays inside that CLI.') + '</div>' +
+          found.filter((e) => !registered.includes(e.name)).map((e) =>
+            '<button class="connectbtn" data-quickagent="' + esc(e.id) + '">' +
+            '<span class="nm">' + esc(e.title) + '</span>' +
+            '<span class="ds">' + (e.default_model ? esc(e.default_model) + ' · ' : '') +
+            (e.locality === 'local' ? 'stays on this host' : 'output goes off-host') +
+            '</span></button>').join('')
+        : '') +
+      (!S.agents.length && !found.length
+        ? '<div class="ds">No supported agent found on this machine. Install Claude ' +
+          'Code, Qwen Code or Codex, or register one by path with ' +
+          '<span class="mono">opslify agent add</span>.</div>'
+        : '') +
+      '<button class="sm" data-add="agent">More options…</button>'
       '</div>';
   }
 
